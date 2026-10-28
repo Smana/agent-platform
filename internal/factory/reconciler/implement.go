@@ -515,6 +515,19 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		narrateLater(t, narrate.ProposalReady(t, r.Cfg.RoomsURL))
 		return r.end(ctx, t, v1alpha1.PhaseDone, "proposal_ready")
 	}
+	// F3-R7: an implementer that holds a contract and hands off to the tester disputes it. No dispute
+	// round (TF6): a maintainer decides, whatever the run's phase.
+	if t.Status.Contract != nil && current(t).Role == "implementer" {
+		evs, _, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, func(e envelope.Event) bool {
+			return handoffTo("tester")(e) && e.RunID == current(t).ID
+		})
+		if err != nil {
+			return err
+		}
+		if len(evs) > 0 {
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "contract_disputed")
+		}
+	}
 	switch {
 	case run.Phase == "Succeeded" && t.Status.PullRequest != nil:
 		return r.afterWriter(ctx, t)
