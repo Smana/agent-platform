@@ -1040,6 +1040,22 @@ def clone(env: dict) -> bool:
     return resumed
 
 
+# v3 feature 4 (the test-first tester): a tester run given task text, not a pull request, writes the
+# contract. A verifier tester always has the pull request's URL (R25) and runs as before (F1-R1).
+TESTER_PUSHURL = "disabled://the-tester-never-pushes"
+CONTRACT_FILE = "/workspace/.agent-contract.json"  # the implementer's contract, for the hook and the hold (F1-R9)
+
+
+def test_first(env: dict) -> bool:
+    return env.get("ROLE") == "tester" and not env.get("TASK_URL")
+
+
+def disable_push(env: dict) -> None:
+    """The model's pushes go nowhere (R13); agent-run pushes the signed contract to the fetch URL."""
+    if test_first(env):
+        subprocess.run(["git", "-C", REPO_DIR, "config", "remote.origin.pushurl", TESTER_PUSHURL], check=True)
+
+
 class Stalled(Exception):
     """No commit by the policy's stallSteps steps (loops L3)."""
 
@@ -1491,6 +1507,7 @@ def main() -> int:
         # either: it waits on a call's approval, a new message would reject that call, and a bare
         # run would execute it unconfirmed. The bridge answers it from the room's decision.
         resumed = persisted(env) or clone(env)
+        disable_push(env)
         decl = declared(env)
         if decl:
             try:
