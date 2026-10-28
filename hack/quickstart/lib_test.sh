@@ -27,6 +27,20 @@ eq "$(qs_unsandboxed "")" 0 "unset ALLOW_UNSANDBOXED"
 eq "$(qs_unsandboxed 1)" 1 "ALLOW_UNSANDBOXED=1"
 no qs_unsandboxed true; no qs_unsandboxed 0; no qs_unsandboxed yes
 
+# qs_retry_webhook: retries only while an admission webhook is not answering yet.
+_flaky_n=0
+# shellcheck disable=SC2329  # invoked through qs_retry_webhook
+_flaky() { _flaky_n=$((_flaky_n + 1)); ((_flaky_n > 2)) && return 0; echo 'Error from server (InternalError): failed calling webhook "mcluster.cnpg.io"' >&2; return 1; }
+ok qs_retry_webhook 5 0 _flaky; eq "$_flaky_n" 3 "retried twice past a cold webhook"
+_other_n=0
+# shellcheck disable=SC2329
+_other() { _other_n=$((_other_n + 1)); echo 'error: unable to recognize "x": no matches for kind' >&2; return 1; }
+no qs_retry_webhook 5 0 _other; eq "$_other_n" 1 "any other error is not retried"
+_cold_n=0
+# shellcheck disable=SC2329
+_cold() { _cold_n=$((_cold_n + 1)); echo 'failed calling webhook "mcluster.cnpg.io"' >&2; return 1; }
+no qs_retry_webhook 3 0 _cold; eq "$_cold_n" 3 "a webhook that never answers gives up after the bound"
+
 ok qs_port_ok 8080; ok qs_port_ok 18080; no qs_port_ok 80; no qs_port_ok 70000; no qs_port_ok 8o80; no qs_port_ok 010000; no qs_port_ok 08080
 
 # qs_secret: the value comes from the environment, survives quoting, and is never an argument
