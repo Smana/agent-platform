@@ -1389,11 +1389,80 @@ def loop_for(env: dict):
 NO_VERDICT_FAILING = "the completion judge gave no verdict and a check failed (%s)"
 
 
-def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None) -> tuple[int, str | None, str]:
+CONTRACT_EVIDENCE = ("contract",)
+
+
+def hold_verdict(res: dict):
+    """A red contract is not_yet before any judge (R16); anything but red or green is no verdict here."""
+    if res.get("result") == "red":
+        failing = res.get("failing", [])
+        return loop_policy.Verdict("not_yet", "the test contract fails: %s" % ", ".join(failing[:10]), CONTRACT_EVIDENCE)
+    return None
+
+
+def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path: str | None = LOOP_STATE):
+    """A finished conversation's contract hold (F1-R11): None when the contract is not red (the caller goes on
+    to its judge or its end), a loop_policy.End when the continuations are spent, True once one was sent."""
+    res = hold()
+    v = hold_verdict(res)
+    if v is None:
+        if res.get("result") not in ("green", None) and notes is not None:
+            notes.final("contract %s" % res["result"])
+        return None
+    n = commits_since(env, state.mark) if state.sent else None
+    d = loop_policy.decide(policy, state, v, n is None or n > 0)
+    if isinstance(d, loop_policy.End):
+        if path:
+            save_state(state, path)
+        return d
+    state.mark = head()
+    if path:
+        save_state(state, path)
+    continue_conversation(cid, loop_policy.contract_continuation(res.get("failing", []), state.sent, policy.continuations, fence))
+    return True
+
+
+def contract_loop(env: dict, cid: str, steps, hold, notes=None) -> int:
+    """The contract hold without AGENT_LOOP (F1-R12): two continuations, no judge, no stall rule. Spent, the
+    run ends as it would with no policy: exit 0."""
+    policy = loop_policy.Policy(stall_steps=loop_policy.MAX_STALL_STEPS, continuations=2, judge_model=None)
+    state = loop_policy.State(start=head(), committed=True)
+    fence = "CONTRACT-" + secrets.token_hex(4)
+    while True:
+        code = poll(cid, on_tick=steps)
+        if code:
+            return code
+        done = hold_round(env, cid, hold, policy, state, notes, fence, None)
+        if not done or isinstance(done, loop_policy.End):
+            if isinstance(done, loop_policy.End):
+                print("agent-run contract: the test contract is still red, %s" % done.reason, flush=True)
+            return 0
+
+
+def make_hold(env: dict, base: str, contract: dict, decl, prefetched):
+    """The hold as a zero-argument callable; the toolchain is built on its first call (F1-R13)."""
+    cache = {}
+
+    def run() -> dict:
+        try:
+            if "env" not in cache:
+                cache["env"] = contract_env(decl or {}, prefetched)
+            tc = contract_module()
+            return tc.hold(REPO_DIR, cache["env"], lambda m: print("agent-run contract: " + m, file=sys.stderr, flush=True),
+                           base=base, contract=contract["commit"])[1]
+        except Exception as exc:  # noqa: BLE001 -- a hold that could not run is no verdict
+            print("agent-run: contract hold failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            return {"result": "could_not_run"}
+
+    return run
+
+
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None, hold=None) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
     stuck conversation does, so a bridge that drops the reason still has the task escalated."""
     tick = stall_watch(env, steps, policy, state, path)
     rounds, fence = 0, "JUDGE-" + secrets.token_hex(4)  # one per run: the judge's reason stays data
+    cfence = "CONTRACT-" + secrets.token_hex(4)  # the contract hold's ids, likewise
     while True:
         try:
             code = poll(cid, on_tick=tick)
@@ -1403,6 +1472,12 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             except (OSError, ValueError, HTTPException) as exc:  # the run ends stalled whether or not the agent heard
                 print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
             return 1, "stalled", "no commit after %d steps" % policy.stall_steps
+        if code == 0 and hold is not None:
+            done = hold_round(env, cid, hold, policy, state, notes, cfence, path)
+            if isinstance(done, loop_policy.End):
+                return (0 if done.reason is None else 1), done.reason, done.note
+            if done:
+                continue
         if code or policy.judge_model is None:
             return code, None, ""
         sent = None  # the continuation, once the judge asked for one
@@ -1709,8 +1784,11 @@ def main() -> int:
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None)
+        hold = make_hold(env, base, contract, decl, prefetched) if contract else None
         if policy:
-            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes)
+            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes, hold=hold)
+        elif hold:
+            code = contract_loop(env, cid, steps, hold, notes)
         else:
             code = poll(cid, on_tick=steps)
         steps()

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_run  # noqa: E402
 import loop_policy as lp  # noqa: E402
 import test_contract as tc  # noqa: E402
+import test_loop_run as tlr  # noqa: E402
 from test_test_contract import RUN_SH, SHELL_DECL  # noqa: E402
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x",
@@ -218,6 +219,9 @@ class Notes:
 
     def final(self, text):
         self.finals.append(text)
+
+    def judge(self, *args):
+        pass
 
 
 class FakeSpan:
@@ -479,3 +483,101 @@ class HookTest(Contracted, unittest.TestCase):
         self.assertEqual(git(self.origin, "show", "agent/x:bin/greet"), "#!/usr/bin/env bash\necho dirty")
         self.assertEqual(git(self.origin, "show", "agent/x:bin/mine"), "x")
         self.assertEqual(git(self.origin, "show", "agent/x:t/test-name.sh"), self.RED["t/test-name.sh"].strip())
+
+
+class DriveContractTest(unittest.TestCase):
+    """drive() with a scripted hold: each finish asks the hold, a red one continues before any judge."""
+    POLICY = lp.Policy(stall_steps=80, continuations=2, judge_model="tier-light")
+    MET = (json.dumps({"verdict": "met", "reason": "r", "evidence": ["diff"]}), "m")
+
+    def drive(self, holds, answers=(), policy=POLICY, polls=None):
+        self.sent, self.judged, self.notes = [], [], Notes()
+        holds = iter(holds)
+        polls = iter(polls or [0] * 10)
+
+        def judge(env, model, message):
+            self.judged.append(message)
+            return next(answers_it)
+
+        answers_it = iter(answers)
+        state = lp.State(start="s")
+        with mock.patch("agent_run.poll", side_effect=lambda cid, on_tick=None: next(polls)), \
+                mock.patch("agent_run.evidence", return_value=("e", {"diff"})), mock.patch("agent_run.ask_judge", side_effect=judge), \
+                mock.patch("agent_run.commits_since", return_value=1), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            result = agent_run.drive({}, "cid", tlr.Steps(0), policy, state, "task", os.path.join(tempfile.mkdtemp(), "l.json"),
+                                     self.notes, hold=lambda: next(holds))
+        return result, state
+
+    RED = {"result": "red", "failing": ["t/a.sh"]}
+    GREEN = {"result": "green", "failing": []}
+
+    def test_a_red_contract_continues_without_asking_the_judge(self):
+        result, state = self.drive([self.RED, self.GREEN], [self.MET])
+        self.assertEqual(result, (0, None, ""))
+        self.assertEqual(len(self.judged), 1, "the judge is asked once, after the second finish")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("the test contract", self.sent[0])
+        self.assertIn("t/a.sh", self.sent[0])
+        self.assertEqual(state.sent, 1)
+
+    def test_a_green_contract_asks_the_judge_as_today(self):
+        result, _ = self.drive([self.GREEN], [self.MET])
+        self.assertEqual(result, (0, None, ""))
+        self.assertEqual((len(self.judged), self.sent), (1, []))
+
+    def test_a_modified_contract_or_could_not_run_never_continues(self):
+        for res, text in (({"result": "contract_modified", "failing": []}, "contract contract_modified"),
+                          ({"result": "could_not_run"}, "contract could_not_run")):
+            result, _ = self.drive([res], [self.MET])
+            self.assertEqual((result, self.sent, len(self.judged)), ((0, None, ""), [], 1), res)
+            self.assertEqual(self.notes.finals, [text])
+
+    def test_spent_continuations_end_not_met_under_the_loop(self):
+        result, _ = self.drive([self.RED] * 3, [])
+        self.assertEqual(result[:2], (1, "not_met"))
+        self.assertIn("t/a.sh", result[2])
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.judged, [])
+
+    def test_an_error_ends_without_asking_the_hold(self):
+        result, _ = self.drive([], [], polls=[1])
+        self.assertEqual(result, (1, None, ""))
+
+    def test_a_loop_without_a_judge_still_holds_the_contract(self):
+        result, _ = self.drive([self.RED, self.GREEN], [], policy=lp.Policy(80, 2, None))
+        self.assertEqual((result, len(self.sent), self.judged), ((0, None, ""), 1, []))
+
+
+class ContractLoopTest(unittest.TestCase):
+    def loop(self, holds, polls=None):
+        self.sent = []
+        holds = iter(holds)
+        polls = iter(polls or [0] * 10)
+        steps = tlr.Steps(10000)
+        with mock.patch("agent_run.poll", side_effect=lambda cid, on_tick=None: next(polls)), \
+                mock.patch("agent_run.commits_since", return_value=1), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.ask_judge") as judge, \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            code = agent_run.contract_loop({}, "cid", steps, lambda: next(holds), Notes())
+        self.assertFalse(judge.called, "no judge in the contract-only loop")
+        return code
+
+    RED = DriveContractTest.RED
+    GREEN = DriveContractTest.GREEN
+
+    def test_red_twice_then_green_is_two_continuations_and_exit_0(self):
+        self.assertEqual(self.loop([self.RED, self.RED, self.GREEN]), 0)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_red_three_times_spends_the_continuations_and_still_exits_0(self):
+        self.assertEqual(self.loop([self.RED] * 3), 0)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_there_is_no_stall_rule(self):
+        self.assertEqual(self.loop([self.GREEN]), 0)
+
+    def test_a_failed_conversation_exits_as_it_did(self):
+        self.assertEqual(self.loop([], polls=[1]), 1)
