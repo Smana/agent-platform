@@ -24,6 +24,11 @@ Sources: `docs/api.md` (the `:8080` checks), `internal/policy/policy.go` (`Group
 A table, one row per room you can read. Rooms that need you come first, then the most recently
 active, then by id. The task cell links to the room page.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/rooms-dark.png">
+  <img alt="The room list: six factory rooms, the first with one item that needs you, with their repository, phase, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
+</picture>
+
 | Column | Shows |
 |---|---|
 | Needs you | A count of what waits for you: approvals you could decide, a task held on a room you drive or own, a PR waiting for your merge. Empty when nothing does |
@@ -57,6 +62,11 @@ for this broker ([roomctl](roomctl.md)).
 
 ## The room page
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/room-dark.png">
+  <img alt="A room page: the title strip with its chips and waiting line, the agent's latest claim, the conversation with a message and folded tool calls, the dock" src="assets/room-light.png" width="800">
+</picture>
+
 From the top:
 
 | Part | Shows |
@@ -68,6 +78,14 @@ From the top:
 | Raw events | A fold, closed by default, with every event as the broker wrote it. It is always as current as the conversation |
 | Controls | Named groups, each shown only to the standings that use it: **Run** (start a run as a role; a PR URL for a reviewer, egress profiles under `advanced`), **Driver** (who holds the token; give, interrupt, request, take with a reason), **Queued for the next run** (remove; `steer now` for the driver), and **Room**, a fold for owners (members, invite, how to stop the task with `factory/stop` on its issue, close) |
 | Dock | Pinned at the foot: the composer (the text, `Deliver to` — post to the room, queue for the next run's brief, or steer the running agent — and Send), the page's notices, the theme button and the connection |
+
+Scrolling a finished factory room, from the strip down through its turns and tool calls:
+
+<img alt="Scrolling down a factory room's conversation: the triager's scope, folded tool calls with their status, state changes folded into turns" src="assets/web-ui/room-scroll.gif" width="800">
+
+On a phone the strip stacks above the conversation:
+
+<img alt="The same room on a phone, light theme" src="assets/web-ui/room-phone-light.png" width="260"> <img alt="The same room on a phone, dark theme" src="assets/web-ui/room-phone-dark.png" width="260">
 
 Destructive acts ask first: **interrupt**, **take**, **steer now** and **close room** turn into
 `confirm: …` beside a cancel, and go back after 10 s, on cancel, or when the control is hidden.
