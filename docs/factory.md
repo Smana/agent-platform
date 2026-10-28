@@ -792,6 +792,7 @@ classes:
     monitor:
       oracleRuns: 2          # scheduled detector runs that must not report the merged targets; needs an oracle
       flux: {source: flux-system/flux-system, within: 15m}   # a Flux GitRepository (an OCIRepository is not read), and how long after it first shows the merge
+      verification: {within: 6h}   # optional: wait for an internal principal's verdict on the fix (see below)
       followUpWindow: 72h    # how long later merges are read for a fix of this one; the verdict is final after it
 merge:
   awaitingCIFor: 6h          # bound AwaitingCI on a wait verdict; 0, the default, is no bound
@@ -812,7 +813,16 @@ Without it every read is refused and the signal ends `inconclusive`. `merge.brea
 | Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
 | Detector (oracle) | Each scheduled run of the class's oracle workflow after the merge, oldest first, through the probe's readers | A run reports gone a target this merge wrote | `oracleRuns` clean runs. A run that failed or whose findings are refused: `inconclusive` |
 | Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready from the blame start (the source's fetch of the merge commit, or the merge's own time when the source was first seen already at a later commit) until `within` after the source was first seen holding it | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
+| RunLore's verification | `status.monitor.verification`, recorded by [`POST /v1/tasks/{task}/verification`](api.md#post-v1taskstaskverification). Only for a merge whose `spec.origin` names a task of an internal principal with `verification: true` | `persisting` | `resolved`. No verdict `within` after the merge: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
+
+The verification signal is `monitor.verified`. `within` (1 minute up to `followUpWindow`) counts from the
+merge. `persisting` is a `regression` at once: the factory labels the pull request, comments, counts it
+for the breaker, and files one follow-up issue, labelled `factory/proposed`, titled
+`RunLore: the fix in #<pr> did not hold (<alert>)` (recorded in `status.monitor.followUpIssue`, never
+twice). It names the pull request, the alert and the origin room; the evidence stays on the origin
+task. `agent_factory_monitor_verifications_total{class, verdict}` counts the verdicts read
+(`resolved`, `persisting`, `none`).
 
 The detector signal reads each scheduled run after the merge (or a maintainer's `workflow_dispatch`),
 oldest first: one that reports gone a target this merge wrote (same file, and the snapshot it wrote

@@ -376,6 +376,11 @@ requests under `principal="system:<name>"`. The `factory/publish` label must exi
 repository the factory serves, as `factory/ready` does; the factory removes it once it has answered.
 An issue the factory filed from a proposal carries no label: the maintainer applies `factory/ready`.
 
+**RunLore's verdict.** Off until an internal principal has `verification: true` and a class declares
+`monitor.verification.within`; the route is a `404` before. The `runlore:` block (the old
+`/intake/runlore`) is optional: leave it out and the intake and its port are not started. Watch
+`agent_factory_monitor_verifications_total{verdict="none"}`: a verdict that never arrives.
+
 **Roll the broker first.** The broker decodes task facts strictly: the factory posts `origin` in
 them only for a fix started from a published issue, and an older broker refuses such facts. Upgrade
 the broker, then the factory.

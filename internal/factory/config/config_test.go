@@ -448,7 +448,6 @@ func TestBadConfigsFail(t *testing.T) {
 		// FA-8 §1: every replica serves the RunLore intake, so its block is as required as api's.
 		"no runlore listen":       {`listen: ":8080"`, `listen: ''`, "runlore.listen is required"},
 		"no runlore token file":   {"tokenFile: /etc/agent-factory-intake/token", "tokenFile: ''", "runlore.tokenFile is required"},
-		"runlore without a block": {"runlore:\n  listen: \":8080\"\n  tokenFile: /etc/agent-factory-intake/token\n  minConfidence: 0.75\n  dailyCap: 5\n", "", "runlore.listen is required"},
 		"runlore confidence high": {"minConfidence: 0.75", "minConfidence: 1.25", "runlore.minConfidence must be in (0, 1]"},
 		"runlore confidence zero": {"minConfidence: 0.75", "minConfidence: 0", "runlore.minConfidence must be in (0, 1]"},
 		"runlore cap negative":    {"dailyCap: 5", "dailyCap: -1", "runlore.dailyCap must be 0 or more"},
@@ -634,5 +633,21 @@ func TestMaxFollowUpsParses(t *testing.T) {
 	}
 	if c, err = Parse([]byte(good)); err != nil || c.RepositoryFor("Smana/cloud-native-ref").Merge.Breaker.MaxFollowUps != 0 {
 		t.Fatalf("absent: %v", err)
+	}
+}
+
+// R14: a config with no runlore block parses, the intake is off, and RunLoreRepository still
+// answers the primary repository.
+func TestRunLoreBlockIsOptional(t *testing.T) {
+	block := "runlore:\n  listen: \":8080\"\n  tokenFile: /etc/agent-factory-intake/token\n  minConfidence: 0.75\n  dailyCap: 5\n"
+	if !strings.Contains(good, block) {
+		t.Fatal("the fixture's runlore block moved")
+	}
+	c, err := Parse([]byte(strings.Replace(good, block, "", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RunLore.Listen != "" || c.RunLoreRepository() != c.Primary() {
+		t.Fatalf("%+v %s", c.RunLore, c.RunLoreRepository())
 	}
 }
