@@ -280,6 +280,17 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(got, {"docs/ops/factory-faq.md": "unmakeable", "website/content/page.md": "unmakeable",
                                "scripts/check.sh": "required", "docs/old.md": "ignored", "scripts/keep.sh": "ignored"})
 
+    def test_a_forbid_on_another_line_makes_a_required_link_target_unmakeable(self):
+        got = dict(lp.named_paths(
+            "- website/content/user-guide.md gains one link to docs/rooms-faq.md under the troubleshooting table.\n"
+            "- `task links` passes with that link in place.\n"
+            "- docs/rooms-faq.md is not created, and no other file changes.\n", {"docs", "website"}))
+        self.assertEqual(got["docs/rooms-faq.md"], "unmakeable")
+        self.assertEqual(got["website/content/user-guide.md"], "required")
+        # a forbid with nothing that needs the path stays required
+        got = dict(lp.named_paths("- docs/a.md is not created\n- docs/a.md is listed\n", {"docs"}))
+        self.assertEqual(got["docs/a.md"], "required")
+
     def paths(self, *facts):
         return lp.judge_input("task", "abc", [], "", [DRILL_E_RUNS[1]], list(facts))
 
