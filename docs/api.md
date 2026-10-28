@@ -675,7 +675,7 @@ ids and closed codes only: never room text, a title, a branch or a message.
 | `room.waiting_for_human` | The task enters `AwaitingHuman` or `Escalated`, or an approval is requested | `reason` |
 | `room.pr_opened` | The first pull request of the task is known | `pr` |
 | `room.verdict_posted` | GitHub accepted the verdict comment | `pr` |
-| `room.merged` | The task enters `Merged` | `pr` |
+| `room.merged` | The task enters `Merged`, or its facts carry reason `merged` or `merged_verified` (a human merge), once | `pr` |
 | `room.reverted` | The task enters `Reverted` | `pr` |
 | `room.budget_reached` | A task phase or a run end names a budget reason | `limit` |
 | `room.ended` | The task's first coarse end: `done`, `failed` or `stopped` | `state` |

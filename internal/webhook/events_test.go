@@ -182,3 +182,42 @@ func TestEveryEventOfAnOriginRoomCarriesIt(t *testing.T) {
 		}
 	}
 }
+
+// A human merge never enters Merged: Done to Done with reason merged still says room.merged, once.
+func TestHumanMergeEmitsRoomMergedOnce(t *testing.T) {
+	pr := &envelope.PRFact{Number: 9}
+	var tr Tracker
+	types := func(evs []Event) []string {
+		var s []string
+		for _, e := range evs {
+			s = append(s, e.Type)
+		}
+		return s
+	}
+	if got := tr.Events("room0001", "r", fact(1, envelope.TaskFacts{Phase: "Done", Reason: "proposal_ready", Origin: "abcdefgh", PR: pr})); slices.Contains(types(got), "room.merged") {
+		t.Fatalf("no merge yet: %+v", got)
+	}
+	got := tr.Events("room0001", "r", fact(2, envelope.TaskFacts{Phase: "Done", Reason: "merged", Origin: "abcdefgh", PR: pr}))
+	if len(got) != 1 || got[0].Type != "room.merged" || got[0].PR != 9 || got[0].Origin != "abcdefgh" {
+		t.Fatalf("want one room.merged pr 9 with origin: %+v", got)
+	}
+	if got := tr.Events("room0001", "r", fact(3, envelope.TaskFacts{Phase: "Done", Reason: "merged", Origin: "abcdefgh", PR: pr})); len(got) != 0 {
+		t.Fatalf("a second merged fact emits nothing: %+v", got)
+	}
+	// the normal path, then a merged reason, is still one event
+	var n Tracker
+	var all []Event
+	for _, ev := range []envelope.Event{
+		fact(1, envelope.TaskFacts{Phase: "Merged", PR: pr}),
+		fact(2, envelope.TaskFacts{Phase: "Done", Reason: "merged_verified", PR: pr}),
+	} {
+		all = append(all, n.Events("room0001", "r", ev)...)
+	}
+	if c := slices.Index(types(all), "room.merged"); c < 0 || slices.Index(types(all)[c+1:], "room.merged") >= 0 {
+		t.Fatalf("Merged then merged_verified is one room.merged: %v", types(all))
+	}
+	var d Tracker
+	if got := d.Events("room0001", "r", fact(1, envelope.TaskFacts{Phase: "Done", Reason: "closed", PR: pr})); slices.Contains(types(got), "room.merged") {
+		t.Fatalf("a Done without a merged reason emits nothing: %+v", got)
+	}
+}
