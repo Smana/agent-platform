@@ -16,7 +16,8 @@ const brand = [
   "favicon/favicon-32.png",
   "favicon/apple-touch-icon.png",
 ];
-const fonts = ["fonts/space-grotesk-latin-500-normal.woff2", "fonts/space-grotesk-latin-700-normal.woff2", "fonts/LICENSE"];
+const faces = [400, 500, 700].map((w) => `fonts/space-grotesk-latin-${w}-normal.woff2`);
+const fonts = [...faces, "fonts/LICENSE"];
 
 function files(dir: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf8" })
@@ -28,10 +29,10 @@ function files(dir: string): string[] {
 const read = (...p: string[]) => readFileSync(join(...p));
 
 describe("static assets", () => {
-  it("ships only the nine required source assets byte-for-byte", () => {
+  it("ships only the ten required source assets byte-for-byte", () => {
     expect(files(src)).toEqual([...brand, ...fonts].sort());
     for (const f of brand) expect(read(src, f).equals(read(repo, "docs", "assets", "brand", f)), f).toBe(true);
-    for (const f of fonts.slice(0, 2)) expect(read(src, f).subarray(0, 4).toString("latin1"), f).toBe("wOF2");
+    for (const f of faces) expect(read(src, f).subarray(0, 4).toString("latin1"), f).toBe("wOF2");
     expect(read(src, "fonts/LICENSE").toString()).toContain("SIL Open Font License, Version 1.1");
   });
 
@@ -55,7 +56,7 @@ describe("static assets", () => {
       const html = read(web, file).toString();
       expect(html, file).toContain(`<title>${title}</title>`);
       expect(html, file).toContain(`<link rel="stylesheet" href="${css}">`);
-      for (const f of ["favicon/favicon.svg", "favicon/favicon-32.png", "favicon/favicon-16.png", "favicon/apple-touch-icon.png", ...fonts.slice(0, 2)]) {
+      for (const f of ["favicon/favicon.svg", "favicon/favicon-32.png", "favicon/favicon-16.png", "favicon/apple-touch-icon.png", ...faces]) {
         expect(html, `${file}: ${f}`).toContain(`href="${base}${f}"`);
       }
       const hrefs = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]);
@@ -67,7 +68,7 @@ describe("static assets", () => {
     const css = read(web, "src", "app.css").toString();
     expect(css).not.toMatch(/@import|https?:\/\//);
     const urls = [...css.matchAll(/url\("([^"]+)"\)/g)].map((m) => m[1]);
-    expect(urls).toEqual(["/assets/fonts/space-grotesk-latin-500-normal.woff2", "/assets/fonts/space-grotesk-latin-700-normal.woff2"]);
+    expect(urls).toEqual(faces.map((f) => `/assets/${f}`));
     for (const { file } of entries) {
       const html = read(web, file).toString();
       expect(html, file).not.toMatch(/(?:href|src)="(?:https?:)?\/\//);

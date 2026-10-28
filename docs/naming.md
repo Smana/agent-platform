@@ -118,4 +118,4 @@ secondary text on Ink only, never on a light theme.
 
 ### Type
 
-Wordmark: Space Grotesk 700, lowercase `maku`, tracking −3%. Body: Space Grotesk 500 or system sans.
+Wordmark: Space Grotesk 700, lowercase `maku`, tracking −3%. Body: Space Grotesk 400 for message prose, 500 for the UI chrome, or system sans.

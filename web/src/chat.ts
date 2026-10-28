@@ -10,6 +10,7 @@
 // The same untrusted-text rules as render.ts hold: DOM nodes and textContent only.
 
 import type { RoomEvent } from "./conn";
+import { Clips } from "./clip";
 import { deliveryChip, handoffHead, markdown, stateHead } from "./render";
 import { icon, type IconName } from "./icons";
 import { maxRows } from "./limits";
@@ -64,8 +65,8 @@ function whoText(ev: RoomEvent): string {
   return ev.actor.role ? `${ev.actor.role} · ${idTail(ev.actor.id)}` : ev.actor.id;
 }
 
-// bubble renders a message as the agent's or human's prose.
-function bubble(ev: RoomEvent, you?: string): HTMLElement {
+// bubble renders a message as the agent's or human's prose, folded when long (clip.ts).
+function bubble(ev: RoomEvent, clips: Clips, you?: string): HTMLElement {
   const p = ev.payload ?? {};
   const row = el("article", `msg from-${cls(ev.actor.kind)}`);
   row.dataset.seq = String(ev.seq);
@@ -78,8 +79,10 @@ function bubble(ev: RoomEvent, you?: string): HTMLElement {
   }
   head.append(time(ev.ts));
   const body = el("div", "bubble");
-  body.append(markdown(String(p.text ?? "")));
+  const text = markdown(String(p.text ?? ""));
+  body.append(text);
   row.append(head, body);
+  clips.attach(body, text, ev.seq);
   const r = redacted(ev);
   if (r) row.append(r);
   return row;
@@ -392,12 +395,16 @@ export class ChatView {
   // A decision whose call the page never saw (the tail started between them)
   // renders as a marker; if the call still arrives, the marker folds into it.
   private pending = new Map<string, RoomEvent[]>();
+  private clips: Clips;
 
   // fork, when set, gives every message and handoff a "fork here" at its seq. you, the
   // viewer's principal (or a getter for it, known once the state frame lands), names
-  // the viewer's own rows "you".
+  // the viewer's own rows "you". overflows measures a message's body for its fold
+  // (clip.ts): the browser's layout, unless a test passes its own.
   constructor(private el: HTMLElement, private cap = maxRows, private fork?: (seq: number) => void,
-    private you?: string | (() => string | undefined)) {}
+    private you?: string | (() => string | undefined), overflows?: (body: HTMLElement) => boolean) {
+    this.clips = new Clips(overflows);
+  }
 
   private viewer(): string | undefined { return typeof this.you === "function" ? this.you() : this.you; }
 
@@ -415,7 +422,7 @@ export class ChatView {
     switch (ev.type) {
       case "message":
         // An agent's message opens a step; anyone else's closes the one open.
-        this.put(ev.seq, this.tools(bubble(ev, you), ev.seq), ev.actor.kind === "agent" ? "owner" : "break");
+        this.put(ev.seq, this.tools(bubble(ev, this.clips, you), ev.seq), ev.actor.kind === "agent" ? "owner" : "break");
         break;
       case "tool_call":
         this.merge(String(p.callId ?? `seq${ev.seq}`), ev, "call");
@@ -710,6 +717,7 @@ export class ChatView {
       const s = this.seqs[0];
       const gone = this.rows.get(s)!;
       if (gone.dataset.callId) this.calls.delete(gone.dataset.callId);
+      this.clips.forget(s);
       this.drop(s);
     }
   }
