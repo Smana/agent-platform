@@ -181,7 +181,7 @@ person.
 
 ### When the factory waits for you
 
-The room page and `roomctl status` show the reason and the next step below; the factory's issue
+The room page and `maku status` show the reason and the next step below; the factory's issue
 comments use the same words.
 
 **Queued:** the next run waits. Next step, unless the row says otherwise: nothing to do, the run
@@ -333,7 +333,7 @@ Each comment carries a hidden marker and is posted at least once and never twice
 written with the transition that caused it. Comments hold the factory's own words and ids, never
 text a user wrote. The task's room gets the issue snapshot as its first `task_state` message, then
 the task's facts (phase, reason, current run, the run history with each run's outcome, end and
-dollars, token budget, dollar spend, issue and pull request), which the room page and `roomctl status`
+dollars, token budget, dollar spend, issue and pull request), which the room page and `maku status`
 show. The history keeps the last 20 runs, oldest first. A run's outcome is `succeeded`, `failed`,
 `budget_exhausted`, `revoked`, `lost` (a disruption, a lost pod or a vanished claim) or `ended` (the
 task ended or escalated with the run unfinished); it is empty while the run goes on. A run's dollars
@@ -548,7 +548,7 @@ flowchart LR
 | Key | Holds |
 |---|---|
 | `name` | A DNS label. The principal is `system:<name>`, the ledger key and `requestedBy`. Never `factory`, `runlore`, `scheduler`, `room-broker` or `policy`, nor a name in `api.systemPrincipals`; unique |
-| `clientIDFile` | The file holding the principal's ZITADEL client id, read at each use (the host's sync rewrites it when ids change). It must name a **machine (client-credentials) client**: every subject of that client becomes `system:<name>`, so a client with human subjects would admit them all as the principal. Unique across entries, and never the web UI's or `roomctl`'s client |
+| `clientIDFile` | The file holding the principal's ZITADEL client id, read at each use (the host's sync rewrites it when ids change). It must name a **machine (client-credentials) client**: every subject of that client becomes `system:<name>`, so a client with human subjects would admit them all as the principal. Unique across entries, and never the web UI's or `maku`'s client |
 | `sponsor` | A GitHub login, the maintainer accountable for the principal. It must be in `maintainers` of every repository in `repositories` |
 | `repositories` | The listed repositories the principal may use, spelled as listed; at least one |
 | `dailyUSD` | The principal's day, in (0, `budgets.factoryDailyUSD`] |
@@ -1310,7 +1310,7 @@ system's run request. Source: `internal/factory/api/server.go`.
 
 | | |
 |---|---|
-| Auth | `Authorization: Bearer`: a human's token from `api.humanIssuer`, issued to one of the `api.clientIDFiles` clients (the rooms UI's proxy or `roomctl`), and the human in one of the two groups `api.groups` names; or a token from `api.systemIssuer` for audience `agent-factory`, its subject in `api.systemPrincipals`. Internal data and the `triager` role are for admins only |
+| Auth | `Authorization: Bearer`: a human's token from `api.humanIssuer`, issued to one of the `api.clientIDFiles` clients (the rooms UI's proxy or the CLI's), and the human in one of the two groups `api.groups` names; or a token from `api.systemIssuer` for audience `agent-factory`, its subject in `api.systemPrincipals`. Internal data and the `triager` role are for admins only |
 | Body | `role`, `repository` (in `api.repositories`, the listed repositories, spelled as listed), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
 | `Idempotency-Key` | The same key from the same caller within 24 h answers the first `201` with `Idempotent-Replayed: true` and creates nothing. Same key, different body: `422 idempotency_key_reused`. A key whose run another caller owns: `409 idempotency_key_collision`. Over 255 bytes: `400 bad_idempotency_key`. Two first requests with one key either side of 00:00 UTC make two runs |
 | `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |

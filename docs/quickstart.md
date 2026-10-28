@@ -1,13 +1,13 @@
 # Quickstart
 
 **Two commands build a local cluster and run a sandboxed agent in a room, on a Linux machine with Docker,
-without cloud-native-ref.** Until a release ships `roomctl run`, `task quickstart` needs `ROOMCTL=<path>`
-or `AP_VERSION=<a release that has it>` (see the Images row below). Read [what differs from production](#what-differs-from-production) before you
+without cloud-native-ref.** It needs v0.30.0 or later: the `maku-*` images and the `maku` CLI exist only
+from that release, so an older `AP_VERSION` fails at preflight (see the Images row below). Read [what differs from production](#what-differs-from-production) before you
 trust it with anything: the guarantees the README promises are not all there.
 
 ```bash
 export MODEL_API_KEY=… GITHUB_TOKEN=… REPO=owner/throwaway
-task quickstart                 # kind + Cilium + gVisor + cert-manager + CNPG + the chart + roomctl
+task quickstart                 # kind + Cilium + gVisor + cert-manager + CNPG + the chart + maku
 ```
 
 ## Prerequisites
@@ -17,10 +17,10 @@ task quickstart                 # kind + Cilium + gVisor + cert-manager + CNPG +
 | Platform | Linux with Docker (and the `buildx` plugin). `up.sh` stops on any other system and says why: gVisor in kind and a port-forward to a loopback-only listener are proven on Linux only (spike, 2026-10-27). Podman is untested |
 | kubectl | Within one minor of the kind node (1.36-1.38 for 1.37): `up.sh` stops otherwise. `mise.toml` pins one: `mise install kubectl` |
 | `LOCAL_PORT` | The port you forward to the broker, default 8080. The broker's `publicURL` follows it and it answers that port only, as `localhost`, `127.0.0.1` or `[::1]` |
-| Tools | `docker`, `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `yq` (mikefarah v4); `sha256sum` (roomctl), `sha512sum`, `bzip2` and `tar` (gVisor). `up.sh` stops at the first one missing |
+| Tools | `docker`, `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `yq` (mikefarah v4); `sha256sum` (maku), `sha512sum`, `bzip2` and `tar` (gVisor). `up.sh` stops at the first one missing |
 | `MODEL_API_KEY` | Anthropic by default; `MODEL` and `MODEL_BASE_URL` select any OpenAI-compatible endpoint, whose host joins the egress profile. For an in-cluster model (`http://<svc>.<ns>.svc.<domain>:<port>`), the port must equal the Service's `targetPort`, and the run may then reach **every pod in the model's namespace on that port**: the rule selects the namespace, not the Service. Run the model in a namespace of its own |
 | `GITHUB_TOKEN`, `REPO` | A fine-grained PAT with Contents read/write on **one throwaway repository**, and that repository as `owner/name`. The repository needs a `main` branch with at least one commit |
-| Images | The latest `Smana/maku` release. From a `main` checkout, set `AP_VERSION` to a release whose images match the chart: until a release that contains the `agent-platform` chart and the run-controller image ships, the default fails at preflight. The GitHub API is rate-limited (60 requests/hour unauthenticated). `roomctl` comes from the same release (checksum-verified into `.quickstart/bin/`). `roomctl run` ships from the release after this change: until then set `AP_VERSION` to one that has it, or `ROOMCTL=<path>` to a build of this checkout |
+| Images | The latest `Smana/maku` release. From a `main` checkout, set `AP_VERSION` to a release whose images match the chart: the `maku-*` images it pulls exist from v0.30.0 on, so any `AP_VERSION` before it fails at preflight. The GitHub API is rate-limited (60 requests/hour unauthenticated). `maku` comes from the same release (checksum-verified into `.quickstart/bin/`). `ROOMCTL=<path>` uses a `maku` build of this checkout instead |
 
 ```mermaid
 flowchart TD
@@ -28,7 +28,7 @@ flowchart TD
   K --> C["Cilium<br/>kube-proxy replacement"] --> M["cert-manager<br/>self-signed CA"]
   M --> N["CNPG<br/>one-instance rooms database"] --> S["Secrets<br/>agent-model, agent-git"]
   S --> H["helm install maku<br/>values-quickstart.yaml"]
-  H --> G["gVisor probe<br/>runsc, DNS, broker :8443"] --> F["print the port-forward and roomctl commands"] --> R["roomctl run<br/>room, start_run, your kubectl applies the claim"] --> W["roomctl follows the room to the run's end"]
+  H --> G["gVisor probe<br/>runsc, DNS, broker :8443"] --> F["print the port-forward and maku commands"] --> R["maku run<br/>room, start_run, your kubectl applies the claim"] --> W["maku follows the room to the run's end"]
 ```
 
 The script is idempotent and pins every version it installs (`hack/quickstart/versions.env`); safe to
@@ -44,25 +44,25 @@ export KUBECONFIG=$PWD/.quickstart/kubeconfig
 kubectl -n maku port-forward deploy/room-broker 8080:8080
 ```
 
-Then, in the first (`XDG_CONFIG_HOME` keeps roomctl's quickstart config apart from any other):
+Then, in the first (`XDG_CONFIG_HOME` keeps maku's quickstart config apart from any other):
 
 ```bash
 export KUBECONFIG=$PWD/.quickstart/kubeconfig XDG_CONFIG_HOME=$PWD/.quickstart/config PATH=$PWD/.quickstart/bin:$PATH
-roomctl configure --url http://localhost:8080
-roomctl run --repo owner/throwaway --task 'Fix a typo in the README'
+maku configure --url http://localhost:8080
+maku run --repo owner/throwaway --task 'Fix a typo in the README'
 ```
 
-`roomctl run` creates a room, queues your task for the run's brief, starts the run, applies the claim the
+`maku run` creates a room, queues your task for the run's brief, starts the run, applies the claim the
 broker rendered with your own `kubectl`, and follows the room until the run ends: exit 0 when it
 `Succeeded`. It stops at the first step that fails and names it. It is the quickstart's command only: on a
 platform install the factory starts runs. The room page is **http://localhost:8080**.
 
 | Local mode | Consequence |
 |---|---|
-| The broker answers `publicURL`'s port only | Forward that port (`LOCAL_PORT`); `localhost`, `127.0.0.1` and `[::1]` all work, any other host or port answers `403`; `roomctl configure` refuses a mismatched port and prints the fix |
+| The broker answers `publicURL`'s port only | Forward that port (`LOCAL_PORT`); `localhost`, `127.0.0.1` and `[::1]` all work, any other host or port answers `403`; `maku configure` refuses a mismatched port and prints the fix |
 | One user, `human:local`, admin and member | No login; the port-forward is the only way in |
-| The room page's Start run shows the claim | It does not apply it: `roomctl run` does |
-| `XDG_CONFIG_HOME=$PWD/.quickstart/config` | Keeps the quickstart's roomctl config apart from a production one |
+| The room page's Start run shows the claim | It does not apply it: `maku run` does |
+| `XDG_CONFIG_HOME=$PWD/.quickstart/config` | Keeps the quickstart's maku config apart from a production one |
 
 ## Tear down
 
@@ -85,7 +85,7 @@ real thing; the rest is scaled down.
 
 Two DSNs, two roles, and the init container is the one that owns the schema: `db.sh` creates
 `rooms-owner-dsn` (`rooms_owner`) and `rooms-broker-dsn` (`rooms_broker`). The chart renders the
-first as the `migrate` init container's `ROOMS_MIGRATION_DATABASE_URL` (`room-broker migrate` creates
+first as the `migrate` init container's `ROOMS_MIGRATION_DATABASE_URL` (`maku-broker migrate` creates
 every object as `rooms_owner`); the broker itself reads the second as `ROOMS_DATABASE_URL`, and its
 role holds `SELECT, INSERT` on `events` only, so `serve` cannot alter the schema or delete history.
 
@@ -100,13 +100,13 @@ role holds `SELECT, INSERT` on `events` only, so `serve` cannot alter the schema
 | This machine cannot run gVisor | `ALLOW_UNSANDBOXED=1 task quickstart` runs agents under the default runtime. The environment is then **not sandboxed**: the agent's code runs as a plain container with your PAT and API key. Use it only on a machine you trust with that code. The controller sets the run's `Unsandboxed` condition and its room shows a `Not sandboxed` banner. Any value other than `1` stops `up.sh`. |
 | `up.sh` stops at "gVisor probe" | It started a run-shaped pod under `runsc` and one check failed, named in the output: `dmesg` (runsc is not the runtime), `dns` (the broker's name does not resolve) or `tcp` (the ClusterIP is unreachable: Cilium `socketLB.hostNamespaceOnly`, or a network policy). Fix the cause, or `ALLOW_UNSANDBOXED=1` to skip the probe |
 | `up.sh` stops at "kubectl ... cannot drive" | Your kubectl is more than one minor away from the kind node: `mise install kubectl`, or install a matching one |
-| A browser or roomctl gets 403 | You forwarded another port than `publicURL`'s: forward `LOCAL_PORT`, or re-run `up.sh` with `LOCAL_PORT=<your port>` |
-| `roomctl run` stops at `claim` | kubectl's own error is printed above it: usually `KUBECONFIG` is not `.quickstart/kubeconfig` |
+| A browser or maku gets 403 | You forwarded another port than `publicURL`'s: forward `LOCAL_PORT`, or re-run `up.sh` with `LOCAL_PORT=<your port>` |
+| `maku run` stops at `claim` | kubectl's own error is printed above it: usually `KUBECONFIG` is not `.quickstart/kubeconfig` |
 | `task quickstart:check` | Offline drift check of the scripts and their helpers against the chart; no cluster needed |
 
 ## CI: `quickstart-e2e`
 
-The job runs the whole path against a stub model: `up.sh`, a port-forward, `curl` checks of local mode through it, then `roomctl configure` and `roomctl run` to `Succeeded`, and a harness event in the room's log. It needs two Actions secrets and skips without
+The job runs the whole path against a stub model: `up.sh`, a port-forward, `curl` checks of local mode through it, then `maku configure` and `maku run` to `Succeeded`, and a harness event in the room's log. It needs two Actions secrets and skips without
 them (fork PRs), with a warning and a step summary saying nothing ran: a green skip proves nothing.
 
 | Secret | Value |

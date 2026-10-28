@@ -441,7 +441,7 @@ func (s Setup) print(argv []string, snippet, path, skillDir, warn string) error 
 }
 
 // LegacyEntry is an agent's factory MCP entry that still runs roomctl. `maku setup` cannot replace
-// it, since the agent's CLI refuses a duplicate name, and it breaks once roomctl is gone.
+// it, since the agent's CLI refuses a duplicate name, and it breaks once the old binary is gone.
 type LegacyEntry struct {
 	Agent   Agent
 	Project bool
@@ -489,7 +489,7 @@ func LegacyEntries(home, dir string) []LegacyEntry {
 }
 
 // legacyCommand reports whether the agent config at path has a factory entry whose command is
-// roomctl, in any of the shapes setup writes: mcpServers.factory.command (claude, gemini, cursor,
+// legacyName, in any of the shapes setup writes: mcpServers.factory.command (claude, gemini, cursor,
 // copilot), mcp.servers.factory.command as an array (opencode), or [mcp_servers.factory] (codex).
 // A file it cannot read or parse (JSON with comments) is not one.
 func legacyCommand(path string) bool {

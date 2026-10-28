@@ -38,7 +38,7 @@ the broker assigns. The rest of this page names the parts.
 | **Kill switch** | The stop ConfigMap `agent-factory-stop` or the control issue's `factory/stop`: intake pauses, every run is revoked | `internal/factory/killswitch` |
 | **Narration** | The factory's comments on the issue and PR, at least once each, from an outbox | `internal/factory/narrate` |
 | **Needs you** | What waits for a viewer: an approval they may decide, a hold their driving causes, a PR waiting for their merge | `needsYou` in the summary |
-| **Summary** | The deterministic fold of a room's log that the room page and `roomctl status` render (`summary/v1`) | `internal/summary` |
+| **Summary** | The deterministic fold of a room's log that the room page and `maku status` render (`summary/v1`) | `internal/summary` |
 | **Progress note** | A run's one-line claim about where it is, at most 280 characters, one a minute | `room_progress` ([API](api.md)); a `message{kind: progress}` event |
 
 ### Rooms and runs
@@ -48,8 +48,8 @@ the broker assigns. The rest of this page names the parts.
 | **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by the factory, the broker or the owner, never committed to Git | `Room` CR (`agents.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id (8 lowercase base32 characters; [reference](#reference-the-room-crd)); its log in Postgres |
 | **Run** | One agent, one role, one task, one branch, with a deadline. It joins a room by naming it in `spec.roomRef`. One run is `Running` per room at a time | `AgentRun` claim (`cloud.ogenki.io`) in `agents` |
 | **Harness** | The agent loop inside the sandbox: the OpenHands agent-server on `127.0.0.1:8000` | The run's pod |
-| **Bridge** | `room-bridge`, a native sidecar in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` |
-| **Broker** | `room-broker`, the stateless service that owns rooms: it authenticates writers, redacts, sequences and stores events, and serves them | `agent-system` |
+| **Bridge** | `maku-bridge`, a native sidecar (container `room-bridge`) in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` |
+| **Broker** | `maku-broker`, the stateless service (Deployment and Service `room-broker`, an identity that keeps its pre-maku name, see [naming](naming.md#technical-names)) that owns rooms: it authenticates writers, redacts, sequences and stores events, and serves them | `agent-system` |
 | **Participant** | Anyone in a room: a human, a run, or a system component, each named by its principal (next row). Joining and leaving are `participant` events | The log |
 | **Principal** | A canonical identity: `agent:<runId>`, `human:<zitadel sub>` or `system:<component>`. The broker stamps it on every event from the authenticated credential | Every event's `actor.id` |
 | **C2 id** | 8 characters of lowercase unpadded base32, `[a-z2-7]{8}`. Room, run and task ids share the format, so `agent/<id>` branches match the merge gate | Names of rooms and runs |
@@ -61,7 +61,7 @@ the broker assigns. The rest of this page names the parts.
 | **Verdict** | A reviewer's or tester's `approve` or `changes`, recorded as `message{kind: review_verdict}`. The broker also posts it on the pull request as one comment | The log; the PR |
 | **Brief** | The fenced, bounded text the next run starts from: the last handoff and verdict, plus the queued messages, quoted as untrusted data | Built by the broker (`internal/brief`) |
 | **Approval** | A human decision on a pending harness action. Oversight, not a security boundary: a run's capabilities are fixed at creation. The first valid decision wins | `approval_requested`, `approval_decided` |
-| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it, with the messages still queued at that point. A fork asks by default: its owner gets `approvals.profile: attended` (the source's `ttl`, `fourEyes` and non-loosening overrides carry over), even from an unattended factory room; `roomctl fork --approvals unattended` keeps an unattended source's policy, and a fork is never weaker than its source | New `Room` annotated `agents.ogenki.io/forked-from: <room>@<seq>`; `state_changed{forked_from}` |
+| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it, with the messages still queued at that point. A fork asks by default: its owner gets `approvals.profile: attended` (the source's `ttl`, `fourEyes` and non-loosening overrides carry over), even from an unattended factory room; `maku fork --approvals unattended` keeps an unattended source's policy, and a fork is never weaker than its source | New `Room` annotated `agents.ogenki.io/forked-from: <room>@<seq>`; `state_changed{forked_from}` |
 | **Step** | An agent's message and the tool calls it ran next, shown as one collapsible line on the room page | The room page; built from `message`, `tool_call` and `tool_result` events |
 | **Call line** | One tool call in a step: its command, its status, and its output behind the toggle | The room page; one `tool_call` and its `tool_result` |
 
@@ -74,7 +74,7 @@ the broker assigns. The rest of this page names the parts.
 | **Origin** | Who produced an event: `harness` (mirrored from a run), `client` (a human, a system caller, a room tool) or `broker` | Every event |
 | **Idempotency key** | `(roomId, originClient, originSeq)`: a writer's own sequence number. A replayed key returns the stored event and appends nothing | `events` unique index |
 | **Seal** | The last event of a room. After it, nothing can append. A room seals when it closes or fills up (100 000 events or 256 MiB), and sealing starts its retention clock | `rooms.sealed`, `closed_at` |
-| **Retention** | How long a closed room's log is kept: `spec.retention`, `<n>d`, default `90d`. A daily job (`room-broker retention`) deletes expired sealed rooms | `rooms.retention` |
+| **Retention** | How long a closed room's log is kept: `spec.retention`, `<n>d`, default `90d`. A daily job (`maku-broker retention`) deletes expired sealed rooms | `rooms.retention` |
 | **Bridge lease** | Which run's bridge holds the room. A second live run's bridge is refused `409 room_busy`. The lease also fences writes: a displaced bridge cannot append | `rooms.bridge_run` (`bridge_seen_at` is no longer written; a later migration drops it) |
 | **Data class** | `public` or `internal`: which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary. Fixed at creation | `Room.spec.dataClass` |
 | **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker |
@@ -107,7 +107,7 @@ log. The log keeps its own retention clock after the CR is gone.
 |---|---|---|---|
 | The factory | `Room` CRs and every `AgentRun` (the only creator) | `GET /v1/rooms/{id}/events`, `GET /v1/rooms/{id}/queue` | `message{kind: task_state}`, the task's snapshot first; `state_changed{kind: task}`, the task's facts for the room summary (`POST /v1/rooms/{id}/task`); a maintainer's review as a queued `chat` (`POST /v1/rooms/{id}/queue`, stream `review`), consumed by the run whose brief quoted it |
 | A run | nothing | `room_read` | its harness events through the bridge; `room_post`, `room_handoff`, `room_verdict` |
-| A human | rooms from the UI, forks | the web UI, `roomctl` | messages, driver actions, decisions |
+| A human | rooms from the UI, forks | the web UI, `maku` | messages, driver actions, decisions |
 | The broker | the `Room`s a human asks for, new or forked; **never** an `AgentRun` | everything | room and run lifecycle, seals, limits, verdict outcomes |
 
 A maintainer's review reaches the next run once queued: the factory re-reads the pull request

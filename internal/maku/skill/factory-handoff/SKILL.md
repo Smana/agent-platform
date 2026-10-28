@@ -83,7 +83,7 @@ trusting a CA and logging in are the user's.
 
 | Symptom | Cause | The user runs |
 |---|---|---|
-| `maku` not found | not installed | install from the agent-platform release, then `sha256sum -c --ignore-missing maku.sha256` |
+| `maku` not found | not installed | install from the maku release, then `sha256sum -c --ignore-missing maku.sha256` |
 | `not configured` | no config | `maku configure --url https://rooms.priv.aws.ogenki.io` (the other values are discovered) |
 | `no such host` on the rooms host | VPN down: the host resolves only on the tailnet | `tailscale up`, then `tailscale status` |
 | `x509: certificate signed by unknown authority` | the platform CA (CN=Ogenki Root CA) is not trusted, and `maku` has no `--cacert` | see below |

@@ -46,7 +46,7 @@ A unit test pins exactly these twelve keys on the wire.
 | `kind` | `id` | `role` | Who |
 |---|---|---|---|
 | `agent` | `agent:<runId>` | The run's `spec.role` (`implementer`, `reviewer`, `tester`, `triager`) | A run, through its bridge or a room tool |
-| `human` | `human:<zitadel sub>` | — | A person, through the web UI or `roomctl` |
+| `human` | `human:<zitadel sub>` | — | A person, through the web UI or `maku` |
 | `system` | `system:<component>` | — | `system:room-broker` for the broker's own events; `system:factory` for the factory; `system:policy` for deterministic approval rules |
 
 The broker derives `agent:<runId>` from the token's `sub`

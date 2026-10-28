@@ -67,11 +67,11 @@ operator, as the database owner, from the `atlas-db-migrations` ConfigMap.
 
 | Trigger | What ships |
 |---|---|
-| A push to a PR branch of this repo | `ghcr.io/smana/{room-broker,room-bridge,agent-factory,agent-harness}:v<next-patch>-pr<N>.<sha8>`, for integration testing (`ci.yaml`) |
+| A push to a PR branch of this repo | `ghcr.io/smana/{maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack}:v<next-patch>-pr<N>.<sha8>`, for integration testing (`ci.yaml`) |
 | | The chart `oci://ghcr.io/smana/charts/maku-factory`, at `<next-patch>-pr<N>.g<sha8>` (`ci.yaml`, `chart-prerelease`) |
-| A `v*` tag on `main` | The four images `ghcr.io/smana/{room-broker,room-bridge,agent-factory,agent-harness}:vX.Y.Z` |
+| A `v*` tag on `main` | The six images `ghcr.io/smana/{maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack}:vX.Y.Z` |
 | | The chart `oci://ghcr.io/smana/charts/maku-factory`, at the tag's version, signed |
-| | On the GitHub release: `roomctl-{os}-{arch}` (linux and darwin, amd64 and arm64), `roomctl.sha256` and `crd-rooms.yaml` (the `Room` CRD) |
+| | On the GitHub release: `maku-{os}-{arch}` (linux and darwin, amd64 and arm64), `maku.sha256` and `crd-rooms.yaml` (the `Room` CRD) |
 
 To release, tag a commit on `main` that passed CI and push the tag:
 

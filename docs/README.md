@@ -1,4 +1,4 @@
-# agent-platform documentation
+# maku documentation
 
 <a href="naming.md">
   <picture>
@@ -7,7 +7,7 @@
   </picture>
 </a>
 
-Maku is the product name; `agent-platform` stays the name of the repository, module, binaries, images and APIs ([naming](naming.md)).
+Maku is the product, the repository, the module and the CLI (`maku`); its components are `maku-*`. Kubernetes identities (ServiceAccounts, Services, audiences) keep their earlier names ([naming](naming.md#technical-names)).
 
 The reference for the broker, the bridge, the factory, the CLI and the web UI; the platform's docs site holds the overview and the status.
 
@@ -19,7 +19,7 @@ The reference for the broker, the bridge, the factory, the CLI and the web UI; t
 | [Concepts](concepts.md) | The vocabulary of rooms and the factory; the room's phases; the Room CRD |
 | [Architecture](architecture.md) | The four binaries, the trust boundaries, one task's life, where each piece runs |
 | [The factory](factory.md) | What a label starts, the Task lifecycle, triage and budgets, the merge gate, escalation, the kill switch; the Task CRD, the config file, the factory's API |
-| [roomctl](roomctl.md) | Install and verify, configure, every command, the factory-handoff skill |
+| [maku](cli.md) | Install and verify, configure, every command, the factory-handoff skill |
 | [Web UI](web-ui.md) | The room list, the room page, what each standing may do |
 | [Slack App](slack.md) | The factory's Slack App: manifest, config, the two flows, what it never does |
 | [Event envelope](event-envelope.md) | The C4 envelope, its payloads and limits |
@@ -38,7 +38,7 @@ The reference for the broker, the bridge, the factory, the CLI and the web UI; t
 |---|---|
 | New here | [README](../README.md) → [Concepts](concepts.md) → [Architecture](architecture.md) |
 | A maintainer with a factory issue or PR | [The factory](factory.md) → [Web UI](web-ui.md) → [Concepts](concepts.md) |
-| A developer who wants the CLI | [roomctl](roomctl.md) → [Web UI](web-ui.md) |
+| A developer who wants the CLI | [maku](cli.md) → [Web UI](web-ui.md) |
 | Operating a cluster | [Architecture](architecture.md) → [Integration](integration.md) → [chart README](../charts/maku-factory/README.md) → [Operations](operations.md) → [Security](security.md) |
 | Changing the code | [AGENTS.md](../AGENTS.md) → [Development](development.md) → [Event envelope](event-envelope.md) → [Room log](room-log.md) → [API](api.md) |
 

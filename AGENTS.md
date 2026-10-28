@@ -1,8 +1,8 @@
-# agent-platform: contributor and agent guide
+# maku: contributor and agent guide
 
-The Go services behind SP2 collaboration rooms: `room-broker` (the log of record, its API and
-the `Room` controller) and `room-bridge` (the sidecar that mirrors a run's harness into its
-room); and SP3's `agent-factory` (the `Task` reconciler that turns an issue label into a
+The Go services behind SP2 collaboration rooms: `maku-broker` (the log of record, its API and
+the `Room` controller) and `maku-bridge` (the sidecar that mirrors a run's harness into its
+room); and SP3's `maku-factory` (the `Task` reconciler that turns an issue label into a
 narrated run, the issue poller and the run meter). Architecture and ports: [README](README.md) and [docs/architecture.md](docs/architecture.md). Prerequisites, commits, migrations and
 releases: `CONTRIBUTING.md`.
 
@@ -152,8 +152,8 @@ flowchart LR
 | Entry | `cmd/maku-broker` | `serve` and `retention` subcommands |
 | Entry | `cmd/maku-bridge` | the sidecar binary |
 | Entry | `cmd/maku-slack`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
-| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
-| Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
+| Entry | `cmd/maku`, `internal/maku` | the human CLI and its client; `maku mcp`, the stdio relay to `/mcp` |
+| Entry | `internal/maku/skill` | the embedded factory-handoff Agent Skill, released with maku; `maku skill install` writes it |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation |
 | Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env |
@@ -176,11 +176,11 @@ flowchart LR
 | API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache |
 | Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down |
 | Viewers | `internal/policy` | the §1 permission matrix |
-| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
+| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `maku status` render |
 | Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI; `POST /mcp`, the humans' MCP server |
 | Viewers | `web/` | TypeScript UI and its vitest suite |
-| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter maku-broker serves |
 
 The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; its chart,
 `charts/maku-factory`, ships the `Task` CRD.

@@ -101,13 +101,13 @@ type Maku struct {
 	Ask func(prompt string) (bool, error)
 }
 
-// RunMaku runs one maku command (SP2 §8), its files under maku.Dir, roomctl's imported there
-// once, and its egress through httpx.
+// RunMaku runs one maku command (SP2 §8): its files under maku.Dir; a pre-v0.30.0 CLI's directory
+// (formerly `roomctl/`) is imported there once, and its egress goes through httpx.
 func RunMaku(ctx context.Context, args []string, stdout io.Writer) error {
 	return runMaku(ctx, args, stdout, os.Stderr)
 }
 
-// runMaku is RunMaku with its stderr injected. A failed import is a warning: roomctl's files are a
+// runMaku is RunMaku with its stderr injected. A failed import is a warning: the old CLI's files are a
 // convenience, and a developer can always configure and log in again.
 func runMaku(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	dir, err := maku.Dir()

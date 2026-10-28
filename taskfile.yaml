@@ -14,6 +14,7 @@ tasks:
       - task: quickstart:check
       - task: migrations
       - task: docs
+      - task: names
       - task: scripts
       - task: ui:test
       - task: ui:check
@@ -38,6 +39,12 @@ tasks:
     cmds:
       - bash hack/docs_test.sh
       - bash hack/docs.sh
+
+  names:
+    desc: No artifact name from before the maku rebrand outside the historical docs (hack/names.sh).
+    cmds:
+      - bash hack/names_test.sh
+      - bash hack/names.sh
 
   scripts:
     desc: The operator scripts under scripts/, against fakes.

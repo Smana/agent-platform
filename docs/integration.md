@@ -1,7 +1,7 @@
 # Integration
 
-This repository ships four images (`room-broker`, `room-bridge`, `agent-factory`, `agent-harness`),
-the `agent-factory` chart, `roomctl`, two CRDs (`Room`, `Task`) and the log's migrations.
+This repository ships six images (`maku-broker`, `maku-bridge`, `maku-factory`, `maku-harness`,
+`maku-run-controller`, `maku-slack`), the `maku-factory` and `maku` charts, the `maku` CLI, two CRDs (`Room`, `Task`) and the log's migrations.
 [cloud-native-ref](https://github.com/Smana/cloud-native-ref) deploys the broker, the factory chart,
 the databases, the CRDs and the policies; [crossplane-configuration](https://github.com/Smana/crossplane-configuration)
 adds the bridge to every `AgentRun` that names a room. Each consumer pins a build by digest: a
@@ -51,9 +51,9 @@ flowchart LR
 |---|---|
 | Rooms | The vendored `Room` CRD and its schema in the validation catalog; the broker's `App` claim, config, RBAC and CNP; two broker replicas; the retention CronJob; `Certificate room-broker-tls` and `ExternalSecret room-broker-ca`; `task agent:run -- --room` |
 | Log database | `SQLInstance xplane-rooms` with generated credentials, its CNPG network policy and the log's recovery seed |
-| Humans | ZITADEL roles `agents-admin`, `agents-member`, the `rooms-proxy` client and the `roomctl` native app; oauth2-proxy (bearer tokens accepted for `roomctl`); the `HTTPRoute` on the Tailscale Gateway |
+| Humans | ZITADEL roles `agents-admin`, `agents-member`, the `rooms-proxy` client and the CLI's ZITADEL client (formerly `roomctl`), a native app; oauth2-proxy (bearer tokens accepted for `maku`); the `HTTPRoute` on the Tailscale Gateway |
 | Agents | The `room-broker` backend on both MCPRoutes with its key and CNP; the factory App's key; egress to `api.github.com` |
-| Factory | The `agent-factory` `OCIRepository` (`flux/sources/ocirepo-agent-factory.yaml`, cosign-verified) and `HelmRelease` with its values (`tooling/base/agent-factory/`) |
+| Factory | The `agent-factory` `OCIRepository` (`flux/sources/ocirepo-agent-factory.yaml`, cosign-verified; the chart it pulls is named `maku-factory` from v0.30.0 on, so its pin moves to that name with the v0.30.0 bump) and `HelmRelease` with its values (`tooling/base/agent-factory/`) |
 | Observability | The `VMServiceScrape` and the `VMRule`s, `RoomVerdictsNotReachingGitHub` and `RoomApprovalPendingTooLong` among them |
 | Design records | ADR-0044 (session protocol), ADR-0049 (room client and human auth) |
 
@@ -67,7 +67,7 @@ suspended by default.
 |---|---|
 | `SQLInstance` | `spec.credentials.source: store \| generated` (default `store`) and login roles that own no database. In `generated` mode, a `Password` generator and an `ExternalSecret` per role, `refreshPolicy: CreatedOnce`, keys `username`, `password`, `uri`. It yields `xplane-rooms-cnpg-rooms` (owner), `xplane-rooms-cnpg-role-rooms-broker` and `xplane-rooms-cnpg-role-rooms-retention` |
 | `AgentRun`, with `roomRef` | The `room-bridge` native sidecar after `identity-proxy`, and its [gate](#the-gate); a `room-token` projected volume (audience `room-broker`, 600 s) mounted by the bridge alone; the `room-broker-ca` mount; kubelet ingress on 8085; the constant `_BRIDGE_IMAGE`; `BRANCH` for the bridge |
-| `AgentRun`, the harness | The room rules in the agent's `rules.md`; `ROOM_ID` and `TASK_URL` for the harness; the `agent-harness` pin that stamps the PR footer |
+| `AgentRun`, the harness | The room rules in the agent's `rules.md`; `ROOM_ID` and `TASK_URL` for the harness; the harness image pin (`maku-harness` from v0.30.0) that stamps the PR footer |
 | `AgentRun`, provenance | `status.harnessImage`: the `harness` container's `imageID` from the run's pod, only as `<repository>@sha256:<digest>`, kept once set. The factory records it per run (R10); without it the record's `harnessImage` stays empty |
 
 ## Pins
@@ -117,7 +117,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `human.mode` | `oidc` (default): the block below. `local`: one `human:local` user in the admin and member groups, `:8080` bound to loopback (reach it by port-forward), `publicURL` exactly `http://localhost:<port>` (or a loopback address); the broker answers that port under `localhost`, `127.0.0.1` and `[::1]` and refuses any other Host or Origin. It takes no issuer, files, `origin`, `groups` or `access`; the config is refused otherwise ([quickstart](quickstart.md)) |
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build; the group names are literals |
 | `human.access` | `{readerFile, ttl}`: room visibility follows GitHub ([room access](security.md#identities)). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms |
-| `human.mcp` | `{enabled}`: serve [`POST /mcp`](api.md#post-mcp), the MCP server `roomctl mcp` relays. Off by default. On, it needs `human.roomctlClientIDFile`, since `/mcp` takes roomctl's tokens only, or the broker refuses to start |
+| `human.mcp` | `{enabled}`: serve [`POST /mcp`](api.md#post-mcp), the MCP server `maku mcp` relays. Off by default. On, it needs `human.roomctlClientIDFile`, since `/mcp` takes the CLI's tokens only, or the broker refuses to start |
 | `human.mcp.sessionStart[]` | `owner/name` repositories whose `issue_draft` answers `canStart` (the caller writes to them on GitHub), so the `handoff` prompt may start the factory there. Empty by default: none does. Needs `human.mcp.enabled` and `human.access` (without the GitHub check `canStart` is always off); each entry is `owner/name`, matched case-insensitively, and listed once |
 | `human.mcp.sponsored[]` | `{name, clientIDFile}`: the service accounts that may call `run_create` ([sponsored principals](factory.md#sponsored-principals)); each is also declared in the factory's `api.sponsored`, which decides everything else. Needs `human.mcp.enabled` and `factoryURL`. The name is a DNS label, not reserved (`factory`, `runlore`, `scheduler`, `room-broker`, `policy`) and unique |
 | `human.slackLink` | `{principal, teamID, repository}`: the [Slack self-serve link](slack.md#self-serve-link). `principal` is one of `human.mcp.sponsored` (the Slack App), the only caller of `slack_link_code` and `slack_unlink`; `teamID` the one workspace a code may be for; `repository` the `owner/name` whose GitHub App installation names the account's login on the page. Needs `human.access`. Serves `/link/slack` and, on `:8443`, `GET /v1/links/slack` to `system:factory` only. Off by default |
@@ -172,7 +172,7 @@ dropped.
 
 ### The gate
 
-The composition adds `room-bridge gate`, the same image with the argument
+The composition adds `maku-bridge gate`, the same image with the argument
 `gate`, as a plain init container after the bridge and before the harness. It reads the bridge's
 `/admission` on `127.0.0.1` at `HEALTH_ADDR`'s port, exits 0 once the bridge holds the room, and
 exits 1 once the room refuses the run. The pod's `restartPolicy: Never` then fails the run before

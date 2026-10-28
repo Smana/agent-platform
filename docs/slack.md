@@ -1,14 +1,14 @@
 # The Slack App
 
-`factory-slack-app` is the factory's Slack App: a mention in a thread drafts an issue, a maintainer's check mark files it and starts the work, and the broker's signed webhooks tell the same thread how it goes. Approvals and steering stay in the [web UI](web-ui.md). A question from the run is linked in the thread, never answered there.
+`maku-slack` is the factory's Slack App: a mention in a thread drafts an issue, a maintainer's check mark files it and starts the work, and the broker's signed webhooks tell the same thread how it goes. Approvals and steering stay in the [web UI](web-ui.md). A question from the run is linked in the thread, never answered there.
 
 ```mermaid
 sequenceDiagram
   participant U as Slack user
   participant S as Slack
-  participant A as factory-slack-app
-  participant B as room-broker
-  participant F as agent-factory
+  participant A as maku-slack
+  participant B as maku-broker
+  participant F as maku-factory
   U->>S: @factory owner/repo title + body
   S->>A: app_mention (signed)
   A->>B: issue_draft
@@ -50,7 +50,7 @@ Draft editing needs the `message.channels` (and, for private channels, `message.
 
 ## Config
 
-`factory-slack-app --config <file>`, strictly decoded (an unknown key is refused).
+`maku-slack --config <file>`, strictly decoded (an unknown key is refused).
 
 | Key | Meaning |
 |---|---|
@@ -132,7 +132,7 @@ The link routes answer `Referrer-Policy: same-origin` (the rest of the rooms UI 
 A Slack user links themselves instead of waiting for an `onBehalfOf.slack` entry in git ([design](superpowers/specs/2026-10-28-slack-self-serve-link-design.md)):
 
 1. `@factory link` in a served channel. The App calls the broker's `slack_link_code` with its team and user id (and handle and display name, with `users:read`) and answers **in a direct message from the bot** (only that user sees it; the first line is the labelled link and the bare URL follows on its own line; it says never to send it to anyone; the thread gets a one-line pointer, never the URL; if the DM fails, an ephemeral in the channel, not in the thread, is the fallback, and the Slack error is logged) with `https://rooms.<domain>/link/slack?code=<code>`: single use, 10 minutes, replacing their earlier code.
-2. The user opens it, signs in to the rooms UI (ZITADEL), and sees `Link Slack user @handle (<id>) in workspace <team> to your account (GitHub: @login)?`, the display name below it marked as set by that user, and "never confirm a link someone sent you". **Link** posts the form, from the web UI's session only (a roomctl or MCP token is refused); the broker records `slack(team/user) → the ZITADEL account`.
+2. The user opens it, signs in to the rooms UI (ZITADEL), and sees `Link Slack user @handle (<id>) in workspace <team> to your account (GitHub: @login)?`, the display name below it marked as set by that user, and "never confirm a link someone sent you". **Link** posts the form, from the web UI's session only (a maku or MCP token is refused); the broker records `slack(team/user) → the ZITADEL account`.
 3. From then on their ✅ files sponsored by that account's **current** GitHub login, still held to the repository's maintainers: a link grants nothing a maintainer did not have.
 
 `@factory unlink` removes the user's self-serve link (never a config entry); the page, opened without a code, lists the account's links with an Unlink button each. Refusals on the page: the code expired or was used, the code is for another workspace, the account has no GitHub link, it holds 5 Slack users already, or the Slack user is linked to another account (it unlinks first: a link never moves silently). With the broker's `human.slackLink` off, both commands answer that self-serve linking is not turned on. `link` and `unlink` are the whole mention; a draft whose title holds the word is a draft.

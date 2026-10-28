@@ -1,4 +1,4 @@
-# agent-harness
+# maku-harness
 
 The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server:1.56.0-python` plus
 
@@ -19,8 +19,8 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 
 | Variable | Effect when set | When unset |
 |---|---|---|
-| `LLM_API_KEY_FILE` | the model API key is read from this file (run-controller only) | the placeholder key; the identity-proxy injects the real one |
-| `GIT_TOKEN_FILE` | the git credential helper prints this file's token; it never calls octo-sts and never revokes (run-controller only) | octo-sts exchange through identity-proxy `:4001`, revoked on exit |
+| `LLM_API_KEY_FILE` | the model API key is read from this file (maku-run-controller only) | the placeholder key; the identity-proxy injects the real one |
+| `GIT_TOKEN_FILE` | the git credential helper prints this file's token; it never calls octo-sts and never revokes (maku-run-controller only) | octo-sts exchange through identity-proxy `:4001`, revoked on exit |
 | `MCP_URL` | the platform MCP entry and progress notes are wired | no platform tools, no progress notes |
 | `AGENT_CHECKS` | `1`: the toolchain installs in the background after the clone, the rules gain the repository-checks rule, and a `finished` implementer run checks its head, notes the result in the room and emits the span `agent-run.checks` | today's run |
 | `AGENT_RUN_SECONDS` | the pod's deadline: the final checks are skipped (`skipped: deadline`) when less than the declaration's budget plus 2 min is left | the final checks always run |

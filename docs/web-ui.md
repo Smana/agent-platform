@@ -1,7 +1,7 @@
 # Web UI
 
 The web UI is the one place to watch a room, steer a run, decide an approval and fork. It is
-embedded in the broker and served behind oauth2-proxy; [roomctl](roomctl.md) reads and posts but
+embedded in the broker and served behind oauth2-proxy; [maku](cli.md) reads and posts but
 never steers or approves. What it shows is the room's [log](concepts.md#the-log), folded for a
 person; the vocabulary is in [Concepts](concepts.md).
 
@@ -15,7 +15,7 @@ person; the vocabulary is in [Concepts](concepts.md).
 | An expired session | A `401` from the API sends the page back through `/oauth2/start` |
 
 - **Neither group: `403`.** Ask an operator to add you to `agents-member`; the group names are the broker's config ([Integration](integration.md)).
-- **Room visibility follows GitHub.** A member sees a room only if GitHub lets the account linked to their ZITADEL user read the room's repository. No link, no rooms: the list is empty rather than an error. An admin sees every room. A room you may not read answers exactly like one that does not exist. The fix for an empty list is the one in [roomctl's troubleshooting](roomctl.md#troubleshooting).
+- **Room visibility follows GitHub.** A member sees a room only if GitHub lets the account linked to their ZITADEL user read the room's repository. No link, no rooms: the list is empty rather than an error. An admin sees every room. A room you may not read answers exactly like one that does not exist. The fix for an empty list is the one in [maku's troubleshooting](cli.md#troubleshooting).
 
 Sources: `docs/api.md` (the `:8080` checks), `internal/policy/policy.go` (`Groups`, `Resolve`).
 
@@ -55,12 +55,12 @@ drive, then opens it.
 | Data class | `internal` or `public`, no default. It cannot change once the room exists: it sets the model route, the tools and the egress its runs get. It does not change who can read the room |
 | Repository | `owner/name`, required. Anyone who can read it on GitHub can read the room. You must be able to read it yourself |
 
-A `Use roomctl from your terminal` fold under the list sets up [roomctl](roomctl.md) for this
+A `Use maku from your terminal` fold under the list sets up [maku](cli.md) for this
 broker in numbered steps (install, point it at this broker, sign in), each command in its own
 block with a Copy button that copies it exactly as shown. On a local broker the steps configure
-by URL alone and end with `roomctl run` instead of a sign-in.
+by URL alone and end with `maku run` instead of a sign-in.
 
-<img alt="The Use roomctl from your terminal fold: three numbered steps, install, point it at this broker and sign in, each in a code block with a Copy button" src="assets/web-ui/cli-setup-light.png" width="800">
+<img alt="The Use maku from your terminal fold: three numbered steps, install, point it at this broker and sign in, each in a code block with a Copy button" src="assets/web-ui/cli-setup-light.png" width="800">
 
 ## The room page
 
@@ -131,7 +131,7 @@ button is a courtesy. Source: `internal/policy/policy.go`.
 
 Reading the table:
 
-- **Web only** means a token issued to roomctl is refused, because a local agent could run roomctl. Chat, queue, fork and start a run work from either client.
+- **Web only** means a token issued to maku is refused, because a local agent could run maku. Chat, queue, fork and start a run work from either client.
 - **Steering is the driver's alone.** An owner who is not the driver takes the token (with a reason) before steering.
 - **Without the driver token**, a message sent from the composer can be posted to the room or queued; the steer option is disabled. With no agent in the room it is not offered at all. A draft whose steer option goes away (the token moved, the run ended) stays, and the composer asks where it should go.
 - **A sealed room** accepts no action. Only its owner or an admin may fork it.

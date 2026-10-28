@@ -1,6 +1,6 @@
 # maku-factory chart
 
-Deploys the agent factory: two replicas of the `agent-factory` controller behind a
+Deploys the agent factory: two replicas of the `maku-factory` controller (Deployment `agent-factory`) behind a
 PodDisruptionBudget, RBAC in two namespaces (a Role in the release namespace and a Role in
 `agents`, `templates/rbac.yaml`), and the `Task` CRD (`crds/`). It ships as
 `oci://ghcr.io/smana/charts/maku-factory`, at the version of the release tag.
@@ -15,7 +15,7 @@ is described in [docs/factory.md](../../docs/factory.md).
 | `githubSecret` | `agent-factory-github` | `app_id`, `private_key` (the factory App, from the `agents-secrets` store) | `/etc/agent-factory-github`, mode 0440 | `config.github.appIDFile`, `config.github.privateKeyFile` | Yes: the mount is not optional |
 | `mergerSecret` | `agent-factory-merger` | `app_id`, `private_key` (the merger App: arming, reverts, checks) | `/etc/agent-factory-merger`, mode 0440, optional | `config.github.mergerAppIDFile`, `config.github.mergerKeyFile` | **Hard prerequisite** when any merge class is live or in shadow (see below) |
 | `brokerCASecret` | `openbao-ca` | `ca.crt` (the broker's CA) | `/etc/agent-factory/openbao-ca` | `config.broker.caFile` | Yes |
-| `oidcSecret` | `agent-factory-oidc` | the ZITADEL client ids the API accepts tokens from (`rooms-proxy`, `roomctl`): ids, not secrets | `/etc/agent-factory-oidc`, mode 0444 | the factory API's token check | Yes |
+| `oidcSecret` | `agent-factory-oidc` | the ZITADEL client ids the API accepts tokens from (`rooms-proxy`, and the CLI's, formerly `roomctl`): ids, not secrets | `/etc/agent-factory-oidc`, mode 0444 | the factory API's token check | Yes |
 | `intakeSecret` | `agent-factory-intake` | `token` (the RunLore intake's bearer token, from the `agents-secrets` store) | `/etc/agent-factory-intake`, mode 0440, optional | `config.runlore.tokenFile` | Only for the RunLore intake: without it the intake answers 503 to every request |
 | `zitadelReaderSecret` | `agent-factory-zitadel-reader` | `reader.json` (the broker's read-only ZITADEL reader: `{"pat", "githubIdpId"}`) | `/etc/agent-factory-zitadel-reader`, mode 0440, optional | `config.api.access.readerFile` | v2 D4: resolves an API caller to their GitHub login; without it every human run is refused `repository_permission` |
 | `sponsoredSecret` | `agent-factory-sponsored` | `<name>-client-id`, one per sponsored principal (the machine client's ZITADEL client id), and `project-id` (the project every sponsored token's audience must hold) | `/etc/agent-factory-sponsored`, mode 0440, optional | `config.api.sponsored[].clientIDFile`, `config.api.projectIDFile` | F4: only with `config.api.sponsored`, which needs both files; without the Secret every sponsored token is refused |
