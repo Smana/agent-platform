@@ -423,7 +423,7 @@ class ImplementerContractTest(Contracted, unittest.TestCase):
         self.assertEqual(agent_run.contract_rules({"ROLE": "implementer"}, None, tests), "")
 
 
-HOOK = os.path.join(HERE, "pre-commit")
+HOOK = next(p for p in (os.path.join(HERE, "pre-commit"), "/etc/agent/git-hooks/pre-commit") if os.path.exists(p))
 
 
 class HookTest(Contracted, unittest.TestCase):
