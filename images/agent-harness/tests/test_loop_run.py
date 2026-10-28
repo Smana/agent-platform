@@ -189,6 +189,15 @@ class EvidenceTest(Clone, unittest.TestCase):
         self.assertIn("CHECKS' OUTPUT on " + sha, text)
 
 
+class PathFactsTest(Clone, unittest.TestCase):
+    def test_a_named_path_is_checked_at_the_head(self):
+        os.makedirs(os.path.join(self.repo, "docs"))
+        self.commit(self.repo, "docs/here.md")
+        got = agent_run.path_facts("Link to docs/missing.md; it must not be created.\nUpdate docs/here.md.", agent_run.head())
+        self.assertEqual(got, [("docs/missing.md", "unmakeable", False), ("docs/here.md", "required", True)])
+        self.assertEqual(agent_run.path_facts("x docs/missing.md", ""), [])
+
+
 class FakeLLM(http.server.BaseHTTPRequestHandler):
     """The identity proxy's chat completions route as the judge's call reaches it."""
     requests, status, content = [], 200, ""

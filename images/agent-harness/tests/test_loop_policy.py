@@ -271,6 +271,35 @@ class GuardTest(unittest.TestCase):
         for v in (NOT_YET, IMPOSSIBLE, INVALID):  # the judge's own impossible stands
             self.assertIs(lp.guard(v, self.offered(DRILL_E_RUNS)), v)
 
+    def test_named_paths_classify_by_the_line(self):
+        top = {"docs", "website", "scripts"}
+        got = dict(lp.named_paths(
+            "- Link to docs/ops/factory-faq.md from website/content/page.md; docs/ops/factory-faq.md must not be created.\n"
+            "- scripts/check.sh exists and passes\n- remove docs/old.md\n- see https://example.com/docs/x and/or other\n"
+            "- do not touch scripts/keep.sh\n", top))
+        self.assertEqual(got, {"docs/ops/factory-faq.md": "unmakeable", "website/content/page.md": "unmakeable",
+                               "scripts/check.sh": "required", "docs/old.md": "ignored", "scripts/keep.sh": "ignored"})
+
+    def paths(self, *facts):
+        return lp.judge_input("task", "abc", [], "", [DRILL_E_RUNS[1]], list(facts))
+
+    def test_drill_e2_a_link_to_a_path_that_must_not_exist_is_never_met(self):
+        text, o = self.paths(("docs/ops/factory-faq.md", "unmakeable", False))
+        self.assertIn("path docs/ops/factory-faq.md: missing", text)
+        self.assertIn("path:docs/ops/factory-faq.md", o)
+        got = lp.guard(DRILL_E_MET, o)
+        self.assertEqual(got.kind, "impossible")
+        self.assertIn("docs/ops/factory-faq.md", got.reason)
+
+    def test_a_required_path_that_is_missing_is_not_yet(self):
+        _, o = self.paths(("docs/a.md", "required", False))
+        self.assertEqual(lp.guard(DRILL_E_MET, o).kind, "not_yet")
+
+    def test_paths_that_exist_or_are_ignored_change_nothing(self):
+        text, o = self.paths(("docs/a.md", "required", True), ("docs/b.md", "ignored", False))
+        self.assertIn("path docs/a.md: exists", text)
+        self.assertIs(lp.guard(DRILL_E_MET, o), DRILL_E_MET)
+
     def test_the_prompt_says_checks_are_literal(self):
         self.assertIn("literal", lp.JUDGE_SYSTEM)
         self.assertIn("never a pass", lp.JUDGE_SYSTEM)
