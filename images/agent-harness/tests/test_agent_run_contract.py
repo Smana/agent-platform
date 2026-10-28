@@ -701,6 +701,20 @@ class ReviewFixesTest(Origin, unittest.TestCase):
         self.assertEqual(git(self.origin, "rev-parse", "agent/x"), sha)
         self.assertEqual(git(evil, "branch", "--list"), "")
 
+    def test_the_push_ignores_the_user_level_git_config(self):
+        self.commit(self.RED)
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        sha = agent_run.sign(self.env, self.base, res)
+        evil = os.path.join(self.d, "evil.git")
+        subprocess.run(["git", "init", "-q", "--bare", evil], check=True)
+        hostile = os.path.join(self.d, "hostile.gitconfig")
+        with open(hostile, "w") as f:
+            f.write('[url "%s"]\n\tinsteadOf = %s\n[core]\n\thooksPath = %s\n' % (evil, self.origin, self.d))
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": hostile, "XDG_CONFIG_HOME": self.d}):
+            self.assertIsNone(agent_run.push_contract(self.env, sha))
+        self.assertEqual(git(self.origin, "rev-parse", "agent/x"), sha)
+        self.assertEqual(git(evil, "branch", "--list"), "")
+
     def test_the_continuation_caps_each_item(self):
         res = {"why": "w" * 5000, "rows": [{"id": "i" * 5000, "base": "-", "overlay": "pass"}], "outside": ["o" * 5000]}
         text = agent_run.tester_continuation(res, ["t/"], "b", "F")

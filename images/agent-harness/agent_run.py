@@ -838,9 +838,10 @@ def push_contract(env: dict, sha: str) -> str | None:
     ac = checks_module()
     objects = os.path.join(REPO_DIR, _git_out("rev-parse", "--git-path", "objects"))
     with tempfile.TemporaryDirectory() as scratch:
-        genv = {**ac.git_env(), "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects}
+        # The user-level config is the agent's too (HOME, XDG): ignored; the system config keeps the credential helper.
+        genv = {**ac.git_env(), "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects, "GIT_CONFIG_GLOBAL": os.devnull}
         subprocess.run(["git", "init", "-q", "--bare", scratch], capture_output=True, env=genv)
-        p = subprocess.run(["git", "--git-dir", scratch, "push", "-q", push_url(env), "%s:refs/heads/%s" % (sha, env["BRANCH"])],
+        p = subprocess.run(["git", "--git-dir", scratch, "-c", "core.hooksPath=/dev/null", "push", "-q", push_url(env), "%s:refs/heads/%s" % (sha, env["BRANCH"])],
                            capture_output=True, text=True, errors="replace", timeout=120, env=genv)
     return None if p.returncode == 0 else redact(p.stderr.strip())[:200] or "the push was refused"
 
