@@ -8,6 +8,9 @@
 // Names are exposed exactly as written here: the exporter adds no unit or
 // counter suffix, so counters carry their own _total and the VMRules query
 // these strings byte for byte.
+//
+// With WithMakuNames, each rooms_* and agent_factory_* family is also served under its maku_
+// name (MakuName), from the same read: the rebrand's one release of both names (v0.30.0).
 package metrics
 
 import (
@@ -15,11 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/otlptranslator"
 	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
@@ -54,11 +60,58 @@ type Exporter struct {
 	handler  http.Handler
 }
 
+// Option tunes NewExporter.
+type Option func(*exporterOptions)
+
+type exporterOptions struct{ makuNames bool }
+
+// WithMakuNames also serves every family that has a maku_ name (MakuName) under that name, with
+// the same samples. Off, the old names only.
+func WithMakuNames(on bool) Option { return func(o *exporterOptions) { o.makuNames = on } }
+
+// MakuName is name's maku_ spelling: rooms and rooms_x become maku_rooms and maku_rooms_x, and
+// agent_factory_x becomes maku_factory_x. It is "" for any other name, which keeps only its own.
+func MakuName(name string) string {
+	switch {
+	case name == "rooms" || strings.HasPrefix(name, "rooms_"):
+		return "maku_" + name
+	case strings.HasPrefix(name, "agent_factory_"):
+		return "maku_factory_" + strings.TrimPrefix(name, "agent_factory_")
+	}
+	return ""
+}
+
+// makuGatherer serves each family reg gathers, then its MakuName twin over the same samples: one
+// read, so both names always carry equal values. A twin whose name is already a real family is
+// skipped, so no name is served twice.
+type makuGatherer struct{ reg prometheus.Gatherer }
+
+func (g makuGatherer) Gather() ([]*dto.MetricFamily, error) {
+	mfs, err := g.reg.Gather()
+	taken := make(map[string]bool, len(mfs))
+	for _, mf := range mfs {
+		taken[mf.GetName()] = true
+	}
+	out := make([]*dto.MetricFamily, 0, 2*len(mfs))
+	for _, mf := range mfs {
+		out = append(out, mf)
+		if n := MakuName(mf.GetName()); n != "" && !taken[n] {
+			out = append(out, &dto.MetricFamily{Name: &n, Help: mf.Help, Type: mf.Type, Metric: mf.Metric})
+		}
+	}
+	slices.SortFunc(out, func(a, b *dto.MetricFamily) int { return strings.Compare(a.GetName(), b.GetName()) })
+	return out, err
+}
+
 // NewExporter builds a provider on its own registry: no global state, so two
 // in one process (tests) never collide. buildInfo is BrokerBuildInfo, FactoryBuildInfo or SlackBuildInfo.
-func NewExporter(buildInfo, version string) (*Exporter, error) {
+func NewExporter(buildInfo, version string, opts ...Option) (*Exporter, error) {
 	if buildInfo != BrokerBuildInfo && buildInfo != FactoryBuildInfo && buildInfo != SlackBuildInfo {
 		return nil, fmt.Errorf("metrics: %q is no binary's build-info gauge", buildInfo)
+	}
+	var o exporterOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	reg := prometheus.NewRegistry()
 	reader, err := otelprom.New(otelprom.WithRegisterer(reg),
@@ -67,8 +120,12 @@ func NewExporter(buildInfo, version string) (*Exporter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("metrics: prometheus exporter: %w", err)
 	}
+	var g prometheus.Gatherer = reg
+	if o.makuNames {
+		g = makuGatherer{reg: reg}
+	}
 	e := &Exporter{provider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
-		handler: promhttp.HandlerFor(reg, promhttp.HandlerOpts{})}
+		handler: promhttp.HandlerFor(g, promhttp.HandlerOpts{})}
 	if _, err := e.Meter().Int64ObservableGauge(buildInfo,
 		metric.WithDescription("The running build: always 1, labelled with its version."),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
