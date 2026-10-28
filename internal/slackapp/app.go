@@ -307,7 +307,7 @@ func slackDraft(d Draft) string {
 		fmt.Fprintf(&b, "```%s```\n\n", slackText(d.Body))
 	}
 	b.WriteString("_Reply in this thread to change it (`Title:`, `Should:`, `Acceptance:`, or any text to add to what is wrong), " +
-		"then a maintainer reacts :white_check_mark: to file it and start the work._")
+		"then a maintainer replies :white_check_mark: or reacts :white_check_mark: to file it and start the work._")
 	return b.String()
 }
 
@@ -332,6 +332,30 @@ func (a *App) threadDraft(msgs []Message) (latest *Message, filed bool) {
 	return latest, filed
 }
 
+// isCheckMark is a reply that is only a ✅ or a heavy check mark, as an emoji or its Slack code.
+func isCheckMark(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "✅", "✔️", "✔", ":white_check_mark:", ":heavy_check_mark:":
+		return true
+	}
+	return false
+}
+
+// checkMarkReply files the thread's latest draft for the replier, like a ✅ reaction on it. Who may
+// file is the broker's call (the linked maintainer check), as for the reaction.
+func (a *App) checkMarkReply(ctx context.Context, ev slackEvent) string {
+	msgs, err := a.Slack.Thread(ctx, ev.Channel, ev.ThreadTS)
+	if err != nil {
+		a.log().Warn("slack thread fetch failed", "channel", ev.Channel, "err", err)
+		return "error"
+	}
+	latest, _ := a.threadDraft(msgs)
+	if latest == nil {
+		return "ignored"
+	}
+	return a.file(ctx, a.TeamID, ev.Channel, latest.TS, ev.User, true)
+}
+
 // reply amends the thread's pending draft with a reply from the author of the mention. Anyone
 // else's reply, a reply on a filed draft or in a thread without a draft is ignored without a word.
 func (a *App) reply(ctx context.Context, ev slackEvent) string {
@@ -340,6 +364,9 @@ func (a *App) reply(ctx context.Context, ev slackEvent) string {
 		!channelRE.MatchString(ev.Channel) || !userRE.MatchString(ev.User) || !tsRE.MatchString(ev.ThreadTS) ||
 		strings.TrimSpace(ev.Text) == "" || strings.Contains(ev.Text, "<@"+a.BotUserID+">") {
 		return "ignored" // a mention in a reply is the mention flow's, through app_mention
+	}
+	if isCheckMark(ev.Text) { // never draft text: it files the latest draft when its author is a maintainer
+		return a.checkMarkReply(ctx, ev)
 	}
 	a.editMu.Lock()
 	defer a.editMu.Unlock()
@@ -388,13 +415,19 @@ func (a *App) reply(ctx context.Context, ev slackEvent) string {
 }
 
 func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
-	ch, ok := a.Channels[ev.Item.Channel]
-	if !ok || !channelRE.MatchString(ev.Item.Channel) || !userRE.MatchString(ev.User) || !tsRE.MatchString(ev.Item.TS) {
+	return a.file(ctx, team, ev.Item.Channel, ev.Item.TS, ev.User, false)
+}
+
+// file files the draft at itemTS for user, as a ✅ reaction on it does or, with viaReply, as a ✅
+// reply in its thread does: the same checks, the same thread key, the same lines.
+func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaReply bool) string {
+	ch, ok := a.Channels[channel]
+	if !ok || !channelRE.MatchString(channel) || !userRE.MatchString(user) || !tsRE.MatchString(itemTS) {
 		return "ignored"
 	}
-	msg, err := a.Slack.Message(ctx, ev.Item.Channel, ev.Item.TS)
+	msg, err := a.Slack.Message(ctx, channel, itemTS)
 	if err != nil {
-		a.log().Warn("slack message fetch failed", "channel", ev.Item.Channel, "err", err)
+		a.log().Warn("slack message fetch failed", "channel", channel, "err", err)
 		return "error"
 	}
 	// Only the App's own draft counts: posted by its bot user, carrying a draft whose hash holds (R23).
@@ -414,24 +447,24 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 		return "ignored"
 	}
 	sayMeta := func(text string, meta *Metadata) { // the verdict goes to the thread; a failure to say it is logged, not retried
-		if _, err := a.Slack.Post(ctx, ev.Item.Channel, thread, text, meta); err != nil {
-			a.log().Warn("slack post failed", "channel", ev.Item.Channel, "err", err)
+		if _, err := a.Slack.Post(ctx, channel, thread, text, meta); err != nil {
+			a.log().Warn("slack post failed", "channel", channel, "err", err)
 		}
 	}
 	say := func(text string) { sayMeta(text, nil) }
 	a.editMu.Lock() // an edit in flight finishes first, so the latest draft is the one filed
 	defer a.editMu.Unlock()
 	// Only the thread's latest draft files: an earlier one was replaced by an edit.
-	msgs, err := a.Slack.Thread(ctx, ev.Item.Channel, thread)
+	msgs, err := a.Slack.Thread(ctx, channel, thread)
 	if err != nil {
-		a.log().Warn("slack thread fetch failed", "channel", ev.Item.Channel, "err", err)
+		a.log().Warn("slack thread fetch failed", "channel", channel, "err", err)
 		if errors.Is(err, ErrThreadTooLong) {
 			say("This thread is too long to find its latest draft: start a new one with a mention.")
 			return "refused"
 		}
 		return "error"
 	}
-	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != ev.Item.TS {
+	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != itemTS {
 		say("This draft was replaced by a newer one: react on the latest draft.")
 		return "ignored"
 	}
@@ -439,13 +472,17 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	res, err := a.Broker.RunCreate(ctx, RunCreate{
 		Draft:      Draft{Repo: p.Repo, Title: p.Title, Body: p.Body},
 		MaxCostUSD: ch.MaxCostUSD,
-		OnBehalfOf: "slack:" + team + "/" + ev.User,
-		Ref:        "slack/" + team + "/" + ev.Item.Channel + "/" + thread,
-		Key:        team + "/" + ev.Item.Channel + "/" + thread, // one issue per thread, whatever the revision
+		OnBehalfOf: "slack:" + team + "/" + user,
+		Ref:        "slack/" + team + "/" + channel + "/" + thread,
+		Key:        team + "/" + channel + "/" + thread, // one issue per thread, whatever the revision
 	})
 	if err != nil {
 		if r, ok := err.(Refused); ok { //nolint:errorlint // Refused is returned bare, never wrapped
-			say("Not filed: " + shown(string(r)))
+			if viaReply {
+				say("Not filed: " + shown(string(r)) + ". A maintainer reacts :white_check_mark: to file it.")
+			} else {
+				say("Not filed: " + shown(string(r)))
+			}
 			return "refused"
 		}
 		a.log().Warn("run_create failed", "err", err)
@@ -454,19 +491,19 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	}
 	if !roomRE.MatchString(res.Room) {
 		a.log().Warn("run_create answered an unusable room id")
-		sayMeta(fmt.Sprintf("The task is filed (#%d, for <@%s>), but its room cannot be followed here.", res.Issue, ev.User), filedMark)
+		sayMeta(fmt.Sprintf("The task is filed (#%d, for <@%s>), but its room cannot be followed here.", res.Issue, user), filedMark)
 		return "error"
 	}
 	url := strings.TrimSuffix(a.RoomsURL, "/") + "/r/" + res.Room
 	// Put on a duplicate too (idempotent): a Put that failed the first time is retried by the next ✅.
-	if err := a.Threads.Put(ctx, res.Room, Thread{Channel: ev.Item.Channel, TS: thread, At: a.Now()}); err != nil {
+	if err := a.Threads.Put(ctx, res.Room, Thread{Channel: channel, TS: thread, At: a.Now()}); err != nil {
 		a.log().Warn("thread map put failed", "room", res.Room, "err", err)
 	}
 	if res.Duplicate {
 		sayMeta("Already filed: "+url, filedMark)
 		return "duplicate"
 	}
-	sayMeta(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, ev.User, url), filedMark)
+	sayMeta(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, user, url), filedMark)
 	return "filed"
 }
 
