@@ -65,6 +65,8 @@ type ApprovalView struct {
 	Action     json.RawMessage `json:"action"`
 	ExpiresAt  time.Time       `json:"expiresAt"`
 	Seq        int64           `json:"seq"` // its approval_requested event
+	// Prompters are who prompted the turn; with the room's FourEyes on, none of them decides.
+	Prompters []string `json:"prompters"`
 }
 
 // Snapshot is the room's state at the high-water mark of a state frame.
@@ -84,6 +86,8 @@ type Snapshot struct {
 	// Approvals are the pending ones, read after the mark like Queue: a request
 	// may be far behind the page's tail.
 	Approvals []ApprovalView `json:"approvals"`
+	// FourEyes is the room's rule that nobody who prompted a turn decides its approvals.
+	FourEyes bool `json:"fourEyes"`
 }
 
 // ServerFrame is a frame from the broker: state, sync, event, ack or transient.

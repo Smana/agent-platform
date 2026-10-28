@@ -96,7 +96,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
       return sent;
     },
   };
-  const needsPanelView = mountNeeds(needsPanel, sender, state, () => snap?.you, views);
+  const needsPanelView = mountNeeds(needsPanel, sender, state, () => snap?.you, views, () => snap?.fourEyes);
   let controls: ReturnType<typeof mountControls> | undefined;
   let composer: ReturnType<typeof mountComposer> | undefined;
   const say = (text: string) => { notice.textContent = text; };
@@ -124,7 +124,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), connection,
+    sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), approvals: needsPanelView.approvalCounts(), connection,
     now: state.latest(), running: state.running(), ran: state.ran(), dashboards });
   void o.dashboards?.().then((d) => { dashboards = d; refreshStrip(); }).catch(() => { /* no links */ });
   // The pill takes the reader, and the keyboard focus, to the panel.
@@ -136,6 +136,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
   // call's row, which carries the call's seq). A row gone at the cap finds nothing. The
   // row opens, and so does every fold or raw log around it; the focus moves to it.
+  strip.onApprovalsClick(() => needsPanelView.focusFirst());
   strip.onNowClick((seq) => {
     const row = main.querySelector<HTMLElement>(`.view-chat [data-seq="${seq}"]`) ?? main.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
     if (row) focusRow(row);
@@ -145,7 +146,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   // its own once the page has left app (a re-mount or the "no such room" page replaced it).
   const ticker = setInterval(() => {
     if (!app.contains(header)) clearInterval(ticker);
-    else refreshStrip();
+    else { needsPanelView.refresh(); refreshStrip(); }
   }, 1000);
   // The summary loads on mount, then at most once a second while events it folds arrive
   // (R27). A failed fetch shows its text on the error line and leaves the stream alone.

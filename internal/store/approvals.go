@@ -104,7 +104,7 @@ func (s *Store) requestApproval(ctx context.Context, a Approval, d envelope.Draf
 	a.ExpiresAt = a.ExpiresAt.UTC().Truncate(time.Microsecond)
 	d.RoomID, d.RunID, d.Type = a.RoomID, a.RunID, envelope.ApprovalRequested
 	d.Payload = envelope.Must(envelope.ApprovalRequestedPayload{ApprovalID: a.ID, CallID: a.CallID, Class: a.Class,
-		Action: a.Action, ExpiresAt: a.ExpiresAt})
+		Action: a.Action, ExpiresAt: a.ExpiresAt, Prompters: a.Prompters})
 	if err := d.Validate(); err != nil {
 		return Approval{}, envelope.Event{}, err
 	}

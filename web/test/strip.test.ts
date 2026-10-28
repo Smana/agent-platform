@@ -451,3 +451,32 @@ describe("the strip's dashboards", () => {
     expect(h.querySelector(".chip-dashboards")).toBeNull();
   });
 });
+
+describe("the approvals banner", () => {
+  const banner = (h: HTMLElement) => h.querySelector<HTMLAnchorElement>("a.approvals-banner");
+  it("counts the approvals waiting for you, and links to the cards", () => {
+    const { h, strip } = mount();
+    let clicked = 0;
+    strip.onApprovalsClick(() => { clicked++; });
+    strip.update(input({ approvals: { total: 2, mine: 2 } }));
+    expect(banner(h)?.textContent).toBe("⏳ 2 approvals wait for you — review");
+    banner(h)!.click();
+    expect(clicked).toBe(1);
+  });
+  it("says another approver when the viewer cannot decide any", () => {
+    const { h, strip } = mount();
+    strip.update(input({ approvals: { total: 1, mine: 0 } }));
+    expect(banner(h)?.textContent).toBe("⏳ 1 approval waits for another approver — review");
+  });
+  it("is hidden when none wait, when the room is sealed, and leaves with the last approval", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    expect(banner(h)).toBeNull();
+    strip.update(input({ approvals: { total: 1, mine: 1 } }));
+    expect(banner(h)).not.toBeNull();
+    strip.update(input({ approvals: { total: 0, mine: 0 } }));
+    expect(banner(h)).toBeNull();
+    strip.update(input({ approvals: { total: 1, mine: 1 }, sealed: true }));
+    expect(banner(h)).toBeNull();
+  });
+});

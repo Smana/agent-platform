@@ -84,6 +84,9 @@ type ApprovalRequestedPayload struct {
 	Class      string          `json:"class"`
 	Action     json.RawMessage `json:"action"` // the raw, redacted call (T3)
 	ExpiresAt  time.Time       `json:"expiresAt"`
+	// Prompters are the principals who prompted the turn: with four-eyes on, none of
+	// them may decide it. The page reads them to say who may.
+	Prompters []string `json:"prompters,omitempty"`
 }
 
 // ApprovalDecidedPayload is an approval_decided event's payload.
