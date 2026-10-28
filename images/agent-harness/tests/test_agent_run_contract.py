@@ -23,6 +23,7 @@ import test_contract as tc  # noqa: E402
 import test_loop_run as tlr  # noqa: E402
 from test_test_contract import RUN_SH, SHELL_DECL  # noqa: E402
 
+REAL_PUSH_URL = agent_run.push_url
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x",
            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -55,6 +56,7 @@ class Origin:
         git(self.repo, "checkout", "-q", "-B", "agent/x", "origin/main")
         mock.patch.object(agent_run, "REPO_DIR", self.repo).start()
         mock.patch.object(agent_run, "CHECKS_DIR", os.path.join(self.d, "checks")).start()
+        mock.patch.object(agent_run, "push_url", return_value=self.origin).start()  # the forge is the local bare origin
         mock.patch.object(agent_run, "CONTRACT_FILE", os.path.join(self.d, "contract.json")).start()
         self.env = {"ROLE": "tester", "BRANCH": "agent/x", "BASE_REF": "main", "REPOSITORY": "o/r",
                     "RUN_ID": "run-t", "TASK_ID": "task-1"}
@@ -206,7 +208,8 @@ class RedCheckTest(Origin, unittest.TestCase):
 
     def test_trailer_values_carry_no_newline(self):
         self.commit(self.RED)
-        res = {"files": ["t/test-name.sh"], "ids": ["t/a\nb: x", "t/c"]}
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        res = {**res, "files": ["t/test-name.sh"], "ids": ["t/a\nb: x", "t/c"]}
         sha = agent_run.sign(self.env, self.base, res)
         msg = git(self.repo, "show", "-s", "--format=%B", sha)
         parsed = subprocess.run(["git", "interpret-trailers", "--parse"], input=msg, capture_output=True, text=True).stdout.splitlines()
@@ -663,3 +666,50 @@ class MainContractTest(unittest.TestCase):
     def test_a_loop_without_a_contract_gets_no_hold(self):
         r = self.main({"ROLE": "implementer", "AGENT_LOOP": "{}"})
         self.assertIsNone(r.drive.call_args.kwargs["hold"])
+
+
+class ReviewFixesTest(Origin, unittest.TestCase):
+    RED = RedCheckTest.RED
+
+    def test_sign_signs_the_checked_object_not_a_later_head(self):
+        self.commit(self.RED)
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        self.commit({"t/test-late.sh": "exit 1\n"}, "committed by a background process during the check")
+        sha = agent_run.sign(self.env, self.base, res)
+        self.assertEqual(git(self.repo, "rev-parse", sha + "^"), self.base)
+        self.assertEqual(git(self.repo, "rev-parse", sha + "^{tree}"), git(self.repo, "rev-parse", res["commit"] + "^{tree}"))
+        self.assertNotIn("t/test-late.sh", git(self.repo, "ls-tree", "-r", "--name-only", sha))
+
+    def test_sign_refuses_a_checked_commit_not_on_the_base(self):
+        self.commit(self.RED)
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        other = git(self.repo, "commit-tree", "HEAD^{tree}", "-m", "x")
+        with self.assertRaises(RuntimeError):
+            agent_run.sign(self.env, self.base, {**res, "commit": other})
+
+    def test_the_push_ignores_the_clones_remote_and_rewrites(self):
+        self.commit(self.RED)
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        sha = agent_run.sign(self.env, self.base, res)
+        evil = os.path.join(self.d, "evil.git")
+        subprocess.run(["git", "init", "-q", "--bare", evil], check=True)
+        git(self.repo, "config", "remote.origin.url", evil)
+        git(self.repo, "config", "url.%s.insteadOf" % evil, self.origin)
+        git(self.repo, "config", "url.%s.insteadOf" % evil, "https://github.com/o/r.git")
+        self.assertEqual(REAL_PUSH_URL(self.env), "https://github.com/o/r.git")
+        self.assertIsNone(agent_run.push_contract(self.env, sha))
+        self.assertEqual(git(self.origin, "rev-parse", "agent/x"), sha)
+        self.assertEqual(git(evil, "branch", "--list"), "")
+
+    def test_the_continuation_caps_each_item(self):
+        res = {"why": "w" * 5000, "rows": [{"id": "i" * 5000, "base": "-", "overlay": "pass"}], "outside": ["o" * 5000]}
+        text = agent_run.tester_continuation(res, ["t/"], "b", "F")
+        self.assertLess(len(text), 1500)
+
+    def test_a_red_check_that_raises_still_posts_an_end(self):
+        notes = Notes()
+        with mock.patch("agent_run.red_check", side_effect=RuntimeError("boom")), mock.patch("sys.stdout", new=io.StringIO()):
+            end = agent_run.tester_end(self.env, "cid", self.base, {}, notes)
+        self.assertEqual(end, "contract_not_red")
+        self.assertEqual(len(notes.finals), 1)
+        self.assertIn("could not run", notes.finals[0])
