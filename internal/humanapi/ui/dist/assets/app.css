@@ -75,6 +75,10 @@
     0 2px 4px 0 rgb(0 0 0 / 0.06);
   /* The dock floats over the stream it scrolls past. */
   --shadow-dock: 0 -1px 0 rgb(0 0 0 / 0.06), 0 -6px 16px -4px rgb(0 0 0 / 0.10);
+
+  /* The smallest target a control gets: 40 px on a dense desktop, 44 px on a phone (below).
+     A control drawn smaller extends to it with a pseudo-element, never over a neighbour's. */
+  --hit: 40px;
 }
 
 .dark {
@@ -152,8 +156,10 @@ time, .t-time, .step-dur, .strip-conn, .page-dock .status, .replay-progress, .t-
   font-variant-numeric: tabular-nums;
 }
 p, li { text-wrap: pretty; }
+.waiting, .closed, .mark-text, .sys, .hint, .approval-meta { text-wrap: pretty; }
 
 a { color: var(--link); }
+a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 
 /* The page chrome: a brand header, a docked footer. Class-scoped: the chat's
    <header class="msg-head"> and the raw view's <header class="ev-head"> are headers too,
@@ -198,7 +204,10 @@ a { color: var(--link); }
 /* The session: Run, Driver, the queue and Room, behind a toggle across the dock (P7).
    Open, it scrolls inside a bound, so the dock never takes the whole screen. */
 .page-dock > .session { grid-column: 1 / -1; min-width: 0; }
-.session > summary { cursor: pointer; font-size: 13px; color: var(--muted-foreground); width: fit-content; }
+/* 32 px tall, the top 6 px taken back from the dock's padding; the ::after reaches 40 px,
+   half the dock's 8 px gap below, so it never covers the composer. */
+.session > summary { cursor: pointer; font-size: 13px; color: var(--muted-foreground); width: fit-content; position: relative; padding-block: 6px; margin-top: -6px; }
+.session > summary::after { content: ""; position: absolute; inset: -4px -8px; }
 .session[open] > section.controls { max-height: 40vh; overflow: auto; margin-top: 6px; }
 .page-dock .controls { padding: 0; background: transparent; }
 .page-dock .composer { display: grid; gap: 8px; min-width: 0; }
@@ -210,7 +219,10 @@ a { color: var(--link); }
   /* Grows with the text from two lines to eight where the browser can; rows=2 elsewhere. */
   field-sizing: content; min-height: calc(2lh + 18px); max-height: calc(8lh + 18px);
 }
-button.send { display: inline-flex; gap: 6px; align-items: center; justify-content: center; padding: 0 16px; font-weight: 700; border-radius: 8px; min-width: 88px; }
+button.send { display: inline-flex; gap: 6px; align-items: center; justify-content: center; padding: 0 14px 0 16px; font-weight: 700; border-radius: 8px; min-width: 88px; }
+/* The arrow beside a 700 label carries its weight: 2.5, not the set's 1.5. The icon side's
+   padding is the text side's less 2 px, so the pair reads centred. */
+button.send .icon { stroke-width: 2.5; }
 .composer-row, .dock-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; min-width: 0; }
 .composer-row .hint { color: var(--muted-foreground); font-size: 13px; }
 .composer-row .keys { margin-left: auto; }
@@ -219,11 +231,14 @@ button.send { display: inline-flex; gap: 6px; align-items: center; justify-conte
 fieldset.delivery { display: inline-flex; gap: 2px; margin: 0; padding: 2px; border: 0; border-radius: 8px; background: var(--muted); min-width: 0; }
 fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .seg { position: relative; display: flex; }
-.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+/* The radio is the target: 6 px taller than its pill on each side (8 px on a phone), inside
+   the composer's 8 px gaps; the segments' 2 px gap stays theirs. */
+.seg input { position: absolute; inset: -6px 0; margin: 0; opacity: 0; cursor: pointer; }
 .seg span {
   padding: 4px 12px; border-radius: 6px; font-size: 13px; color: var(--muted-foreground);
   transition-property: background-color, color, box-shadow; transition-duration: 150ms; transition-timing-function: ease-out;
 }
+.seg input:not(:checked, :disabled):hover + span { color: var(--foreground); }
 .seg input:checked + span { background: var(--card); color: var(--foreground); font-weight: 700; box-shadow: var(--shadow-border); }
 .seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 1px; }
 .seg input:disabled + span { opacity: .5; }
@@ -232,6 +247,7 @@ fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overfl
 .page-dock[data-status="live"] .status { color: var(--success-text); }
 .page-dock .notice { color: var(--destructive-text); overflow-wrap: anywhere; }
 @media (max-width: 640px) {
+  :root { --hit: 44px; }
   .page-header { padding: 14px; row-gap: 14px; }
   .brand { gap: 14px; }
   .brand img { width: 28px; height: 28px; }
@@ -240,8 +256,10 @@ fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overfl
   .page-dock { grid-template-columns: minmax(0, 1fr); }
   .dock-meta { justify-content: space-between; }
   .composer-write { flex-direction: column; }
-  button.send { min-height: 40px; }
   .composer-row .keys { display: none; }
+  .seg input { inset: -8px 0; }
+  /* Touch: every form control is a full target, not only the dock's. */
+  .controls button, .controls select, .controls input:not([type="checkbox"]), .needs button, .approval-decide input, .fork button, .fork input, .new-room button, .new-room input { min-height: var(--hit); box-sizing: border-box; }
 }
 /* Not live: under the strip, why and when the page retries. */
 .banner { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
@@ -261,12 +279,27 @@ button {
   transition-property: box-shadow, background-color, scale; transition-duration: 150ms; transition-timing-function: ease-out;
 }
 button:hover { box-shadow: var(--shadow-border-hover); }
-/* Press feedback: never below .95, which reads as exaggerated. */
-button:active:not(:disabled) { scale: .96; }
+/* Press feedback: never below .95, which reads as exaggerated, and only where motion is
+   welcome. The buttons drawn as a line of text underline instead: a shrinking sentence reads
+   as a glitch. */
+@media (prefers-reduced-motion: no-preference) {
+  button:active:not(:disabled, .now-link, .clip-toggle, .t-more) { scale: .96; }
+}
 button:disabled { opacity: .55; cursor: not-allowed; }
 /* The acts a reader comes to do get a full target: Send, approve, deny. */
-.composer button, .needs button { min-height: 40px; }
+.composer button, .needs button { min-height: var(--hit); }
 .icon { width: 14px; height: 14px; flex: none; vertical-align: -2px; }
+/* The small standalone controls reach --hit through a centred ::after: it only grows, never
+   shrinks a control already larger. Each has 8 px or more of inert space around it. */
+.theme-toggle, .fork-here, .clip-toggle, .t-more, .cli-setup > summary, .notes details > summary { position: relative; }
+.theme-toggle::after, .fork-here::after, .clip-toggle::after, .t-more::after, .cli-setup > summary::after, .notes details > summary::after {
+  content: ""; position: absolute; inset: min(0px, (100% - var(--hit)) / 2);
+}
+/* The muted fold toggles darken on hover: a colour, the cheapest cue for a frequent act. */
+.session > summary, .cli-setup > summary, .notes details > summary, .fold > summary, .step-calls > summary, .controls .advanced > summary, .approval-json > summary {
+  transition-property: color; transition-duration: 150ms; transition-timing-function: ease-out;
+}
+.session > summary:hover, .cli-setup > summary:hover, .notes details > summary:hover, .fold > summary:hover, .step-calls > summary:hover, .controls .advanced > summary:hover, .approval-json > summary:hover { color: var(--foreground); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
@@ -276,7 +309,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    takes the header's text token rather than the card's. */
 .strip { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .strip-title { font-size: 20px; line-height: 1.3; margin: 0; font-weight: 700; }
-.strip-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.strip-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-variant-numeric: tabular-nums; }
+/* A chip's link and the Needs-you pill grow to their half of the 6 px row gap: a full --hit
+   would cover the next row's chips. */
+.page-header .chip a { position: relative; }
+.page-header .chip a::after { content: ""; position: absolute; inset: -5px -2px; }
+.page-header .needs-pill { position: relative; }
+.page-header .needs-pill::after { content: ""; position: absolute; inset: -3px 0; }
 .page-header .chip {
   color: var(--brand-header-foreground); background: transparent;
   border-color: color-mix(in srgb, var(--brand-header-foreground) 45%, var(--brand-header));
@@ -291,32 +330,37 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .strip-head { display: grid; gap: 4px; min-width: 0; }
 .strip-tail:empty { display: none; }
 /* The Now line: a button that reads as a line of text, so it takes the reader to the row. */
-.strip-now { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 13px; color: var(--brand-header-foreground); }
+.strip-now { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 13px; color: var(--brand-header-foreground); font-variant-numeric: tabular-nums; }
 .page-header .now-link {
   border: 0; padding: 0; text-align: left; font-size: 13px; overflow-wrap: anywhere;
   color: var(--brand-header-foreground); background: transparent;
 }
 .page-header .now-link:hover { box-shadow: none; text-decoration: underline; }
+.page-header .now-link { position: relative; }
+.page-header .now-link::after { content: ""; position: absolute; inset: min(0px, (100% - var(--hit)) / 2) 0; }
 .now-hint { font-style: italic; }
 .page-header .needs-pill {
   background: var(--warning); color: var(--warning-solid-foreground);
   border: 0; border-radius: 999px; padding: 2px 10px; font-weight: 700; font-size: 13px;
 }
-.theme-toggle { margin-left: auto; font-size: 13px; }
-.theme-toggle { margin-left: 0; }
+.theme-toggle { font-size: 13px; }
 /* On a phone the strip stays short, so the conversation starts on the first screen: the chips
    keep one line that scrolls sideways (pure CSS: no count to keep right as chips come and go),
    Needs you leads it, and the title, the waiting lines and the Now line clamp at two lines.
    The desktop strip is untouched: nothing here applies above 640px. */
 @media (max-width: 640px) {
   /* The padding, taken back by the margin, keeps the pill's focus ring out of the clip. */
-  .page-header .strip-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-block: 4px; margin-block: -4px; }
+  /* 8 px: the pill's ring and its 44 px target both fit in the scroll box, which clips them. */
+  .page-header .strip-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-block: 8px; margin-block: -8px; }
+  .page-header .needs-pill::after { inset: -8px 0; }
   .page-header .strip-chips::-webkit-scrollbar { display: none; }
   .page-header .strip-chips > * { flex: none; } /* never squeezed: "live" would stack a letter a line */
   .page-header .needs-pill { order: -1; }
   .strip-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .page-header .waiting { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .page-header .now-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* The clamp's overflow clips an ::after: the button's own box grows instead, the margin
+     taking the 24 px back: 20 px of line and 24 px of padding is the 44. */
+  .page-header .now-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding-block: 12px; margin-block: -12px; }
 }
 
 /* Chat view */
@@ -361,6 +405,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .tool summary::before { content: "▸"; color: var(--placeholder); }
 .tool[open] summary::before { content: "▾"; }
 .tool summary::-webkit-details-marker { display: none; }
+.tool[open] > summary { border-radius: 8px 8px 0 0; } /* its bottom meets the body's rule */
 .tool.st-rejected, .tool.st-error { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--destructive) 65%, var(--card)); }
 .tool.st-rejected { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--warning) 80%, var(--card)); }
 .t-name { color: var(--link); font-weight: 700; }
@@ -384,6 +429,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .t-out { max-height: none; }
 .t-out.capped { max-height: 16em; }
 .t-more { font-size: 13px; }
+.t-more:hover { text-decoration: underline; }
 
 /* Chips and badges: a tinted pill, the status token for its text. */
 .chip, .pol {
@@ -425,6 +471,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .fold > summary { cursor: pointer; list-style: none; }
 .fold > summary::-webkit-details-marker { display: none; }
 .fold-body { padding-left: 14px; }
+.notes details > summary, .fold > summary, .step-calls > summary, .t-sec { font-variant-numeric: tabular-nums; }
 /* A step (P1): an agent's message, then its calls behind one line, on a rail under it. */
 .step { margin: 12px 0; max-width: 72ch; }
 .step > .msg, .step > .row > .msg { margin: 0; }
@@ -510,7 +557,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .needs h2 { margin: 0; font-size: 1em; }
 .approvals, .needs-other { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .needs-other li { overflow-wrap: anywhere; }
-.approval { border: 1px solid var(--warning-border); border-radius: 6px; padding: 8px 12px; display: grid; gap: 6px;
+/* 14 px: the 6 px reason field and buttons plus the 8 px of padding, concentric. */
+.approval { border: 1px solid var(--warning-border); border-radius: 14px; padding: 8px 12px; display: grid; gap: 6px;
   background: var(--card); color: var(--card-foreground); min-width: 0; }
 .approval-command { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval-meta { color: var(--muted-foreground); font-size: 13px; overflow-wrap: anywhere; }
@@ -525,7 +573,7 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .fork-here { font-size: 13px; padding: 0 6px; }
 /* U7: fork here sits in a toolbar beside a message or a handoff, shown on hover and focus. */
 .row { position: relative; max-width: 72ch; }
-.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; }
+.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; transition-property: opacity; transition-duration: 150ms; transition-timing-function: ease-out; }
 .row:hover .row-tools, .row:focus-within .row-tools { opacity: 1; }
 .fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
 .fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -580,10 +628,10 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .list-tools label { display: inline-flex; gap: 6px; align-items: center; }
 .list-tools .notice { color: var(--destructive-text); }
 .list-tools .notice:empty { display: none; }
-.list-tools select, .list-tools button { min-height: 32px; }
+.list-tools label, .list-tools select, .list-tools button { min-height: var(--hit); }
 .list-tools [data-act="new-room"] { margin-left: auto; padding: 0 14px; font-weight: 700; }
 table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collapse; background: var(--card); box-shadow: var(--shadow-border); border-radius: 8px; overflow: hidden; }
-.rooms th, .rooms td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.rooms th, .rooms td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: baseline; font-variant-numeric: tabular-nums; }
 .rooms tbody tr:last-child td { border-bottom: 0; }
 .rooms th { font-size: 13px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
 .rooms th:first-child, .rooms .room-row td:first-child { width: 1%; white-space: nowrap; }
