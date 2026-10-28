@@ -4,6 +4,7 @@
 // broker: every act is inert. The developer preview (full.ts) and the live demo (demo.ts)
 // both mount through here, so the demo can never drift from what the preview shows.
 
+import { mountBrand } from "../src/brand";
 import type { RoomEvent, Snapshot } from "../src/conn";
 import { mountComposer, mountControls } from "../src/controls";
 import { mountFork } from "../src/fork";
@@ -31,6 +32,8 @@ export interface PreviewOptions {
   nothingSent: string; // what an act says, since it goes nowhere
   sessionOpen: boolean;
   sessionLabel?: string; // the session toggle's text
+  homeHref?: string; // the brand link target; "/" unless the demo keeps it on its own page
+  assetBase?: string; // where the brand marks are served; "/assets" unless the demo serves them relative
   theme: ThemeController; // initialised by the caller, so a ?theme override can follow it
 }
 
@@ -39,6 +42,7 @@ export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPa
   let summary = o.summary;
   const header = document.createElement("header");
   header.className = "page-header";
+  mountBrand(header, o.assetBase ?? "/assets", o.homeHref ?? "/");
   const strip = mountStrip(header);
   const needsPanel = document.createElement("section");
   const lead = document.createElement("section");

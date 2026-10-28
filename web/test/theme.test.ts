@@ -79,5 +79,11 @@ describe("initTheme and the toggle", () => {
     btn.click();
     expect(btn.textContent).toBe("theme: dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+    btn.click(); // system: jsdom has no matchMedia, so light
+    expect(btn.textContent).toBe("theme: system");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    btn.click();
+    expect(btn.textContent).toBe("theme: light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 });

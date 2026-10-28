@@ -191,6 +191,13 @@ describe("the room page", () => {
     expect(p.app.querySelector("header.msg-head")?.classList.contains("page-header")).toBe(false);
   });
 
+  it("mounts exactly one Maku brand ahead of the strip", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelectorAll(".brand")).toHaveLength(1);
+    expect(p.app.querySelector("header.page-header")?.firstElementChild?.classList.contains("brand")).toBe(true);
+  });
+
   it("heads the page with the room's phase as the log moves it (R10)", () => {
     const p = page();
     p.join(snapshot(), 0);

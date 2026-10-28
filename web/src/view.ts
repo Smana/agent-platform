@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { mountBrand } from "./brand";
 import { api, nav, SignInRequired } from "./api";
 import { maxRows } from "./limits";
 import { ago } from "./summary";
@@ -140,6 +141,8 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
 
   const header = document.createElement("header");
   header.className = "page-header";
+  mountBrand(header);
+  document.title = "Maku rooms";
   const h1 = document.createElement("h1");
   h1.textContent = "Rooms";
   header.append(h1);

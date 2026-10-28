@@ -81,7 +81,12 @@ describe("the title strip", () => {
     const { h, strip } = mount();
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });
     expect(h.querySelector("h1")?.textContent).toBe("#74 Chat view: pair tool calls");
-    expect(document.title).toBe("#74 Chat view: pair tool calls · Implementing");
+    expect(document.title).toBe("#74 Chat view: pair tool calls · Implementing · Maku");
+  });
+  it("keeps the product name when there is no phase", () => {
+    const { strip } = mount();
+    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0, connection: "connecting…" });
+    expect(document.title).toBe("Room 3kq7x2ma · Maku");
   });
   it("falls back to the room id before the summary arrives", () => {
     const { h, strip } = mount();

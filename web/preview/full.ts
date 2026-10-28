@@ -7,7 +7,7 @@
 
 import type { RoomEvent, Snapshot } from "../src/conn";
 import type { Summary } from "../src/summary";
-import { initTheme } from "../src/theme";
+import { applyTheme, initTheme } from "../src/theme";
 import { mountPreviewPage } from "./page";
 
 const get = async <T>(path: string): Promise<T> => (await fetch(path)).json() as Promise<T>;
@@ -20,7 +20,8 @@ async function run() {
   ]);
   const events = text.trim().split("\n").map((l) => JSON.parse(l) as RoomEvent);
   const theme = initTheme();
-  if (new URLSearchParams(location.search).get("theme") === "dark") document.documentElement.classList.add("dark");
+  const override = new URLSearchParams(location.search).get("theme");
+  if (override === "light" || override === "dark") applyTheme(override);
 
   const page = mountPreviewPage(document.getElementById("app")!, { snap, summary, count: events.length,
     nothingSent: "Offline preview: nothing was sent.", sessionOpen: new URLSearchParams(location.search).has("session"), theme });

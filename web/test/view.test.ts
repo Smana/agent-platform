@@ -49,7 +49,7 @@ describe("listRooms", () => {
     const el = app();
     const rows = [{ id: "3kq7x2ma", phase: "", owner: "human:1", driver: "", dataClass: "internal", lastSeq: 4 }];
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
-    expect(el.querySelector("a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
+    expect(el.querySelector("tbody a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
   });
   // #50: a row says which task it is, not only a random id; the title is text, never markup.
   it("names the issue, title, task phase, PR and what needs you", async () => {
@@ -62,7 +62,7 @@ describe("listRooms", () => {
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
     const [first, second] = [...el.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
     expect(first).toEqual(["2", "#2266 <img src=x onerror=alert(1)>", "Smana/a", "Reviewing", "#2267", "—", "yacoriey"]);
-    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("tbody img")).toBeNull();
     expect(second).toEqual(["", "Room d66mo4b4", "", "Idle", "", "—", "d66mo4b4"]);
     expect(el.querySelectorAll("th[scope=col]").length).toBe(7);
   });
@@ -83,6 +83,14 @@ describe("the room table", () => {
   ];
   it("sorts needs-you first, then the most recent activity", () => {
     expect(sortRooms(rows).map((r) => r.id)).toEqual(["3kq7x2ma", "k2p9rt4v", "d66mo4b4"]);
+  });
+  it("mounts one Maku brand in the list header and titles the tab", async () => {
+    const root = app();
+    await listRooms(root, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);
+    expect(root.querySelectorAll(".brand")).toHaveLength(1);
+    expect(root.querySelector("header.page-header")?.firstElementChild?.classList.contains("brand")).toBe(true);
+    expect(root.querySelector("h1")?.textContent).toBe("Rooms");
+    expect(document.title).toBe("Maku rooms");
   });
   it("renders one row per room with the task first and a needs pill", async () => {
     const get = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("needs_me=1") ? [rows[1]] : rows), { status: 200 }));

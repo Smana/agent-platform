@@ -5,6 +5,7 @@
 // composer, the connection), all fed by one RoomConnection.
 
 import { api } from "./api";
+import { mountBrand } from "./brand";
 import { focusRow } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountComposer, mountControls, rejection, shortPrincipal } from "./controls";
@@ -22,6 +23,7 @@ import { mountThemeButton, type ThemeController } from "./theme";
 export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, o: Options & { get?: typeof fetch } = {}) {
   const header = document.createElement("header");
   header.className = "page-header";
+  mountBrand(header);
   const strip = mountStrip(header);
   // Not live: why, and when the page retries. Hidden while live.
   const banner = document.createElement("div");

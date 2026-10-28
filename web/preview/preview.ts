@@ -5,6 +5,7 @@
 // web/ statically (`npm run preview`) and open /preview/preview.html; ?live
 // replays the run at reading pace so the running chips and pairings show.
 
+import { mountBrand } from "../src/brand";
 import type { RoomEvent } from "../src/conn";
 import { mountViews, type Views } from "../src/roomview";
 import { initTheme, mountThemeButton } from "../src/theme";
@@ -21,6 +22,7 @@ async function load(): Promise<RoomEvent[]> {
 function skeleton(): { views: Views; counters: HTMLElement; status: HTMLElement; foot: HTMLElement } {
   const header = document.createElement("header");
   header.className = "page-header";
+  mountBrand(header);
   const title = document.createElement("span");
   title.className = "title";
   title.textContent = "3kq7x2ma · Open · internal · preview of test/fixtures/live-session.jsonl";

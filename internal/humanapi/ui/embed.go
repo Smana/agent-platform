@@ -12,6 +12,8 @@ import (
 //go:embed dist
 var dist embed.FS
 
-// FS is the UI rooted at dist/: index.html, app.js and app.css at its root, where
-// humanapi.Server.UI serves them (/ and /r/{id} get index.html, /assets/{file} the rest).
+// FS is the UI rooted at dist/: index.html alone at its root, and under assets/ the
+// bundle (app.js, app.css) with the svg/, favicon/ and fonts/ copied from web/src/assets.
+// humanapi.Server.UI serves it: / and /r/{id} get index.html, /assets/{file...} a file
+// under assets/.
 var FS, _ = fs.Sub(dist, "dist")
