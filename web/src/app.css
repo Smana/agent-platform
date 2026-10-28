@@ -573,8 +573,18 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .fork-here { font-size: 13px; padding: 0 6px; }
 /* U7: fork here sits in a toolbar beside a message or a handoff, shown on hover and focus. */
 .row { position: relative; max-width: 72ch; }
-.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; transition-property: opacity; transition-duration: 150ms; transition-timing-function: ease-out; }
-.row:hover .row-tools, .row:focus-within .row-tools { opacity: 1; }
+.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; visibility: hidden; pointer-events: none; transition-property: opacity, visibility; transition-duration: 150ms; transition-timing-function: ease-out; }
+.row:hover .row-tools, .row:focus-within .row-tools { opacity: 1; visibility: visible; pointer-events: auto; }
+/* No hover, no reveal: on touch the control stays visible, in the flow under the row where it
+   cannot cover the timestamp, and is a full 44 px target. */
+@media (hover: none), (pointer: coarse) {
+  .row-tools { position: static; opacity: 1; visibility: visible; pointer-events: auto; text-align: right; }
+  .row-tools { margin-top: -2px; }
+  .row-tools .fork-here { border: 0; background: none; box-shadow: none; color: var(--muted-foreground); font-size: 13px; line-height: 20px; height: 20px; min-height: 0; padding: 0 8px; }
+  .row-tools .fork-here:hover { box-shadow: none; text-decoration: underline; }
+  /* 20 px visible + 12 px each way = 44 px, over the row's own inert space. */
+  .row-tools .fork-here::after { inset: -12px -8px; }
+}
 .fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
 .fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .fork input { flex: 1 1 12em; min-width: 0; }

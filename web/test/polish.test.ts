@@ -156,3 +156,34 @@ describe("icons", () => {
     expect(decl(outside, "button.send")).toMatch(/padding:\s*0 14px 0 16px/);
   });
 });
+
+describe("fork here on touch screens", () => {
+  const touch = media("(hover: none), (pointer: coarse)");
+  it("is never an invisible tap target: hidden means inert", () => {
+    const hidden = decl(outside, ".row-tools");
+    expect(hidden).toMatch(/opacity:\s*0/);
+    expect(hidden).toMatch(/visibility:\s*hidden/);
+    expect(hidden).toMatch(/pointer-events:\s*none/);
+    expect(decl(outside, ".row:hover .row-tools, .row:focus-within .row-tools")).toMatch(/visibility:\s*visible/);
+  });
+  it("is shown on touch, in the flow under the row, clear of the timestamp", () => {
+    const bar = decl(touch, ".row-tools");
+    expect(bar).toMatch(/position:\s*static/);
+    expect(bar).toMatch(/opacity:\s*1/);
+    expect(bar).toMatch(/visibility:\s*visible/);
+    expect(bar).toMatch(/pointer-events:\s*auto/);
+  });
+  it("is drawn quiet on touch: no border, background or shadow, muted 13 px text", () => {
+    const b = decl(touch, ".row-tools .fork-here");
+    expect(b).toMatch(/border:\s*(0|none)/);
+    expect(b).toMatch(/background:\s*none|background:\s*transparent/);
+    expect(b).toMatch(/box-shadow:\s*none/);
+    expect(b).toMatch(/color:\s*var\(--muted-foreground\)/);
+    expect(b).toMatch(/font-size:\s*13px/);
+    expect(b).not.toMatch(/min-height:\s*[1-9]/);
+  });
+  it("gets its 44 px hit area from ::after, not from visible padding", () => {
+    const a = decl(touch, ".row-tools .fork-here::after");
+    expect(a).toMatch(/inset:\s*-12px\s+-8px/);
+  });
+});
