@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,10 @@ type DraftPayload struct {
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	SHA256 string `json:"sha256"`
+	// Author is the Slack user who wrote the mention: the only one whose thread replies edit the
+	// draft. Rev counts the drafts the thread has had, 1 for the first.
+	Author string `json:"author,omitempty"`
+	Rev    int    `json:"rev,omitempty"`
 }
 
 // Message is a Slack message as the ✅ flow reads it (M9). User is who posted it: the App's own
@@ -43,8 +48,10 @@ type Message struct {
 	Metadata                 *Metadata
 }
 
-// Slack is the two Web API calls the App makes.
+// Slack is the Web API calls the App makes.
 type Slack interface {
+	// Thread is the thread's messages, oldest first, the parent included, with their metadata.
+	Thread(ctx context.Context, channel, threadTS string) ([]Message, error)
 	Post(ctx context.Context, channel, threadTS, text string, meta *Metadata) (ts string, err error)
 	Message(ctx context.Context, channel, ts string) (Message, error)
 }
@@ -57,9 +64,12 @@ type SlackClient struct {
 }
 
 type slackAnswer struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error"`
-	TS       string `json:"ts"`
+	OK               bool   `json:"ok"`
+	Error            string `json:"error"`
+	TS               string `json:"ts"`
+	ResponseMetadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
 	Messages []struct {
 		TS       string `json:"ts"`
 		ThreadTS string `json:"thread_ts"`
@@ -121,6 +131,46 @@ func (c *SlackClient) Message(ctx context.Context, channel, ts string) (Message,
 		return out, nil
 	}
 	return Message{}, errors.New("slackapp: slack: the message is not in the answer")
+}
+
+const (
+	threadPageSize = 200
+	threadMaxPages = 5
+)
+
+// ErrThreadTooLong is a thread with more pages than Thread follows: its latest draft cannot be
+// known, so nothing is edited or filed from it.
+var ErrThreadTooLong = errors.New("slackapp: slack: the thread is too long")
+
+// Thread is conversations.replies for a thread, followed over a few pages at most.
+func (c *SlackClient) Thread(ctx context.Context, channel, threadTS string) ([]Message, error) {
+	var out []Message
+	cursor := ""
+	for range threadMaxPages {
+		q := url.Values{"channel": {channel}, "ts": {threadTS}, "limit": {strconv.Itoa(threadPageSize)}, "include_all_metadata": {"true"}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("conversations.replies")+"?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		a, err := c.do(req)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range a.Messages {
+			msg := Message{TS: m.TS, ThreadTS: m.ThreadTS, User: m.User, Text: m.Text}
+			if m.Metadata != nil {
+				msg.Metadata = &Metadata{EventType: m.Metadata.EventType, EventPayload: m.Metadata.EventPayload}
+			}
+			out = append(out, msg)
+		}
+		if cursor = a.ResponseMetadata.NextCursor; cursor == "" {
+			return out, nil
+		}
+	}
+	return nil, ErrThreadTooLong
 }
 
 func (c *SlackClient) url(method string) string {

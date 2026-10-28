@@ -182,3 +182,21 @@ func TestRefusalNeverAsksForHeadings(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestApplyReplyAreaRule(t *testing.T) {
+	d := Draft{Repo: "a/b", Title: "chore: tidy", Body: composeBody("chore: tidy", "x")}
+	got, ok := ApplyReply(d, "Title: tidy the logs")
+	if !ok || got.Title != "chore: tidy the logs" {
+		t.Fatalf("%+v", got)
+	}
+	got, _ = ApplyReply(d, "Title: feat(api): add a route")
+	if got.Title != "feat(api): add a route" {
+		t.Fatalf("%q", got.Title)
+	}
+	if _, ok := ApplyReply(d, "Acceptance:"); ok {
+		t.Fatal("an empty section is no change")
+	}
+	if _, ok := ApplyReply(Draft{Repo: "a/b", Title: "t", Body: "no template"}, "more"); ok {
+		t.Fatal("a body without the template is not edited")
+	}
+}

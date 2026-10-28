@@ -5,6 +5,7 @@ package slackapp
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -106,15 +107,16 @@ var (
 
 const decoration = "*_#•-> \t"
 
-// composeBody builds the template's body from free text: the lines before any keyword are what is
-// wrong (the title when there are none), a `should:` line opens what it should be, an
-// `acceptance:` line opens the acceptance check. A body that already has the template's first
-// heading is passed as typed. Slack's `•` bullets become `- `.
-func composeBody(title, body string) string {
-	if hasHeading(body, "## What is wrong") {
-		return body
-	}
-	var sec [3][]string // wrong, should, acceptance
+// replyTitleRE is the `Title:` line of a reply that edits a draft; a mention never opens one.
+var replyTitleRE = regexp.MustCompile(`(?i)^title\s*:`)
+
+// splitSections cuts free text into what is wrong, what it should be and the acceptance check,
+// each as typed ("" when absent): the lines before any keyword are what is wrong, a `should:`
+// line opens what it should be, an `acceptance:` line opens the acceptance check. With
+// withTitle a `title:` line is returned apart (a reply may retitle a draft). Slack's `•` bullets
+// become `- `.
+func splitSections(body string, withTitle bool) (secs [3]string, title string) {
+	var sec [3][]string
 	cur := 0
 	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimRight(line, " \t\r")
@@ -127,6 +129,9 @@ func composeBody(title, body string) string {
 		}
 		stripped := strings.TrimLeft(line, decoration)
 		switch {
+		case withTitle && replyTitleRE.MatchString(stripped):
+			title = afterKeyword(stripped)
+			continue
 		case acceptanceRE.MatchString(stripped):
 			cur = 2
 			line = afterKeyword(stripped)
@@ -142,15 +147,97 @@ func composeBody(title, body string) string {
 		}
 		sec[cur] = append(sec[cur], line)
 	}
-	text := func(i int, def string) string {
-		if t := strings.TrimSpace(strings.Join(sec[i], "\n")); t != "" {
-			return t
-		}
-		return def
+	for i := range sec {
+		secs[i] = strings.TrimSpace(strings.Join(sec[i], "\n"))
 	}
-	return "## What is wrong\n" + text(0, title) +
-		"\n\n## What it should be\n" + text(1, asTheTitle) +
-		"\n\n## Acceptance check\n" + text(2, noAcceptance)
+	return secs, title
+}
+
+// composeBody builds the template's body from free text, a default standing in for each section
+// left empty (the title for what is wrong). A body that already has the template's first heading
+// is passed as typed.
+func composeBody(title, body string) string {
+	if hasHeading(body, "## What is wrong") {
+		return body
+	}
+	secs, _ := splitSections(body, false)
+	return renderBody(secs, title)
+}
+
+var bodyHeadings = [3]string{"## What is wrong", "## What it should be", "## Acceptance check"}
+
+// renderBody is the issue body: the three sections under the template's headings, a default for
+// each one empty.
+func renderBody(secs [3]string, title string) string {
+	def := [3]string{title, asTheTitle, noAcceptance}
+	for i := range secs {
+		if secs[i] == "" {
+			secs[i] = def[i]
+		}
+	}
+	return bodyHeadings[0] + "\n" + secs[0] + "\n\n" + bodyHeadings[1] + "\n" + secs[1] + "\n\n" + bodyHeadings[2] + "\n" + secs[2]
+}
+
+// parseBody is the three sections of a body built by renderBody; ok is false for a body that
+// does not carry the template (it is then shown whole and never edited).
+func parseBody(body string) (secs [3]string, ok bool) {
+	var sec [3][]string
+	cur := -1
+	for line := range strings.SplitSeq(body, "\n") {
+		if i := slices.Index(bodyHeadings[:], strings.TrimSpace(line)); i >= 0 {
+			cur = i
+			continue
+		}
+		if cur >= 0 {
+			sec[cur] = append(sec[cur], line)
+		}
+	}
+	for i := range sec {
+		secs[i] = strings.TrimSpace(strings.Join(sec[i], "\n"))
+	}
+	return secs, cur >= 0 && secs[0] != ""
+}
+
+// maxReplyRunes bounds what one reply adds; the metadata cap bounds the draft as a whole.
+const maxReplyRunes = 4000
+
+// ApplyReply amends a draft with a reply in its thread: `Title:` replaces the title (the area
+// rule applies again), `Should:` / `Expected:` and `Acceptance:` / `Done when:` / `Check:` replace
+// their sections, any other text is appended to what is wrong. changed is false when the reply
+// holds nothing to apply.
+func ApplyReply(d Draft, text string) (out Draft, changed bool) {
+	text = strings.TrimSpace(slackUnescape.Replace(text))
+	if r := []rune(text); len(r) > maxReplyRunes {
+		text = string(r[:maxReplyRunes])
+	}
+	cur, ok := parseBody(d.Body)
+	if !ok || text == "" {
+		return d, false
+	}
+	add, newTitle := splitSections(text, true)
+	newTitle = strings.TrimSpace(newTitle)
+	if add == ([3]string{}) && newTitle == "" {
+		return d, false
+	}
+	if add[0] != "" {
+		if _, rest, found := strings.Cut(d.Title, ": "); cur[0] == d.Title || (found && cur[0] == rest) {
+			cur[0] = add[0] // what is wrong was only the title: the reply replaces the default
+		} else {
+			cur[0] += "\n\n" + add[0]
+		}
+	}
+	if add[1] != "" {
+		cur[1] = add[1]
+	}
+	if add[2] != "" {
+		cur[2] = add[2]
+	}
+	body := renderBody(cur, d.Title)
+	title := d.Title
+	if newTitle != "" {
+		title = areaTitle(newTitle, body)
+	}
+	return Draft{Repo: d.Repo, Title: title, Body: body}, true
 }
 
 // afterKeyword is what follows the keyword's colon on its line, minus the closing decoration.
