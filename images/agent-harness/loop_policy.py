@@ -77,6 +77,41 @@ def acceptance(task: str) -> str:
 
 DIFF_MAX = 16 << 10
 FILES_MAX = 100
+PATHS_MAX = 20
+
+# A repository path named in the acceptance: a token with a slash and no scheme.
+PATH_TOKEN = re.compile(r"(?<![\w:/.@-])((?:[\w.-]+/)+[\w.-]*\w)(?![\w:@])")
+# Cues on the line naming a path. FORBID: the acceptance says the path must not be created;
+# LINK: it asks for something that points at it; GONE: the path is meant to be removed or moved.
+FORBID = re.compile(r"\b(?:must not|do not|don't|never|should not|shall not|not be created|no new|without creating|"
+                    r"not to create|not create)\b", re.I)
+LINK = re.compile(r"\b(?:links?|linking|linked|references?|points? to|pointing|mentions?|href|cites?)\b", re.I)
+GONE = re.compile(r"\b(?:remove[sd]?|delete[sd]?|drop(?:ped)?|renam\w+|moved?|no longer|absent|must not exist|"
+                  r"does not exist|doesn't exist)\b", re.I)
+
+
+def named_paths(checks: str, toplevel: set[str]) -> list[tuple[str, str]]:
+    """The repository paths the acceptance names, as (path, mode): the token's first segment must be a
+    top-level entry of the repo's tree, so a URL or a prose `and/or` is not one. mode is `required`
+    (missing means the work is not done), `unmakeable` (it must be linked but not created: a missing path
+    can never satisfy it) or `ignored` (the acceptance wants it absent, or forbids creating it without
+    asking for anything that points at it). Per line; the first mention of a path wins."""
+    out: dict[str, str] = {}
+    for line in checks.splitlines():
+        for m in PATH_TOKEN.finditer(line):
+            path = m.group(1).rstrip(".")
+            if path in out or path.split("/", 1)[0] not in toplevel:
+                continue
+            if GONE.search(line):
+                mode = "ignored"
+            elif FORBID.search(line):
+                mode = "unmakeable" if LINK.search(line) else "ignored"
+            else:
+                mode = "required"
+            out[path] = mode
+            if len(out) >= PATHS_MAX:
+                return list(out.items())
+    return list(out.items())
 
 JUDGE_SYSTEM = """You judge whether a coding agent finished its task. You have no tools: you see only the \
 acceptance checks, the diff and the checks' output below. Reply with one JSON object and nothing else:
@@ -87,6 +122,7 @@ a head that is not pushed. The reason tells the agent what.
 - impossible: no change to this repository can satisfy the acceptance checks, for example they need \
 access, data or a decision the agent does not have. The reason says why.
 - evidence: ids from the EVIDENCE list that show it. A verdict that cites none is discarded.
+- A path named in the acceptance checks that the PATHS section shows as missing is not a pass.
 - Acceptance checks are literal. A check named in the acceptance checks, or in the checks' output, that \
 failed is never a pass: answer not_yet (or impossible, when no change can make it pass), whatever the \
 repository's README, comments or issue prose says about that failure being expected or intended.
@@ -104,9 +140,12 @@ class Offered(set):
     failing: tuple = ()
     pending: tuple = ()
     unpushed: bool = False
+    missing: tuple = ()  # named paths the acceptance requires, missing at the head
+    unmakeable: tuple = ()  # named paths the acceptance wants linked but forbids creating, missing at the head
 
 
-def judge_input(checks_text: str, head: str, files: list[str], diff: str, runs: list[dict] | None) -> tuple[str, set[str]]:
+def judge_input(checks_text: str, head: str, files: list[str], diff: str, runs: list[dict] | None,
+                paths: list[tuple[str, str, bool]] | None = None) -> tuple[str, set[str]]:
     """The judge's user message and the evidence ids it may cite. runs is None when GitHub knows no
     such head; a check that has not completed is listed as pending, which is evidence of nothing."""
     offered = Offered(["acceptance", "diff"])
@@ -126,6 +165,16 @@ def judge_input(checks_text: str, head: str, files: list[str], diff: str, runs: 
             offered.failing += (cid,)
         state = r["conclusion"] if r["status"] == "completed" else "pending (%s)" % r["status"]
         lines.append("- %s: %s%s" % (cid, state, " - " + r["title"] if r["title"] else ""))
+    if paths:
+        lines += ["", "PATHS NAMED IN THE ACCEPTANCE CHECKS (checked at the head with git)"]
+        for path, mode, exists in paths:
+            pid = "path:" + path
+            offered.add(pid)
+            lines.append("- %s: path %s: %s" % (pid, path, "exists" if exists else "missing"))
+            if not exists and mode == "required":
+                offered.missing += (pid,)
+            elif not exists and mode == "unmakeable":
+                offered.unmakeable += (pid,)
     lines += ["", "CHANGED FILES"]
     for f in files[:FILES_MAX]:
         offered.add("file:" + f)
@@ -185,7 +234,12 @@ def guard(v: Verdict, offered) -> Verdict:
     intended; prose is data, a failed check is a fact."""
     if v.kind != "met":
         return v
+    if offered.unmakeable:
+        return Verdict("impossible", "the acceptance asks for a link to %s but forbids creating it, so no change can satisfy it; "
+                       "the judge's reading was: %s" % (", ".join(offered.unmakeable), v.reason), v.evidence)
     why = []
+    if offered.missing:
+        why.append("a path the acceptance requires is missing (%s)" % ", ".join(offered.missing))
     if offered.failing:
         why.append("a check failed (%s)" % ", ".join(offered.failing))
     if offered.pending:
