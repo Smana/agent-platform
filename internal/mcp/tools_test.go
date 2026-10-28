@@ -367,10 +367,11 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		"room_handoff":  {[]string{"implementer", "tester", "triager"}, policy.Chat},
 		"room_verdict":  {[]string{"reviewer"}, policy.Chat},
 		"room_judge":    {[]string{"implementer"}, policy.Chat},
+		"room_contract": {[]string{"tester"}, policy.Chat},
 	}
 	got := tools(&memLog{})
 	for _, t2 := range got {
-		if (t2.Name == "room_judge") != t2.HarnessOnly {
+		if (t2.Name == "room_judge" || t2.Name == "room_contract") != t2.HarnessOnly {
 			t.Errorf("%s: HarnessOnly = %v", t2.Name, t2.HarnessOnly)
 		}
 	}
@@ -555,5 +556,29 @@ func TestJudgeVerdictIsAMessage(t *testing.T) {
 	}
 	if len(log.drafts) != 1 {
 		t.Fatalf("%d drafts", len(log.drafts))
+	}
+}
+
+// The tester harness reports the contract commit it pushed through room_contract, and the model cannot:
+// the factory adopts only the commit this event names (v3 feature 4).
+func TestContractIsAHarnessOnlyMessage(t *testing.T) {
+	log := &memLog{}
+	ct := tool(tools(log), "room_contract")
+	if !ct.HarnessOnly || len(ct.Roles) != 1 || ct.Roles[0] != "tester" {
+		t.Fatalf("%+v", ct.Roles)
+	}
+	sha, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	if _, err := ct.Call(t.Context(), impl, json.RawMessage(`{"commit":"`+sha+`","base":"`+base+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	var p envelope.MessagePayload
+	_ = json.Unmarshal(log.drafts[0].Payload, &p)
+	if err := log.drafts[0].Validate(); err != nil || p.Kind != envelope.KindContract || p.Commit != sha || p.Base != base {
+		t.Fatalf("%v %+v", err, p)
+	}
+	for _, bad := range []string{`{"commit":"abc","base":"` + base + `"}`, `{"commit":"` + sha + `"}`} {
+		if _, err := ct.Call(t.Context(), impl, json.RawMessage(bad)); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
 	}
 }

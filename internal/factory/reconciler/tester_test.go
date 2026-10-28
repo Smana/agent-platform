@@ -125,7 +125,7 @@ const (
 // and an id per entry.
 func contractCommit(run string, files, ids []string) string {
 	var b strings.Builder
-	b.WriteString("test: pin the dry-run flag\n\nAgent-Run: " + run + "\nAgent-Contract: " + run + "\n")
+	b.WriteString(contractSubject + "\n\nAgent-Run: " + run + "\nAgent-Contract: " + run + "\n")
 	for _, f := range files {
 		b.WriteString("Agent-Contract-File: " + f + "\n")
 	}
@@ -133,6 +133,24 @@ func contractCommit(run string, files, ids []string) string {
 		b.WriteString("Agent-Contract-Id: " + id + "\n")
 	}
 	return b.String()
+}
+
+const baseSHA = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+
+// contractIs makes the commit at sha what the tester harness pushes on baseSHA and, when report, has the
+// harness report it through room_contract (the only source the factory adopts a commit from).
+func (g *rig) contractIs(sha, run string, files, ids []string, report bool) {
+	g.f.SetCommitFull(forge.Commit{SHA: sha, Message: contractCommit(run, files, ids), Parents: []string{baseSHA}, Files: slices.Clone(files)})
+	if report {
+		g.reported(run, sha, baseSHA)
+	}
+}
+
+// reported is the harness's room_contract event, as the broker stamps it.
+func (g *rig) reported(run, sha, base string) {
+	g.log.evs = append(g.log.evs, envelope.Event{Seq: int64(len(g.log.evs) + 1), RunID: run, Type: envelope.Message, Origin: envelope.OriginClient,
+		Actor:   envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + run, Role: "tester"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindContract, Text: "contract commit pushed", Commit: sha, Base: base, Delivery: envelope.DeliveryNone})})
 }
 
 // pushed records the tester's push as GitHub's activity does: the branch's creation by the agents App.
@@ -158,7 +176,7 @@ func TestARedContractIsRecordedAndTheImplementerIsBriefed(t *testing.T) {
 	g := testerRig(t, nil)
 	files, ids := []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"}
 	g.pushed(agentsApp)
-	g.f.SetCommit(contractSHA, contractCommit(rid(0), files, ids))
+	g.contractIs(contractSHA, rid(0), files, ids, true)
 	g.harnessNote(rid(0), "Harness (tester): contract_ready: 3 tests, red on the current code")
 	tk := g.endTester(t, "Succeeded", "agent_finished")
 	want := &v1alpha1.ContractStatus{RunID: rid(0), Commit: contractSHA, Files: files, IDs: ids}
@@ -220,29 +238,58 @@ func TestAForeignPushOrTrailerIsContractInvalid(t *testing.T) {
 	for name, setup := range map[string]func(g *rig){
 		"another login": func(g *rig) {
 			g.pushed("someone-else")
-			g.f.SetCommit(contractSHA, contractCommit(rid(0), files, ids))
+			g.contractIs(contractSHA, rid(0), files, ids, true)
 		},
 		"two pushes": func(g *rig) {
 			g.pushed(agentsApp)
 			ps, _ := g.f.BranchActivity(t.Context(), "agent/3buqdlot")
 			g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: agentsApp, Before: contractSHA, After: strings.Repeat("d", 40)}, ps[0])
-			g.f.SetCommit(strings.Repeat("d", 40), contractCommit(rid(0), files, ids))
+			g.contractIs(strings.Repeat("d", 40), rid(0), files, ids, true)
 		},
 		"another run's trailer": func(g *rig) {
 			g.pushed(agentsApp)
-			g.f.SetCommit(contractSHA, contractCommit(rid(9), files, ids))
+			g.contractIs(contractSHA, rid(9), files, ids, true)
 		},
 		"no ids": func(g *rig) {
 			g.pushed(agentsApp)
-			g.f.SetCommit(contractSHA, contractCommit(rid(0), files, nil))
+			g.contractIs(contractSHA, rid(0), files, nil, true)
 		},
-		"too many files": func(g *rig) {
+		// The credential helper stays: the model can push a commit that looks like the harness's. Only the
+		// commit the harness reported through room_contract is adopted.
+		"a push the harness never reported": func(g *rig) {
 			g.pushed(agentsApp)
-			many := make([]string, 51)
-			for i := range many {
-				many[i] = "t" + strconv.Itoa(i) + ".py"
-			}
-			g.f.SetCommit(contractSHA, contractCommit(rid(0), many, ids))
+			g.contractIs(contractSHA, rid(0), files, ids, false)
+		},
+		"a push other than the reported commit": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids, false)
+			g.reported(rid(0), strings.Repeat("e", 40), baseSHA)
+		},
+		"a parent other than the recorded base": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids, false)
+			g.reported(rid(0), contractSHA, strings.Repeat("e", 40))
+		},
+		"another subject": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids, true)
+			c, _ := g.f.Commit(t.Context(), contractSHA)
+			c.Message = strings.Replace(c.Message, contractSubject, "feat: the model's own", 1)
+			g.f.SetCommitFull(c)
+		},
+		"two parents": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids, true)
+			c, _ := g.f.Commit(t.Context(), contractSHA)
+			c.Parents = []string{baseSHA, strings.Repeat("e", 40)}
+			g.f.SetCommitFull(c)
+		},
+		"a trailer that is not the diff": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids, true)
+			c, _ := g.f.Commit(t.Context(), contractSHA)
+			c.Files = append(c.Files, "src/app.py") // a file outside the trailers
+			g.f.SetCommitFull(c)
 		},
 	} {
 		g := testerRig(t, nil)
@@ -292,7 +339,7 @@ func contractedPair(t *testing.T) *rig {
 	t.Helper()
 	g := testerRigCfg(t, nil, func(c *config.Config) { c.Defaults.Template = "pair" })
 	g.pushed(agentsApp)
-	g.f.SetCommit(contractSHA, contractCommit(rid(0), []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"}))
+	g.contractIs(contractSHA, rid(0), []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"}, true)
 	g.endTester(t, "Succeeded", "agent_finished")
 	g.reconcile(t, "3buqdlot", 1)
 	if g.runs.specs[rid(1)].Role != "implementer" {
@@ -393,5 +440,78 @@ func TestNoVerifierSetHoldsATester(t *testing.T) {
 		Verifiers: []v1alpha1.RunRecord{{ID: "aaaaaaaa", Role: "tester", Verdict: "approve", HeadSHA: head1}}}
 	if got := agentEvidence(in); got != "foreign_trailer" { // past every verdict row: only the trailer is left
 		t.Fatalf("a tester's approve counted: %q", got)
+	}
+}
+
+// A contract over the CRD's bounds is its own reason, never a truncated contract and not an invalid one.
+func TestAContractOverTheBoundsIsTooLarge(t *testing.T) {
+	many := make([]string, 51)
+	for i := range many {
+		many[i] = "t" + strconv.Itoa(i) + ".py"
+	}
+	long := strings.Repeat("x", 513)
+	for name, c := range map[string]struct{ files, ids []string }{
+		"51 files":    {many, []string{"a::one"}},
+		"a long id":   {[]string{"t.py"}, []string{long}},
+		"51 ids":      {[]string{"t.py"}, many},
+		"a long path": {[]string{long}, []string{"a::one"}},
+	} {
+		g := testerRig(t, nil)
+		g.pushed(agentsApp)
+		g.contractIs(contractSHA, rid(0), c.files, c.ids, true)
+		tk := g.endTester(t, "Succeeded", "agent_finished")
+		if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "contract_too_large" || tk.Status.Contract != nil {
+			t.Errorf("%s: %s %q", name, tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+}
+
+// A model-posted note or push never makes a contract: a reported commit with no push recorded only waits.
+func TestAReportedCommitWithoutARecordedPushWaitsThenIsUnreported(t *testing.T) {
+	g := testerRig(t, nil)
+	g.reported(rid(0), contractSHA, baseSHA)
+	tk := g.endTester(t, "Succeeded", "agent_finished")
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Reason != "contract_push_unrecorded" {
+		t.Fatalf("%s %q", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// A task queued for a verifier tester before the upgrade goes to the reviewer, or to ready without one.
+func TestAVerifierTesterQueuedBeforeTheUpgradeRoutesToTheReviewer(t *testing.T) {
+	for template, want := range map[string]string{"pair": "reviewer", "solo": ""} {
+		g := newRig(t, issueTask("3buqdlot", 7, "x"))
+		g.r.Triage = staticWith(template)
+		g.reconcile(t, "3buqdlot", 3)
+		g.f.SetBranch("agent/3buqdlot", 12)
+		g.f.SetPR(pr12At(head1))
+		g.finish(rid(0), "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 1)
+		tk := g.task(t)
+		tk.Status.Phase, tk.Status.NextRole = v1alpha1.PhaseQueued, "tester"
+		if err := g.c.Status().Update(t.Context(), tk); err != nil {
+			t.Fatal(err)
+		}
+		tk = g.reconcile(t, "3buqdlot", 1)
+		got := ""
+		if s, ok := g.runs.specs[rid(1)]; ok {
+			got = s.Role
+		}
+		if got != want || tk.Status.NextRole != "" {
+			t.Errorf("%s: run 1 %q (phase %s, nextRole %q), want %q", template, got, tk.Status.Phase, tk.Status.NextRole, want)
+		}
+		if template == "solo" && tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+			t.Errorf("solo: %s", tk.Status.Phase)
+		}
+	}
+}
+
+// Row 2b fails closed: a contract with no merge.contractCheck to prove it is a human's.
+func TestAContractWithoutAContractCheckGoesToAHuman(t *testing.T) {
+	cfg := armCfg() // no merge.contractCheck
+	tk := armTask("docs-links", "solo", "")
+	tk.Status.Contract = contractOf()
+	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head, Contract: ContractRead{Read: true}})
+	if d.Verdict != "human" || d.Reason != "contract_check_unset" {
+		t.Fatalf("%+v", d)
 	}
 }

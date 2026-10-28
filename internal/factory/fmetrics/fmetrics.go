@@ -778,7 +778,7 @@ func (s *Set) LoopRun(ctx context.Context, class, end string) {
 // ContractEnd counts a tester run's end once the factory has read it (R23).
 func (s *Set) ContractEnd(ctx context.Context, class, end string) {
 	s.contracts.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("end", oneOf(end, []string{"ready", "not_testable", "contract_not_red", "contract_outside_tests", "contract_invalid", "unreported"})), s.repoOf(ctx)))
+		attribute.String("end", oneOf(end, []string{"ready", "not_testable", "contract_not_red", "contract_outside_tests", "contract_invalid", "contract_too_large", "unreported"})), s.repoOf(ctx)))
 }
 
 // ClassWithoutHoldout sets agent_factory_class_without_holdout to 1 for a live class with no holdoutChecks (TO5).

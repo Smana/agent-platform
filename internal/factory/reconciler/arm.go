@@ -185,6 +185,11 @@ func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
 		in.Checks.Runs[i].State == "FAILURE" {
 		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}, true
 	}
+	// A task holding a contract while the repository no longer names merge.contractCheck has nothing that
+	// proves the contract: fail closed to a human, never drop row 2b.
+	if in.Task.Status.Contract != nil && rc.Merge.ContractCheck == "" {
+		return ArmDecision{Verdict: "human", Reason: "contract_check_unset"}, true
+	}
 	switch CIState(in.Checks, requiredFor(rc, in.Task)) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}, true

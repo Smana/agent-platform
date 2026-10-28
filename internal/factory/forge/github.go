@@ -1068,25 +1068,43 @@ func (g *GitHub) PullRequestCommits(ctx context.Context, number int) ([]Commit, 
 
 // Commit is one commit by sha, with its message: the tester's contract commit (R14).
 func (g *GitHub) Commit(ctx context.Context, sha string) (Commit, error) {
-	c, _, err := g.rest.Repositories.GetCommit(ctx, g.owner, g.name, sha, &github.ListOptions{PerPage: 1})
+	c, _, err := g.rest.Repositories.GetCommit(ctx, g.owner, g.name, sha, &github.ListOptions{PerPage: maxChangedFiles})
 	g.mark(err)
 	if err != nil {
 		return Commit{}, wrap("get commit", err)
 	}
-	return Commit{SHA: c.GetSHA(), Author: c.GetAuthor().GetLogin(), Message: c.GetCommit().GetMessage()}, nil
+	out := Commit{SHA: c.GetSHA(), Author: c.GetAuthor().GetLogin(), Message: c.GetCommit().GetMessage(), FilesTruncated: len(c.Files) >= maxChangedFiles}
+	for _, p := range c.Parents {
+		out.Parents = append(out.Parents, p.GetSHA())
+	}
+	for _, f := range c.Files {
+		out.Files = append(out.Files, f.GetFilename())
+		if p := f.GetPreviousFilename(); p != "" {
+			out.Files = append(out.Files, p)
+		}
+	}
+	return out, nil
 }
 
-// maxChangedFiles is the page ChangedFiles asks for: a compare listing this many may hold more.
+// maxChangedFiles is the most files a compare or a commit lists: one listing this long may hold more.
 const maxChangedFiles = 300
+
+// comparePage is the commits a compare lists per page (GitHub's maximum). Its files come with the last
+// page only, so a compare of more commits than this shows none of them on the first: the callers that
+// need the files fail closed on it.
+const comparePage = 100
 
 // ChangedFiles lists the paths changed from base to head, never their contents (row 2c reads only
 // the names). GitHub's compare is three-dot, so it names what changed since the merge base: only
 // a head ahead of base makes that "since base". Behind or diverged (a rebase) is ErrNotDescendant.
 func (g *GitHub) ChangedFiles(ctx context.Context, base, head string) ([]string, error) {
-	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: maxChangedFiles})
+	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: comparePage})
 	g.mark(err)
 	if err != nil {
 		return nil, wrap("compare commits", err)
+	}
+	if cmp.GetTotalCommits() > comparePage { // the files are on a later page: an empty list would pass row 2c
+		return nil, fmt.Errorf("%w: %d commits between %s and %s", ErrDiffTooLarge, cmp.GetTotalCommits(), base, head)
 	}
 	if st := cmp.GetStatus(); st != "ahead" && st != "identical" {
 		return nil, fmt.Errorf("%w: %s is %q from %s", ErrNotDescendant, head, st, base)
@@ -1158,10 +1176,13 @@ func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
 // set. A rename reads as its delete beside its add — which is right: a rename is not a link
 // retarget. §5.1's links-only test for the docs classes (R52) decides on these.
 func (g *GitHub) Diff(ctx context.Context, base, head string) (Diff, error) {
-	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: 100})
+	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: comparePage})
 	g.mark(err)
 	if err != nil {
 		return Diff{}, wrap("compare commits", err)
+	}
+	if cmp.GetTotalCommits() > comparePage { // the files are on a later page: the diff cannot be judged
+		return Diff{}, fmt.Errorf("%w: %d commits between %s and %s, the files are unread", ErrDiffTooLarge, cmp.GetTotalCommits(), base, head)
 	}
 	if len(cmp.Files) == 100 { // one page exactly: unseen files must not let a diff pass as links-only
 		return Diff{}, fmt.Errorf("%w: 100 files differ between %s and %s, the links-only test cannot see them all", ErrDiffTooLarge, base, head)

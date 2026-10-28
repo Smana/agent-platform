@@ -576,7 +576,7 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
-		_, _ = io.WriteString(w, `{"sha":"c1","author":{"login":"ogenki-agents[bot]"},"commit":{"message":"test: pin it\n\nAgent-Run: r1"}}`)
+		_, _ = io.WriteString(w, `{"sha":"c1","author":{"login":"ogenki-agents[bot]"},"parents":[{"sha":"p1"}],"files":[{"filename":"a.py"},{"filename":"new.py","previous_filename":"old.py"}],"commit":{"message":"test: pin it\n\nAgent-Run: r1"}}`)
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
@@ -591,6 +591,8 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"fork"},"files":[{"filename":"docs/b.md","status":"modified"}]}`)
 		case "c1...three": // the tester's commit against the head: ahead, three files and a rename.
 			_, _ = io.WriteString(w, `{"status":"ahead","files":[{"filename":"a.py"},{"filename":"b.py"},{"filename":"new.py","previous_filename":"old.py"}]}`)
+		case "c1...many": // two pages of commits: the files are on the last, so this first page lists none
+			_, _ = io.WriteString(w, `{"status":"ahead","total_commits":150,"files":[]}`)
 		case "c1...diverged":
 			_, _ = io.WriteString(w, `{"status":"diverged","files":[{"filename":"a.py"}]}`)
 		case "c1...big":
@@ -1779,6 +1781,9 @@ func TestCommitReadsOneCommitsMessage(t *testing.T) {
 	if err != nil || c.SHA != "c1" || c.Author != "ogenki-agents[bot]" || c.Trailer("Agent-Run") != "r1" {
 		t.Fatalf("%+v %v", c, err)
 	}
+	if !slices.Equal(c.Parents, []string{"p1"}) || !slices.Equal(c.Files, []string{"a.py", "new.py", "old.py"}) || c.Subject() != "test: pin it" {
+		t.Fatalf("parents %v files %v subject %q", c.Parents, c.Files, c.Subject())
+	}
 	if _, err := r.g.Commit(t.Context(), "nope"); err == nil {
 		t.Fatal("an unknown sha must be an error")
 	}
@@ -1805,5 +1810,12 @@ func TestChangedFilesListsTheCompare(t *testing.T) {
 	}
 	if _, err := r.g.ChangedFiles(t.Context(), "c1", "big"); !errors.Is(err, ErrDiffTooLarge) {
 		t.Fatalf("a full page must fail closed: %v", err)
+	}
+	// More commits than a page: GitHub puts the files on the last page, so an empty list is no answer.
+	if fs, err := r.g.ChangedFiles(t.Context(), "c1", "many"); !errors.Is(err, ErrDiffTooLarge) || fs != nil {
+		t.Fatalf("two pages of commits must fail closed: %v %v", fs, err)
+	}
+	if _, err := r.g.Diff(t.Context(), "c1", "many"); !errors.Is(err, ErrDiffTooLarge) {
+		t.Fatalf("Diff reads the same compare: %v", err)
 	}
 }

@@ -145,6 +145,8 @@ func reasons() map[string]string {
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
 		"contract_invalid":          "the tester's branch was not the tester's alone, or its contract commit was malformed",
 		"contract_disputed":         "the implementer says the tester's tests are wrong; a maintainer decides",
+		"contract_too_large":        "the tester's contract names more files or test ids than a task records, or one of them is too long",
+		"contract_check_unset":      "the task has a test contract but the repository no longer names merge.contractCheck",
 		"contract_modified":         "the pull request changes a test the tester wrote as the task's contract",
 		"contract_unread":           "the factory has not yet read which files changed since the test contract",
 		"contract_push_unrecorded":  "GitHub has not yet recorded the tester's push",
@@ -196,7 +198,7 @@ func nextStep(reason string) string {
 		return "nothing to do: the task goes on when GitHub answers"
 	case "contract_modified":
 		return "a maintainer reads the change to the contract's tests, then merges it or sends the task back"
-	case "contract_invalid", "contract_disputed":
+	case "contract_invalid", "contract_disputed", "contract_too_large", "contract_check_unset":
 		return "a maintainer reads the room, then decides whether to retry (`/factory retry`) or close it"
 	case "split_proposed":
 		return "a maintainer comments `/factory split` to approve the parts, or `/factory retry` to run the task whole"

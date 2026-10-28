@@ -90,6 +90,8 @@ var reasonPhrases = map[string]string{
 	"split_proposed":            "a split is proposed",
 	"contract_invalid":          "the tester's branch is not valid",
 	"contract_disputed":         "the tests are disputed",
+	"contract_too_large":        "the contract is too big to record",
+	"contract_check_unset":      "the contract has no check to prove it",
 	"contract_modified":         "the pull request changes the tests",
 	"contract_unread":           "reading the changes to the tests",
 	"contract_push_unrecorded":  "waiting for GitHub to see the tests",

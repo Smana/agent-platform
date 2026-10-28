@@ -80,6 +80,12 @@ func (r *Reconciler) requestVerifier(t *v1alpha1.Task, role string) {
 // record has no head, and NextRole is the first verifier already.
 func (r *Reconciler) startVerifier(ctx context.Context, t *v1alpha1.Task, pr forge.PR) error {
 	role := t.Status.NextRole
+	if role == "tester" { // queued before the tester became the test writer: it is the reviewer's turn
+		if role = r.nextVerifier(t, "implementer"); role == "" {
+			t.Status.NextRole = ""
+			return r.ready(ctx, t)
+		}
+	}
 	if current(t).HeadSHA != pr.HeadSHA {
 		role = r.nextVerifier(t, "implementer")
 	}

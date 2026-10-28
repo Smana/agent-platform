@@ -63,7 +63,10 @@ func (r *Reconciler) startTester(ctx context.Context, t *v1alpha1.Task) error {
 // (F3-R4): the activity API trails a push by a moment.
 const contractPushWait = 5 * time.Minute
 
-// The CRD's bounds on status.contract: over them is invalid, never a truncated contract.
+// contractSubject is the fixed subject of the harness's contract commit (F1-R4).
+const contractSubject = "test: the test contract"
+
+// The CRD's bounds on status.contract: over them is contract_too_large, never a truncated contract.
 const (
 	maxContractItems = 50
 	maxContractBytes = 512
@@ -88,7 +91,7 @@ func (r *Reconciler) testerEnded(ctx context.Context, t *v1alpha1.Task, reason s
 	case end == "wait":
 		t.Status.Reason = "contract_push_unrecorded"
 		return nil
-	case end == "contract_invalid":
+	case end == "contract_invalid" || end == "contract_too_large":
 		record(ctx, func(ctx context.Context) { r.Metrics.ContractEnd(ctx, t.Spec.PredictedClass, end) })
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, end)
 	case c != nil:
@@ -117,14 +120,18 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 	case err != nil:
 		return nil, "", err
 	}
+	rec, err := r.recordedContract(ctx, t)
+	if err != nil {
+		return nil, "", err
+	}
 	if len(ps) == 0 {
 		note, err := r.testerNote(ctx, t)
 		if err != nil {
 			return nil, "", err
 		}
-		// A run that succeeded, or whose harness said the contract was ready, has a push GitHub has
-		// not recorded yet; a run that failed with no note pushed none.
-		pending := note == "contract_ready" || (note == "" && cur.Phase == "Succeeded")
+		// A run that succeeded, whose harness reported its commit or said the contract was ready, has a
+		// push GitHub has not recorded yet; a run that failed with no note pushed none.
+		pending := rec.n > 0 || note == "contract_ready" || (note == "" && cur.Phase == "Succeeded")
 		if pending && cur.Finished != nil && r.Now().Sub(cur.Finished.Time) < contractPushWait {
 			return nil, "wait", nil
 		}
@@ -133,15 +140,17 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 		}
 		return nil, note, nil
 	}
-	// A push the agents App made while a tester run held the room is the tester harness's: the token
-	// is minted per run. One push only, a creation: a model that pushed past the disabled pushurl and
-	// then the harness's push would show two.
+	// The push record is GitHub's, but a model can push too (the credential helper stays): a push the
+	// agents App made while a tester run held the room is not therefore the harness's. Adopted only
+	// when it is one creation, and the commit is the very one the harness reported through room_contract
+	// (a tool the model cannot call), on the base the harness recorded, with the fixed subject, and
+	// its trailers name exactly the files it changes.
 	tip := ps[0].After
 	pc, err := r.pushedBy(ctx, branch, []string{r.Cfg.AgentsLogin}, tip)
 	if err != nil {
 		return nil, "", err
 	}
-	if pc != pushFactory || len(ps) != 1 || ps[0].Type != "branch_creation" || !sha40.MatchString(tip) {
+	if pc != pushFactory || len(ps) != 1 || ps[0].Type != "branch_creation" || !sha40.MatchString(tip) || rec.n != 1 || rec.commit != tip {
 		return nil, "contract_invalid", nil
 	}
 	cm, err := r.gh(ctx).Commit(ctx, tip)
@@ -149,17 +158,70 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 		return nil, "", err
 	}
 	files, ids := cm.Trailers("Agent-Contract-File"), cm.Trailers("Agent-Contract-Id")
-	if cm.Trailer("Agent-Contract") != cur.ID || cm.Trailer("Agent-Run") != cur.ID ||
-		!within(files) || !within(ids) {
+	if cm.Trailer("Agent-Contract") != cur.ID || cm.Trailer("Agent-Run") != cur.ID || cm.Subject() != contractSubject ||
+		len(cm.Parents) != 1 || cm.Parents[0] != rec.base || cm.FilesTruncated || len(files) == 0 || len(ids) == 0 ||
+		slices.Contains(files, "") || slices.Contains(ids, "") || !sameSet(files, cm.Files) {
 		return nil, "contract_invalid", nil
+	}
+	if !within(files) || !within(ids) {
+		return nil, "contract_too_large", nil // a bound the CRD holds, never a truncated contract
 	}
 	return &v1alpha1.ContractStatus{RunID: cur.ID, Commit: tip, Files: files, IDs: ids}, "", nil
 }
 
-// within: at least one value, and no more than the CRD holds, each of a bounded length.
+// recorded is what the tester harness reported through room_contract: how many distinct reports, and the
+// commit and base of the last.
+type recorded struct {
+	n            int
+	commit, base string
+}
+
+// recordedContract reads the current run's room_contract events: the broker stamps their origin from
+// the run's credential and only the harness's client may call the tool, so the model cannot write one.
+func (r *Reconciler) recordedContract(ctx context.Context, t *v1alpha1.Task) (recorded, error) {
+	cur := current(t)
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
+		return e.Type == envelope.Message && e.RunID == cur.ID && e.Origin == envelope.OriginClient &&
+			e.Actor.Kind == envelope.ActorAgent && e.Actor.ID == "agent:"+cur.ID && e.Actor.Role == "tester"
+	})
+	if err != nil {
+		return recorded{}, err
+	}
+	var out recorded
+	seen := map[string]bool{}
+	for _, e := range evs {
+		var p envelope.MessagePayload
+		if json.Unmarshal(e.Payload, &p) != nil || p.Kind != envelope.KindContract {
+			continue
+		}
+		if k := p.Commit + "/" + p.Base; !seen[k] {
+			seen[k] = true
+			out.n++
+		}
+		out.commit, out.base = p.Commit, p.Base
+	}
+	return out, nil
+}
+
+// sameSet: a and b hold the same strings, whatever their order or repeats.
+func sameSet(a, b []string) bool {
+	in := func(x string, l []string) bool { return slices.Contains(l, x) }
+	for _, x := range a {
+		if !in(x, b) {
+			return false
+		}
+	}
+	for _, x := range b {
+		if !in(x, a) {
+			return false
+		}
+	}
+	return true
+}
+
+// within: no more values than the CRD holds, each of a bounded length.
 func within(vs []string) bool {
-	return len(vs) > 0 && len(vs) <= maxContractItems &&
-		!slices.ContainsFunc(vs, func(v string) bool { return v == "" || len(v) > maxContractBytes })
+	return len(vs) <= maxContractItems && !slices.ContainsFunc(vs, func(v string) bool { return len(v) > maxContractBytes })
 }
 
 // testerNote is the category the tester harness's end note names ("" for none): the room's progress

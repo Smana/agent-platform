@@ -456,6 +456,13 @@ func (f *Fake) SetCommit(sha, message string) {
 	f.bySHA[sha] = forge.Commit{SHA: sha, Message: message}
 }
 
+// SetCommitFull sets the commit Commit returns for c.SHA, parents and files included.
+func (f *Fake) SetCommitFull(c forge.Commit) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bySHA[c.SHA] = c
+}
+
 // Commit implements the TaskForge's Commit: an unset sha is an error, as GitHub's 404.
 func (f *Fake) Commit(_ context.Context, sha string) (forge.Commit, error) {
 	f.mu.Lock()

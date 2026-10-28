@@ -173,7 +173,15 @@ type Commit struct {
 	SHA     string
 	Author  string // the login GitHub matched the author's email to, "" when none: never proof
 	Message string
+	// Parents and Files are read only by Commit (one commit by sha): its parents' shas and the paths
+	// it changes against them (a rename lists both names). FilesTruncated is a full page of files.
+	Parents        []string
+	Files          []string
+	FilesTruncated bool
 }
+
+// Subject is the message's first line.
+func (c Commit) Subject() string { s, _, _ := strings.Cut(c.Message, "\n"); return strings.TrimSpace(s) }
 
 // Push is one move of a branch, as GitHub's repository activity records it (#76): Actor is the
 // account whose credential moved the ref from Before to After, "" when GitHub names none. Unlike

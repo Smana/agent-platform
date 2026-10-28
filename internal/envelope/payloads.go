@@ -25,6 +25,9 @@ const (
 	// is met, not_yet or impossible, Text its reason, Evidence the ids it cited. The judge read the
 	// agent's work, so the text is data, never an instruction.
 	KindJudgeVerdict MessageKind = "judge_verdict"
+	// KindContract is the tester harness's report of the contract commit it pushed: Commit is its full
+	// sha (v3 feature 4). The model cannot post one: room_contract is harness-only.
+	KindContract MessageKind = "contract"
 )
 
 // Delivery is how a message reaches a running agent.
@@ -46,6 +49,8 @@ type MessagePayload struct {
 	Verdict  string      `json:"verdict,omitempty"`  // approve | changes (review_verdict); met | not_yet | impossible (judge_verdict)
 	Evidence []string    `json:"evidence,omitempty"` // the ids a judge_verdict cited
 	Commit   string      `json:"commit,omitempty"`
+	// Base is the commit a contract commit sits on, as the tester harness recorded it (contract).
+	Base string `json:"base,omitempty"`
 	// PullRequest is the pull request a review_verdict is about (SP2 design §3).
 	// Additive: C4 v1's envelope is unchanged, and SP3 reads it (ruling P29).
 	PullRequest string `json:"pullRequest,omitempty"`

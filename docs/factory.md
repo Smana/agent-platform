@@ -145,11 +145,17 @@ flowchart LR
   impl --> gate["merge gate: rows 2b and 2c"]
 ```
 
-The factory reads the contract from GitHub's record of the push and the commit's trailers, never
-from the room: a model can write a room note, a handoff summary or a commit subject, and none of
-them decides anything. A push the agents App made while the tester held the room is the harness's
-(the token is minted per run); a second push, a push by anyone else or a trailer naming another run
-is `contract_invalid`. The tester's end note only names a category (`contract_ready`, `not_testable`,
+The factory reads the contract from GitHub's record of the push and the commit, never from what a
+model writes in the room: a note, a handoff summary or a commit subject decides nothing. The
+credential helper stays in the sandbox, so a push by the agents App is not proof that the harness
+made it. The harness therefore reports the commit it pushed, and the base it sat on, through
+`room_contract`, a tool only the harness's own client may call. The factory adopts a commit only
+when GitHub records one branch creation by the agents App, the branch tip is the commit the harness
+reported, it has the fixed subject `test: the test contract` and a single parent, the base the
+harness recorded, and its `Agent-Contract-File` trailers are exactly the files it changes. Anything
+else (a second push, a push by anyone else, an unreported commit, a trailer naming another run) is
+`contract_invalid`. A contract of more than 50 files or ids, or one longer than 512 bytes, is
+`contract_too_large`: the Task records at most that, and never a truncated contract. The tester's end note only names a category (`contract_ready`, `not_testable`,
 `contract_not_red`, `contract_outside_tests`), counted in `agent_factory_contracts_total`. With no
 push recorded the task has no contract: a `contract_ready` note waits up to five minutes for GitHub
 to record the push, and any other end (or a failed run) lets the implementer start without one. A
@@ -199,6 +205,7 @@ starts once the room and the factory are free.
 | Reason | Why |
 |---|---|
 | `contract_invalid` | The tester's branch was not the tester's alone (another login, a second push, a history too long to read) or its contract commit was malformed (trailers naming another run, no file or id, over 50 files or ids) |
+| `contract_too_large` | The contract names more than 50 files or test ids, or a path or id over 512 bytes |
 | `contract_disputed` | The implementer handed off to the `tester` role: it says the tests are wrong |
 
 **AwaitingCI:** the merge gate reads the pull request. Next step: nothing to do.
@@ -253,6 +260,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
 | `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
 | `ci_cancelled` | A required check was cancelled and re-running it did not settle it |
+| `contract_check_unset` | The task has a contract but `merge.contractCheck` is no longer set: nothing proves it, so a maintainer decides |
 | `contract_modified` | The pull request changes a test the tester wrote as the task's contract (row 2c): a maintainer reads the change, then merges it or sends the task back |
 
 A holdout's workflow file must be a gate path (policy-bot's gate paths cover it), otherwise a pull
@@ -667,7 +675,7 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 2a | The repository is this factory's ([the fence](#the-ownership-fence)) | `not_owned` |
 | 2 | Every `merge.requiredChecks` is green | Red: a fix run, up to `merge.fixRuns`, then `ci_red`. Cancelled: re-run, up to `merge.checkReruns`. Pending: wait |
 | 2b | A task with a contract: `merge.contractCheck` is green too, as a required check. On a task without one the job only reports | As row 2: red is a fix run, pending waits |
-| 2c | A task with a contract: no contract file changed since the tester's commit (GitHub's compare of that commit and the head; a head that is not its descendant, such as after a rebase, counts every contract file as changed). Read once CI is green | Unread: wait, `contract_unread`. Changed: `contract_modified`, never a fix run |
+| 2c | A task with a contract: no contract file changed since the tester's commit (GitHub's compare of that commit and the head; a head that is not its descendant, such as after a rebase, or more than 100 commits from it, counts every contract file as changed). Read once CI is green | Unread: wait, `contract_unread`. Changed: `contract_modified`, never a fix run |
 | 3 | `policy-bot: main` is green, posted by `merge.policyBotLogin` | `policy_absent`, `policy_pending`, `gate_path` |
 | 4 | The author is `agentsLogin`, and no maintainer approved it | `not_agent_authored`, `maintainer_approved` |
 | 5 | The class is `live` or `shadow` | `class_unarmed` |

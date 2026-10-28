@@ -78,7 +78,7 @@ func envTesterRig(t *testing.T, edit func(*v1alpha1.Task), cfgEdit func(*config.
 func (g *rig) contractAndImplementer(t *testing.T) *v1alpha1.Task {
 	t.Helper()
 	g.pushed(agentsApp)
-	g.f.SetCommit(contractSHA, contractCommit(rid(0), []string{"scripts/ci/tests/test_dry_run.py"}, []string{"a::one", "a::two"}))
+	g.contractIs(contractSHA, rid(0), []string{"scripts/ci/tests/test_dry_run.py"}, []string{"a::one", "a::two"}, true)
 	g.harnessNote(rid(0), "Harness (tester): contract_ready: 2 tests, red on the current code")
 	g.finish(rid(0), "Succeeded", "agent_finished")
 	return g.reconcile(t, "3buqdlot", 2)
