@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +68,14 @@ type SlackClient struct {
 	BaseURL string // https://slack.com/api/ when empty
 	Token   func() string
 	HC      *http.Client // httpx.New in production
+	Logger  *slog.Logger // Slack's error code on every failed call; discarded when nil
+}
+
+func (c *SlackClient) log() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.New(slog.DiscardHandler)
 }
 
 type slackAnswer struct {
@@ -254,6 +264,7 @@ func (c *SlackClient) do(req *http.Request) (slackAnswer, error) {
 		return a, fmt.Errorf("slackapp: slack answered %d: %w", resp.StatusCode, err)
 	}
 	if !a.OK {
+		c.log().Warn("slack call failed", "method", path.Base(req.URL.Path), "status", resp.StatusCode, "slack_error", a.Error)
 		return a, fmt.Errorf("slackapp: slack: %s", a.Error)
 	}
 	return a, nil

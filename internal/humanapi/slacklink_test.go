@@ -204,6 +204,8 @@ func TestSlackLinkConfirmAndUnlink(t *testing.T) {
 	for name, h := range map[string]http.Header{
 		"no Origin":      header("dana"),
 		"another Origin": header("dana", "Origin", "https://evil.example"),
+		// A browser under Referrer-Policy: no-referrer sends this; it must stay refused.
+		"a null Origin": header("dana", "Origin", "null"),
 		// P18: roomctl's bearer (a local agent's) can forge any Origin, so it never links.
 		"a roomctl token": header("dana", "Origin", linkOrigin, "X-Test-Client", "roomctl"),
 	} {
@@ -295,5 +297,26 @@ func TestSlackLinkOff(t *testing.T) {
 	}
 	if got := toolNames(t, e, bearer("slack-app")); regexp.MustCompile(`slack_`).MatchString(got) {
 		t.Fatalf("off, tools: %s", got)
+	}
+}
+
+// The link routes override the server-wide no-referrer: under it a browser's form POST carries
+// `Origin: null` (Fetch spec) and the page's own Link button would be refused.
+func TestLinkPageReferrerPolicy(t *testing.T) {
+	e := setup(t, mcpOn, withSponsored(sponsoredP), slackLinkOn(newMemLinks()))
+	for _, path := range []string{"/link/slack", "/link/slack?code=x"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = header("dana")
+		r, err := e.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Body.Close()
+		if got := r.Header.Get("Referrer-Policy"); got != "same-origin" {
+			t.Fatalf("%s: Referrer-Policy %q", path, got)
+		}
 	}
 }

@@ -44,7 +44,7 @@ The App is one workspace's: create it from this manifest, install it, and put th
 }
 ```
 
-No interactivity and no slash command. `chat:write` also covers `chat.postEphemeral`, which the [self-serve link](#self-serve-link) answers with. `users:read` is optional: with it the link page names the Slack user by their handle, then their display name (`users.info`), without it by their id only; an App created from an earlier copy adds it under OAuth & Permissions and reinstalls.
+No interactivity and no slash command. `chat:write` also covers the [self-serve link](#self-serve-link)'s answer, a direct message from the bot (`chat.postMessage` with the user's id as channel, no `im:write` and no `conversations.open`) and, when that fails, `chat.postEphemeral`. `users:read` is optional: with it the link page names the Slack user by their handle, then their display name (`users.info`), without it by their id only; an App created from an earlier copy adds it under OAuth & Permissions and reinstalls.
 
 Draft editing needs the `message.channels` (and, for private channels, `message.groups`) bot events: an App created from an earlier copy of this manifest must add them under Event Subscriptions in the Slack console and reinstall. The scopes (`channels:history`, `groups:history`) are already there. Without the events, mentions and check marks work as before and replies are never seen.
 
@@ -127,9 +127,11 @@ A passing failure (`kill_switch`, `principal_task_cap`, `link_unverified`, `ledg
 
 ### Self-serve link
 
+The link routes answer `Referrer-Policy: same-origin` (the rest of the rooms UI is `no-referrer`): under no-referrer a browser sends the form POST's `Origin: null`, which the broker's origin check refuses.
+
 A Slack user links themselves instead of waiting for an `onBehalfOf.slack` entry in git ([design](superpowers/specs/2026-10-28-slack-self-serve-link-design.md)):
 
-1. `@factory link` in a served channel. The App calls the broker's `slack_link_code` with its team and user id (and handle and display name, with `users:read`) and answers **ephemerally** (only that user sees it; it says never to send it to anyone) with `https://rooms.<domain>/link/slack?code=<code>`: single use, 10 minutes, replacing their earlier code.
+1. `@factory link` in a served channel. The App calls the broker's `slack_link_code` with its team and user id (and handle and display name, with `users:read`) and answers **in a direct message from the bot** (only that user sees it; the first line is the labelled link and the bare URL follows on its own line; it says never to send it to anyone; the thread gets a one-line pointer, never the URL; if the DM fails, an ephemeral in the channel, not in the thread, is the fallback, and the Slack error is logged) with `https://rooms.<domain>/link/slack?code=<code>`: single use, 10 minutes, replacing their earlier code.
 2. The user opens it, signs in to the rooms UI (ZITADEL), and sees `Link Slack user @handle (<id>) in workspace <team> to your account (GitHub: @login)?`, the display name below it marked as set by that user, and "never confirm a link someone sent you". **Link** posts the form, from the web UI's session only (a roomctl or MCP token is refused); the broker records `slack(team/user) → the ZITADEL account`.
 3. From then on their ✅ files sponsored by that account's **current** GitHub login, still held to the repository's maintainers: a link grants nothing a maintainer did not have.
 
