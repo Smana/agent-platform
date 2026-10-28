@@ -55,6 +55,14 @@ const pairs = (t: Tokens) => [
   // A step's line and a call's status (P1, P3).
   ["a step's exceptions on the page", t["--warning-foreground"], t["--muted"], 4.5],
   ["a rejected call's word on a card", t["--warning-foreground"], t["--card"], 4.5],
+  // The room list: a hovered row's tint, the page title on the header, the phase chip.
+  ["the list's page title on the header", t["--muted-foreground"], t["--brand-header"], 4.5],
+  ["muted text on a hovered room row", t["--muted-foreground"], mix(t["--primary"], t["--card"], 0.06), 4.5],
+  ["a task link on a hovered room row", t["--link"], mix(t["--primary"], t["--card"], 0.06), 4.5],
+  ["the phase chip's text on a hovered room row", t["--card-foreground"], mix(t["--primary"], t["--card"], 0.06), 4.5],
+  ["the phase chip's border on a card", mix(t["--card-foreground"], t["--card"], 0.5), t["--card"], 3],
+  ["the phase chip's border on a hovered room row", mix(t["--card-foreground"], t["--card"], 0.5), mix(t["--primary"], t["--card"], 0.06), 3],
+  ["the focus ring on a hovered room row", t["--ring"], mix(t["--primary"], t["--card"], 0.06), 3],
 ] as const;
 
 // The Maku matrices: [description, foreground, background, minimum, expectedRatio].

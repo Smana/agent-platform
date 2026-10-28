@@ -53,4 +53,5 @@ createServer((req, res) => {
   }
   console.log(`room log preview:  http://127.0.0.1:${port}/preview/preview.html   (add ?live to replay)`);
   console.log(`room page preview: http://127.0.0.1:${port}/preview/full.html   (add ?theme=dark for the dark palette)`);
+  console.log(`room list preview: http://127.0.0.1:${port}/preview/list.html   (add ?theme=dark for the dark palette)`);
 });

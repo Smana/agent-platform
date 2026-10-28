@@ -96,16 +96,28 @@ function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
     pill.title = `${c.needs} need you`;
     needs.append(pill);
   }
+  // The task link is stretched over its row in CSS (.task-link::after), so the whole row
+  // opens the room with no click handler: one link for the keyboard and assistive tech.
   const a = document.createElement("a");
+  a.className = "task-link";
   a.href = `/r/${encodeURIComponent(row.id)}`;
   a.textContent = c.task;
+  const repo = cell("td", c.repo);
+  repo.className = "repo";
+  // The phase is the room page's phase chip (strip.ts), still plain text inside.
+  const phase = document.createElement("span");
+  phase.className = "chip chip-phase";
+  phase.textContent = c.phase;
   const last = cell("td", c.last || "—");
   const t = lastMs(row);
   if (t) last.title = new Date(t).toLocaleString();
   const code = document.createElement("code");
   code.textContent = c.id;
+  const id = cell("td", code);
+  id.className = "room-id";
   const tr = document.createElement("tr");
-  tr.append(needs, cell("td", a), cell("td", c.repo), cell("td", c.phase), cell("td", c.pr), last, cell("td", code));
+  tr.className = "room-row";
+  tr.append(needs, cell("td", a), repo, cell("td", phase), cell("td", c.pr), last, id);
   return tr;
 }
 
@@ -144,6 +156,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   mountBrand(header);
   document.title = "Maku rooms";
   const h1 = document.createElement("h1");
+  h1.className = "page-title";
   h1.textContent = "Rooms";
   header.append(h1);
   if (theme) mountThemeButton(header, theme);
@@ -176,6 +189,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   form.hidden = true;
   const add = document.createElement("button");
   add.type = "button";
+  add.className = "primary";
   add.dataset.act = "new-room";
   add.textContent = "New room";
   add.onclick = () => { form.hidden = !form.hidden; };
@@ -184,7 +198,8 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   const notice = document.createElement("span");
   notice.className = "notice";
   notice.setAttribute("role", "status");
-  tools.append(mine.label, needsMe.label, repo, add, notice);
+  // The filters on the left, New room, the page's one primary act, at the row's end.
+  tools.append(mine.label, needsMe.label, repo, notice, add);
 
   const table = document.createElement("table");
   table.className = "rooms";

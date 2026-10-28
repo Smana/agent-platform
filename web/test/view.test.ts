@@ -169,6 +169,50 @@ describe("the room table", () => {
   });
 });
 
+describe("the room list's layout", () => {
+  const rows = [
+    { id: "3kq7x2ma", phase: "Active", owner: "", driver: "", dataClass: "internal", lastSeq: 1, repository: "o/b", issue: 74, title: "Chat view", task: "Reviewing", pr: 77, needsYou: 2 },
+  ];
+  const mount = async () => {
+    const root = document.createElement("div");
+    await listRooms(root, (async () => new Response(JSON.stringify(rows), { status: 200 })) as unknown as typeof fetch);
+    return root;
+  };
+  it("sets the page title apart from the brand, as its own element", async () => {
+    const h1 = (await mount()).querySelector("header.page-header h1")!;
+    expect(h1.className).toBe("page-title");
+    expect(h1.previousElementSibling?.classList.contains("brand")).toBe(true);
+  });
+  it("makes the whole row a link to the room through the task anchor, not a row handler", async () => {
+    const tr = (await mount()).querySelector("tbody tr") as HTMLTableRowElement;
+    expect(tr.className).toBe("room-row");
+    expect(tr.onclick).toBeNull();
+    const links = tr.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0].className).toBe("task-link");
+    expect(links[0].getAttribute("href")).toBe("/r/3kq7x2ma");
+    expect(links[0].textContent).toBe("#74 Chat view");
+  });
+  it("shows the phase as a chip, the room page's class, still text", async () => {
+    const td = (await mount()).querySelectorAll("tbody tr td")[3];
+    const chip = td.querySelector("span.chip.chip-phase")!;
+    expect(chip.textContent).toBe("Reviewing");
+    expect(td.textContent).toBe("Reviewing");
+    expect(chip.children).toHaveLength(0);
+  });
+  it("marks the repository and the room id as secondary", async () => {
+    const tds = (await mount()).querySelectorAll("tbody tr td");
+    expect(tds[2].className).toBe("repo");
+    expect(tds[6].className).toBe("room-id");
+  });
+  it("puts New room, the primary action, after the filters", async () => {
+    const tools = (await mount()).querySelector(".list-tools")!;
+    const add = tools.lastElementChild as HTMLButtonElement;
+    expect(add.dataset.act).toBe("new-room");
+    expect(add.classList.contains("primary")).toBe(true);
+  });
+});
+
 describe("newRoomForm", () => {
   afterEach(() => vi.restoreAllMocks());
 
