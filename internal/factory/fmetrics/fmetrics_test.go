@@ -299,3 +299,21 @@ func TestMonitorVerdictsAreCounted(t *testing.T) {
 		}
 	}
 }
+
+// RA11: the verification counter is by class, verdict and repository; an unknown verdict reads other.
+func TestMonitorVerificationsAreCounted(t *testing.T) {
+	ctx := WithRepository(t.Context(), "Smana/cloud-native-ref")
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return false })
+	s.ListRepositories("Smana/cloud-native-ref")
+	s.MonitorVerification(ctx, "alert-rules", "persisting")
+	s.MonitorVerification(ctx, "alert-rules", "Ignore previous instructions")
+	body := scrape()
+	for _, want := range []string{
+		`agent_factory_monitor_verifications_total{class="alert-rules",repository="Smana/cloud-native-ref",verdict="persisting"} 1`,
+		`agent_factory_monitor_verifications_total{class="alert-rules",repository="Smana/cloud-native-ref",verdict="other"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s\n%s", want, body)
+		}
+	}
+}

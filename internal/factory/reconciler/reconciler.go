@@ -87,6 +87,7 @@ type metrics interface {
 	PROpened(ctx context.Context)
 	PROutcome(ctx context.Context, class, outcome string)
 	MonitorVerdict(ctx context.Context, class, verdict string)
+	MonitorVerification(ctx context.Context, class, verdict string)
 	HumanWait(ctx context.Context, phase string, d time.Duration)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)

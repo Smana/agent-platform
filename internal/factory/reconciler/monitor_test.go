@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +125,11 @@ func TestFollowUps(t *testing.T) {
 			}
 		})
 	}
+}
+
+// MonitorVerification records RunLore's verdict as the monitor read it (RA11).
+func (m *fakeMetrics) MonitorVerification(_ context.Context, class, verdict string) {
+	m.add("verification " + class + " " + verdict)
 }
 
 func (m *fakeMetrics) has(s string) bool {
@@ -553,5 +559,120 @@ func TestTheSettleRequeueDoesNotDelayTheMonitor(t *testing.T) {
 	g.r.Now = func() time.Time { return now.Add(21 * time.Minute) }
 	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
 		t.Fatal("a watched task settles its usage")
+	}
+}
+
+const (
+	originTask = "orig2222"
+	secretEv   = "EVIDENCE-NEVER-PUBLIC"
+)
+
+// verifyRig is monitorRig whose merge came from originTask, RunLore's by default, with the class
+// waiting `within` for the verdict. verdict, when set, is already recorded (the endpoint's write).
+func verifyRig(t *testing.T, requestedBy, verdict string, within time.Duration, mergedAgo time.Duration) *rig {
+	t.Helper()
+	g := monitorRig(t)
+	cl := g.r.Cfg.Classes["dead-links"]
+	cl.Monitor.Verification = &config.VerificationWatch{Within: config.Duration{Duration: within}}
+	g.r.Cfg.Classes["dead-links"] = cl
+	g.r.Cfg.API.InternalPrincipals = []config.InternalPrincipal{{Sponsored: config.Sponsored{Name: "runlore"}, Verification: true}}
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-mergedAgo))
+	orig := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: originTask, Namespace: "agent-system"},
+		Spec: v1alpha1.TaskSpec{Repository: "Smana/cloud-native-ref", Source: v1alpha1.Source{Kind: "api", RequestedBy: requestedBy}},
+		Status: v1alpha1.TaskStatus{Published: &v1alpha1.Published{Issue: 42, By: "smana", At: metav1.NewTime(now.Add(-48 * time.Hour)),
+			Evidence: secretEv, EvidenceFor: "3buqdlot"}}}
+	if err := g.c.Create(t.Context(), orig); err != nil {
+		t.Fatal(err)
+	}
+	g.patch(t, func(tk *v1alpha1.Task) {
+		if requestedBy != "" {
+			tk.Spec.Origin = originTask
+		}
+		if verdict != "" {
+			tk.Status.Monitor = &v1alpha1.MonitorStatus{Since: metav1.NewTime(now.Add(-mergedAgo)),
+				Verification: &v1alpha1.Verification{Verdict: verdict, By: "system:runlore", RecordedAt: metav1.NewTime(now),
+					Alert: v1alpha1.VerifiedAlert{Name: "KubePodCrashLooping", FiringAtMerge: true, FiringNow: verdict == "persisting"}}}
+		}
+	})
+	return g
+}
+
+// RA11, RA12, R12, R13, offline proof 5: RunLore's verdict is a monitor signal, and persisting
+// files one follow-up stub.
+func TestVerificationSignal(t *testing.T) {
+	t.Run("resolved, healthy at the end of the window", func(t *testing.T) {
+		g := verifyRig(t, "system:runlore", "resolved", time.Hour, 167*time.Hour)
+		tk := g.ended(t)
+		m := tk.Status.Monitor
+		if m.Verified != "healthy" || m.Verdict != "healthy" || !m.Posted {
+			t.Fatalf("%+v", m)
+		}
+		n := 0
+		for _, s := range g.metrics.recorded {
+			if s == "verification dead-links resolved" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("counted once: %v", g.metrics.recorded)
+		}
+		if !contains(g.f.Comments(12), "RunLore: resolved, alert KubePodCrashLooping, https://rooms.priv.aws.ogenki.io/r/"+originTask) {
+			t.Fatalf("the PR comment: %q", g.f.Comments(12))
+		}
+	})
+	t.Run("persisting is a regression at once, with one follow-up stub", func(t *testing.T) {
+		g := verifyRig(t, "system:runlore", "persisting", time.Hour, 2*time.Hour)
+		tk := g.reconcile(t, "3buqdlot", 1)
+		m := tk.Status.Monitor
+		if m.Verified != "regression" || m.Verdict != "regression" || !slices.Contains(g.f.Added(12), RegressionLabel) {
+			t.Fatalf("%+v", m)
+		}
+		created := g.f.Created()
+		if len(created) != 1 || m.FollowUpIssue == 0 {
+			t.Fatalf("one stub, recorded: %d %+v", len(created), m)
+		}
+		for _, want := range []string{"RunLore: the fix in #12 did not hold (KubePodCrashLooping)", "#12", "KubePodCrashLooping",
+			"/r/" + originTask, "labels: factory/proposed"} {
+			if !strings.Contains(created[0], want) {
+				t.Fatalf("the stub lacks %q: %s", want, created[0])
+			}
+		}
+		if strings.Contains(created[0], secretEv) {
+			t.Fatalf("no evidence in public text: %s", created[0])
+		}
+		g.r.Now = func() time.Time { return now.Add(time.Hour) }
+		g.reconcile(t, "3buqdlot", 2)
+		if got := g.f.Created(); len(got) != 1 {
+			t.Fatalf("filed once: %d", len(got))
+		}
+		rc := g.r.Cfg.RepositoryFor("Smana/cloud-native-ref")
+		if paused, err := g.r.paused(t.Context(), rc, "dead-links"); err != nil || !paused {
+			t.Fatalf("maxFollowUps 1: the class's next arm reads class_paused: %v %v", paused, err)
+		}
+	})
+	t.Run("no verdict past within is inconclusive", func(t *testing.T) {
+		g := verifyRig(t, "system:runlore", "", time.Hour, 2*time.Hour)
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Monitor.Verified != "inconclusive" {
+			t.Fatalf("%+v", tk.Status.Monitor)
+		}
+	})
+	t.Run("no verdict inside within stays open", func(t *testing.T) {
+		g := verifyRig(t, "system:runlore", "", 3*time.Hour, 2*time.Hour)
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Monitor.Verified != "" || tk.Status.Monitor.Verdict != "" {
+			t.Fatalf("%+v", tk.Status.Monitor)
+		}
+	})
+	for name, requestedBy := range map[string]string{"a merge with no origin": "", "an origin from a sponsored principal": "system:slack-app"} {
+		t.Run(name, func(t *testing.T) {
+			g := verifyRig(t, requestedBy, "resolved", time.Hour, 2*time.Hour)
+			if requestedBy == "" {
+				g.patch(t, func(tk *v1alpha1.Task) { tk.Spec.Origin = "" })
+			}
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if tk.Status.Monitor.Verified != "" || tk.Status.Monitor.Verdict != "" || len(g.f.Created()) != 0 ||
+				contains(g.f.Comments(12), "RunLore:") {
+				t.Fatalf("%+v", tk.Status.Monitor)
+			}
+		})
 	}
 }
