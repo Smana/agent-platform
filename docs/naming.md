@@ -5,6 +5,9 @@ spelled in practical ASCII as `Maku`, and as `maku` where a command or a package
 
 Maku — a controlled stage for delegated agent work.
 
+What it is, before what the name means: Maku runs coding agents on your Kubernetes cluster without
+trusting them. Every run is sandboxed, supervised by people and policy, and kept on the record.
+
 This page records the name and the reasoning behind it. Repository, package, image, API and other
 technical renames are separate work: nothing in the codebase changes because of this page.
 
@@ -21,6 +24,24 @@ Historical aside, deliberately kept out of the brand: 陣幕 (*jinmaku*) were th
 commander's field enclosure, and 幕府 (*bakufu*) carries the same encampment association. Samurai and
 shogunate imagery is not part of the identity.
 
+One compound cuts against the story, and we name it before anyone else does: 黒幕 (*kuromaku*,
+literally the black curtain) is the person pulling strings from behind the scenes. Maku promises the
+opposite, work that stays in view. The native-speaker review below weighs how strongly 幕 alone
+evokes it.
+
+## A mnemonic, not an etymology
+
+maku also reads as **mediated agents on Kubernetes**: the agent does the work, and policy, people
+and the merge gate stand between it and everything it touches. That is a reading that helps people
+remember the product, not where the name comes from: the name is 幕, the curtain.
+
+- Write it in lowercase, `mediated agents on Kubernetes`, never as the capitals `MAKU`, which is
+  how the low-code platform below styles its own name.
+- It describes the product as it ships today. If the runtime ever stops being Kubernetes only, the
+  mnemonic goes, and the name stays.
+- *Mediated*, not *managed*: in cloud vocabulary a managed service is one someone else operates, and
+  Maku is software you run yourself.
+
 ## Why the name fits the product
 
 The promise is confident delegation, for developers, platform teams and security teams alike. One
@@ -31,8 +52,9 @@ decides what may leave and what may merge; and autonomy widens only as trust is 
 | Product moment | The controlled-stage metaphor |
 |---|---|
 | A run starts | The curtain rises on a run |
-| Execution | The agent performs, but only inside a deliberately bounded environment |
+| Execution | The agent works, but only inside a deliberately bounded environment |
 | Supervision | Humans watch and can step in — they are neither locked inside nor shut outside |
+| A run waits on a person | 幕間 (*makuai*), the interval between acts: a run waiting on an approval in an idle room can be suspended, and nothing moves until someone decides |
 | Completion | The curtain falls; the room becomes a sealed, durable record |
 | Merge | Only the work policy allows leaves the controlled space |
 
@@ -60,8 +82,9 @@ Recorded 2026-10-27. This is a collision screen, not legal clearance.
 
 - **MAKU is an existing product.** [maku.net](https://maku.net) and
   [github.com/makunet](https://github.com/makunet) are an active Apache-2.0 Java/Vue low-code
-  developer platform. It lives in a different ecosystem, so the risk is moderate discoverability
-  confusion rather than direct competition.
+  developer platform, styled in capitals. It lives in a different ecosystem, so the risk is
+  moderate discoverability confusion rather than direct competition; our lowercase `maku` and the
+  "agents on Kubernetes" mnemonic keep the two apart in search.
 - **Package names are partly taken.** [npm `maku`](https://www.npmjs.com/package/maku) is a dormant
   CLI package; [`maku` on crates.io](https://crates.io/crates/maku) is an active small 2D danmaku
   pattern-language crate. Exact natural names are therefore not all available.
@@ -77,6 +100,9 @@ Recorded 2026-10-27. This is a collision screen, not legal clearance.
 - Do not claim that Maku literally means a controlled space.
 - Do not use anime or other franchise references.
 - Do not let theatrical wording stand in for exact security documentation.
+- Mind the "security theatre" reading: stage and performance language next to security invites it.
+  Prefer the curtain, the opening and the closing; never say the agent *performs*, and pair every
+  metaphor with the mechanism that actually enforces it.
 - Keep the core story about delegation, supervision, evidence and graduated autonomy.
 
 ## Visual identity
