@@ -423,6 +423,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ev-head { color: var(--muted-foreground); font-size: 13px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
 .md a { overflow-wrap: anywhere; }
+/* Markdown in a message stays in the conversation's scale: a heading is a bold line, never the
+   browser's 2em poster, and inline code reads as code inside the prose. */
+.md :is(h1, h2, h3, h4, h5, h6) { font-size: 16px; line-height: 1.4; font-weight: 700; margin: .9em 0 .3em; }
+.md h1 { font-size: 18px; }
+.md :not(pre) > code { font-size: .875em; padding: .1em .35em; border-radius: 4px; background: color-mix(in srgb, var(--foreground) 7%, transparent); }
+.md pre { padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--foreground) 5%, transparent); }
 .status-error, .status-rejected { color: var(--destructive); }
 /* An audit note, not an alarm: the warning foreground reads on both schemes. */
 .redacted { color: var(--warning-foreground); font-size: 13px; }
