@@ -124,7 +124,7 @@ k8s-agent-sandbox==0.5.1
 keyring==25.7.0
 kubernetes==36.0.0
 libtmux==0.53.0
-litellm==1.93.2
+litellm==1.100.4
 lmnr-claude-code-proxy==0.1.23
 lmnr==0.7.60
 lupa==2.8
