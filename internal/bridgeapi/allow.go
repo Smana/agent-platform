@@ -15,7 +15,7 @@ import (
 
 // bridgeKinds are the state_changed kinds a bridge produces: its status tracker and
 // mapping (phase 1), its acks (phase 4) and its local decisions (phase 5).
-var bridgeKinds = map[string]bool{"harness_status": true, "harness_error": true, "harness_paused": true,
+var bridgeKinds = map[string]bool{envelope.HarnessStatus: true, "harness_error": true, "harness_paused": true,
 	"harness_event": true, "delivered": true, "interrupted": true, "undeliverable": true, "policy_decision": true,
 	"decision_applied": true, envelope.HarnessEnd: true}
 
@@ -34,7 +34,7 @@ var knownFields = map[envelope.Type][]string{
 	envelope.ToolResult: jsonNames[envelope.ToolResultPayload](),
 	envelope.StateChanged: {"kind", "phase", "owner", "driver", "dataClass", "reason", "events", "bytes",
 		"running", "status", "previous", "code", "detail", "harnessKind", "url", "verdictSeq", "runId",
-		"ref", "callId", "class", "decision", "room", "seq", "note"},
+		"ref", "callId", "class", "decision", "room", "seq", "note", "model", "effort"},
 }
 
 // jsonNames lists a struct's JSON keys.
@@ -84,12 +84,15 @@ func bridgePayload(t envelope.Type, redacted json.RawMessage) (json.RawMessage, 
 		if json.Unmarshal(obj["kind"], &kind) != nil || !bridgeKinds[kind] {
 			return nil, wire.ReasonBadItem
 		}
-		if kind == envelope.HarnessEnd {
+		switch kind {
+		case envelope.HarnessEnd:
 			// The end reason is a closed set; a missing or foreign one would read as NULL in the store.
 			var reason string
 			if json.Unmarshal(obj["reason"], &reason) != nil || !envelope.LoopEnd(reason) {
 				return nil, wire.ReasonBadItem
 			}
+		case envelope.HarnessStatus:
+			return harnessStatus(obj), ""
 		}
 		return redacted, ""
 	}
@@ -135,4 +138,19 @@ func foldKey(k string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// harnessStatus is a redacted harness_status as stored. Its effort becomes a metric label and every
+// view's text, so one outside envelope.Efforts, whether the sandbox sent it or the redaction of a
+// secret changed it, is stripped and the status kept: refusing it would hold the bridge's status
+// stream. A model is never the bridge's to say (the room takes it from the claim's spec.model), so
+// it is stripped too.
+func harnessStatus(obj map[string]json.RawMessage) json.RawMessage {
+	var effort string
+	if raw, ok := obj["effort"]; ok && (json.Unmarshal(raw, &effort) != nil || !envelope.ValidEffort(effort)) {
+		delete(obj, "effort")
+	}
+	delete(obj, "model")
+	b, _ := json.Marshal(obj) // raw JSON values that decoded once: Marshal cannot fail
+	return b
 }

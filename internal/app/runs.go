@@ -82,3 +82,18 @@ func bounded(leading *atomic.Bool, log *slog.Logger, msg string, f func(context.
 		}
 	}
 }
+
+// runLiveness is the one watch method runInfoWatch reads; *runwatch.Watcher has it.
+type runLiveness interface {
+	Live(id string) (run runwatch.Run, live, known bool)
+}
+
+// runInfoWatch is what rooms_run_info reads of a run: its claim's spec.model (runwatch.Run.Model,
+// already bounded), and whether to keep it: while it is live, and while the watch has not synced
+// and so cannot tell a run it lacks from a deleted one.
+func runInfoWatch(w runLiveness) func(run string) (model string, live bool) {
+	return func(run string) (string, bool) {
+		r, live, known := w.Live(run)
+		return r.Model, live || !known
+	}
+}

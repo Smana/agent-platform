@@ -160,6 +160,42 @@ describe("the title strip", () => {
     strip.update(input());
     expect(h.querySelector(".chip-run")?.textContent).toBe("implementer · ikely2yk · 4 min");
   });
+  it("names the run's model (its claim's) and effort (its harness's)", () => {
+    const at = () => Date.parse("2026-10-04T14:12:30Z");
+    const chipFor = (over: Partial<Summary["status"]>) => {
+      const h = document.createElement("header");
+      mountStrip(h, at).update(input({ summary: summary(over) }));
+      return h.querySelector(".chip-run")?.textContent;
+    };
+    expect(chipFor({ runModel: { run: "ikely2yk", model: "agent-default", effort: "high" } }))
+      .toBe("implementer · ikely2yk · agent-default · high · 12 min");
+    // The last run's, when the facts' run is that one (the agent left, the chip still shows).
+    expect(chipFor({ lastRunModel: { run: "ikely2yk", model: "agent-default", effort: "low" } }))
+      .toBe("implementer · ikely2yk · agent-default · low · 12 min");
+    expect(chipFor({ runModel: { run: "ikely2yk", effort: "max" } })).toBe("implementer · ikely2yk · max · 12 min");
+    // Another run's model is not this run's; with neither known the chip is as before.
+    expect(chipFor({ runModel: { run: "zzzzzzzz", model: "agent-default", effort: "high" } })).toBe("implementer · ikely2yk · 12 min");
+    expect(chipFor({})).toBe("implementer · ikely2yk · 12 min");
+  });
+  it("keeps the model and effort when the run's age moves in place", () => {
+    let t = Date.parse("2026-10-04T14:04:30Z");
+    const h = document.createElement("header");
+    const strip = mountStrip(h, () => t);
+    const i = input({ summary: summary({ runModel: { run: "ikely2yk", model: "agent-default", effort: "high" } }) });
+    strip.update(i);
+    const chip = h.querySelector(".chip-run");
+    t += 60_000;
+    strip.update(i);
+    expect(h.querySelector(".chip-run")).toBe(chip);
+    expect(chip?.textContent).toBe("implementer · ikely2yk · agent-default · high · 5 min");
+  });
+  it("puts a run's model in as text", () => {
+    const { h, strip } = mount();
+    const evil = "<img src=x onerror=alert(1)>";
+    strip.update(input({ summary: summary({ runModel: { run: "ikely2yk", model: evil, effort: evil } }) }));
+    expect(h.querySelector("img")).toBeNull();
+    expect(h.querySelector(".chip-run")?.textContent).toContain(evil);
+  });
   it("names another driver short, the full id as a title, and your role", () => {
     const { h, strip } = mount();
     strip.update(input({ driver: "human:999999999999" }));
@@ -298,6 +334,8 @@ describe("the broker's golden summaries in the strip", () => {
     expect(h.querySelector(".chip-phase")?.textContent).toBe(want.status.phase);
     if (want.status.pr) expect(h.textContent).toContain(`#${want.status.pr.number}`);
     if (want.status.issue) expect(h.textContent).toContain(`#${want.status.issue.number}`);
+    const told = [want.status.runModel, want.status.lastRunModel].find((m) => m && m.run === want.status.run?.id);
+    if (told?.model) expect(h.querySelector(".chip-run")?.textContent).toContain(` · ${told.model} · `);
     expect(h.textContent).not.toMatch(/undefined|null|NaN|Invalid Date/);
   });
 });

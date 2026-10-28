@@ -604,3 +604,30 @@ func TestCardShowsTheLastJudgeVerdict(t *testing.T) {
 	}
 	assertInert(t, md, rooms, []string{"# x"})
 }
+
+// The Run row names the model and effort the run told its room, the present run's or the last's,
+// only when they are that run's, and as tokens: a run's claim is never markup.
+func TestCardRunRowNamesTheModelAndEffort(t *testing.T) {
+	for name, c := range map[string]struct {
+		current, last *summary.RunModel
+		want          string
+	}{
+		"the present run's": {&summary.RunModel{Run: "cf4ato2x", Model: "agent-default", Effort: "high"}, nil,
+			"Run   implementer cf4ato2x (human review) · agent-default · high · started 19:11 UTC, 18 min ago\n"},
+		"the last run's, when it is the facts' run": {nil, &summary.RunModel{Run: "cf4ato2x", Model: "agent-default", Effort: "low"},
+			"Run   implementer cf4ato2x (human review) · agent-default · low · started"},
+		"an effort alone": {&summary.RunModel{Run: "cf4ato2x", Effort: "max"}, nil,
+			"Run   implementer cf4ato2x (human review) · max · started"},
+		"another run's is not this run's": {&summary.RunModel{Run: "zzzzzzzz", Model: "agent-default", Effort: "high"}, nil,
+			"Run   implementer cf4ato2x (human review) · started"},
+		"an older harness told nothing": {nil, nil, "Run   implementer cf4ato2x (human review) · started"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, n := foldGolden(t, "normal")
+			s.Status.RunModel, s.Status.LastRunModel = c.current, c.last
+			if got := card1(t, s, textOpts(n)); !strings.Contains(got, c.want) {
+				t.Fatalf("want %q in\n%s", c.want, got)
+			}
+		})
+	}
+}

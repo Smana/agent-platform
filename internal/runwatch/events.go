@@ -82,8 +82,11 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 		return err
 	}
 	if r.Phase == "Running" || Terminal(r.Phase) {
-		if err := put(stepRunning, envelope.StateChanged, envelope.StatePayload("run_phase",
-			map[string]any{"phase": "Running"})); err != nil {
+		running := map[string]any{"phase": "Running"}
+		if r.Model != "" { // the claim's model, which the summary shows beside the run
+			running["model"] = r.Model
+		}
+		if err := put(stepRunning, envelope.StateChanged, envelope.StatePayload("run_phase", running)); err != nil {
 			return err
 		}
 	}

@@ -106,13 +106,14 @@ func isBrokerStub(why string) bool {
 	return why == bridgeapi.StubInvalidValue || why == bridgeapi.StubKeyCollision
 }
 
-// bridgeSignals counts what a bridge tells its room of its own trouble (Ruling
-// AP): a stall on the harness log, told once per stall as state_changed
-// {harness_error, code}, and an item kept as a stub, by why (S1 review I-4):
-// refused (the broker answered 400 to a lone item: the bridge's
-// harness_event{harnessKind}), oversize (the bridge's or the store's size stub),
-// invalid_value (the store rejected a value) and key_collision (redaction found
-// keys that are one once folded), the last two from the broker's own stub.
+// bridgeSignals records rooms_run_info from a harness_status's effort, and
+// counts what a bridge tells its room of its own trouble (Ruling AP): a stall on
+// the harness log, told once per stall as state_changed {harness_error, code},
+// and an item kept as a stub, by why (S1 review I-4): refused (the broker
+// answered 400 to a lone item: the bridge's harness_event{harnessKind}),
+// oversize (the bridge's or the store's size stub), invalid_value (the store
+// rejected a value) and key_collision (redaction found keys that are one once
+// folded), the last two from the broker's own stub.
 func (l *meteredLog) bridgeSignals(ctx context.Context, ev envelope.Event) {
 	if ev.Origin != envelope.OriginHarness || len(ev.Payload) > maxSignalBytes {
 		return
@@ -124,11 +125,18 @@ func (l *meteredLog) bridgeSignals(ctx context.Context, ev envelope.Event) {
 		Oversize    bool   `json:"oversize"`
 		Refused     bool   `json:"refused"`
 		Reason      string `json:"reason"`
+		Effort      string `json:"effort"`
 	}
 	if json.Unmarshal(ev.Payload, &p) != nil {
 		return
 	}
 	switch {
+	case ev.Type == envelope.StateChanged && p.Kind == envelope.HarnessStatus:
+		// The effort the run's harness reported: agent-controlled, so a label only as one of the
+		// seven envelope.Efforts. The model label is the claim's, which the metric reads itself.
+		if envelope.ValidEffort(p.Effort) && ev.RunID != "" {
+			l.m.RunInfo(ctx, ev.RunID, p.Effort)
+		}
 	case ev.Type == envelope.StateChanged && p.Kind == "harness_error" && isStall(p.Code):
 		l.m.BridgeStalled(ctx, p.Code)
 	case ev.Type == envelope.StateChanged && p.Kind == "harness_event" && isStub(p.HarnessKind):

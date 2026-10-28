@@ -600,10 +600,12 @@ func (b *Bridge) harnessRead(ctx context.Context, err error, events int64) {
 // pollStatus records the conversation's status and returns it, "" when the
 // harness did not answer.
 func (b *Bridge) pollStatus(ctx context.Context) string {
-	status, err := b.Harness.Status(ctx)
+	c, err := b.Harness.Conversation(ctx)
 	if err != nil {
 		return ""
 	}
+	status := c.Status
+	b.status.Tell(c.Effort)
 	b.sawHarness(b.now())
 	if b.bufBytes >= statusCap(b.MaxBuffer) {
 		return status // a later poll records the status the harness settles on

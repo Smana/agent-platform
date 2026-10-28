@@ -285,6 +285,7 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.tools.preset.default import get_default_agent
 
+    effort = env.get("LLM_REASONING_EFFORT", "high")
     llm = LLM(
         model="openai/" + env["MODEL"],
         base_url=env["LLM_BASE_URL"],
@@ -299,7 +300,7 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
         # know (`agent-default`), even with capability_overrides. Unsent, GLM-5.3 falls back
         # to maximum thinking: measured 150 s and 1,238 reasoning tokens for a reply that
         # takes 10.8 s at "high", so every step took minutes and some hit the 300 s timeout.
-        litellm_extra_body={"reasoning_effort": env.get("LLM_REASONING_EFFORT", "high")},
+        litellm_extra_body={"reasoning_effort": effort},
         # Internal runs reach Anthropic, where an uncached turn re-sends the whole context at the
         # full input price. The SDK only knows `agent-default` is a Claude model when told; its
         # markers are rewritten for the gateway in site/sitecustomize.py. Public runs reach Z.ai
@@ -333,6 +334,10 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
         "max_iterations": 500,
         # Each auto-title is an extra model call that spends the run's budget.
         "autotitle": False,
+        # The effort this run sends the gateway, for its room: the bridge reads the tag back into
+        # harness_status{effort}. Not the model: the room takes it from the claim's spec.model,
+        # since the agent can rewrite these tags over loopback.
+        "tags": {"effort": effort},
     })
     return json.loads(request.model_dump_json(exclude_none=True, context=plain))
 

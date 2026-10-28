@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -605,8 +606,11 @@ func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	for i, kind := range []string{"harness_status", "harness_error", "harness_paused", "harness_event",
 		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied", envelope.HarnessEnd} {
 		var fields map[string]any
-		if kind == envelope.HarnessEnd {
+		switch kind {
+		case envelope.HarnessEnd:
 			fields = map[string]any{"reason": "stalled"}
+		case envelope.HarnessStatus: // what the run told its room it runs on
+			fields = map[string]any{"status": "running", "previous": "", "effort": "high"}
 		}
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
 			Payload: envelope.StatePayload(kind, fields)})
@@ -627,6 +631,47 @@ func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	}
 	if n := len(log.stored()); n != len(items) {
 		t.Fatalf("%d events, want %d", n, len(items))
+	}
+}
+
+// A harness_status's effort becomes a metric label and every view's text: one outside the
+// envelope's set, whatever made it so (the sandbox, or the redaction of a secret it held), is
+// stripped after redaction and the status kept. A model is never the bridge's to say: the room
+// takes it from the claim.
+func TestAHarnessStatusKeepsOnlyAValidEffort(t *testing.T) {
+	token := "ghp_" + strings.Repeat("A1b2C3d4E5", 3) + "f6G7h8" // a GitHub token's shape: redacted
+	for _, c := range []struct {
+		name, payload, want string
+	}{
+		{"an effort of the set", `{"kind":"harness_status","status":"running","effort":"high"}`,
+			`{"effort":"high","kind":"harness_status","status":"running"}`},
+		{"a foreign effort", `{"kind":"harness_status","status":"running","effort":"turbo"}`,
+			`{"kind":"harness_status","status":"running"}`},
+		{"a numeric effort", `{"kind":"harness_status","status":"running","effort":3}`,
+			`{"kind":"harness_status","status":"running"}`},
+		{"an effort the redaction changed", `{"kind":"harness_status","status":"running","effort":"` + token + `"}`,
+			`{"kind":"harness_status","status":"running"}`},
+		{"a model the sandbox named", `{"kind":"harness_status","status":"running","model":"forged","effort":"low"}`,
+			`{"effort":"low","kind":"harness_status","status":"running"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, log, w := newServer(t)
+			w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+			h := s.Routes()
+			hello(t, h, runA)
+			item := wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged, Payload: json.RawMessage(c.payload)}
+			if rec := call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, batch(item)); rec.Code != http.StatusOK {
+				t.Fatalf("refused: %d %s", rec.Code, rec.Body)
+			}
+			evs := log.stored()
+			got := string(evs[len(evs)-1].Payload)
+			var a, b any
+			_ = json.Unmarshal([]byte(got), &a)
+			_ = json.Unmarshal([]byte(c.want), &b)
+			if !reflect.DeepEqual(a, b) {
+				t.Fatalf("stored %s, want %s", got, c.want)
+			}
+		})
 	}
 }
 

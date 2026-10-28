@@ -120,6 +120,15 @@ class BuildRequestTest(unittest.TestCase):
         env = {**ENV, "LLM_REASONING_EFFORT": "low"}
         self.assertEqual(agent_run.build_request(env, "t", "r")["agent"]["llm"]["litellm_extra_body"], {"reasoning_effort": "low"})
 
+    def test_the_room_is_told_the_effort_the_run_sends_and_nothing_else(self):
+        # The bridge reads the tag back into harness_status{effort}. The model is the claim's
+        # spec.model, never the sandbox's: the agent can rewrite these tags over loopback.
+        self.assertEqual(self.body["tags"], {"effort": "high"})
+        env = {**ENV, "LLM_REASONING_EFFORT": "low"}
+        body = agent_run.build_request(env, "t", "r")
+        self.assertEqual(body["tags"], {"effort": "low"})
+        self.assertEqual(body["agent"]["llm"]["litellm_extra_body"], {"reasoning_effort": body["tags"]["effort"]})
+
     def test_reasoning_effort_reaches_the_wire(self):
         # The regression that cost minutes per step: litellm silently dropped it.
         from openhands.sdk import LLM, Message, TextContent

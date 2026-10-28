@@ -575,3 +575,39 @@ func TestEndReasonReadsTheLoopEndFirst(t *testing.T) {
 		})
 	}
 }
+
+// spec.model is the claim's, set by the factory or the broker, never the sandbox's: the one source
+// of a run's model for the room and the metric. A value outside the envelope's bound is dropped.
+func TestTheRunsModelIsTheClaims(t *testing.T) {
+	withModel := func(m any) *unstructured.Unstructured {
+		u := claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", "")
+		_ = unstructured.SetNestedField(u.Object, m, "spec", "model")
+		return u
+	}
+	for name, c := range map[string]struct {
+		u    *unstructured.Unstructured
+		want string
+	}{
+		"a logical model name":  {withModel("agent-default"), "agent-default"},
+		"none set":              {claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", ""), ""},
+		"one outside the bound": {withModel("agent default <b>"), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, ok := FromUnstructured(c.u)
+			if !ok || r.Model != c.want {
+				t.Fatalf("model %q (ok %v), want %q", r.Model, ok, c.want)
+			}
+			fs := &fakeStore{keys: map[string]bool{}}
+			if err := (&Events{Store: fs}).Observe(t.Context(), r); err != nil {
+				t.Fatal(err)
+			}
+			want := `{"kind":"run_phase","phase":"Running"}`
+			if c.want != "" {
+				want = `{"kind":"run_phase","model":"` + c.want + `","phase":"Running"}`
+			}
+			if got := string(fs.drafts[1].Payload); got != want {
+				t.Fatalf("run_phase %s, want %s", got, want)
+			}
+		})
+	}
+}

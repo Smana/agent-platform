@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -483,6 +484,68 @@ func TestViewTask(t *testing.T) {
 			got := summary.View(summary.Fold(c.evs), "26zfnuxm", "https://rooms.example/r/26zfnuxm", policy.Subject{}, 0, time.Time{})
 			if got.Status.Task != c.want {
 				t.Fatalf("status.task = %q, want %q", got.Status.Task, c.want)
+			}
+		})
+	}
+}
+
+// The summary carries the present run's and the last run's model and effort: the model from the
+// broker's run_phase{Running, model}, the claim's spec.model; the effort from the run's
+// harness_status. A model the sandbox wrote, or any refused value, is never shown.
+func TestTheRunsModelAndEffort(t *testing.T) {
+	sys := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
+	running := func(seq int64, run, model string) envelope.Event {
+		e := ev(seq, envelope.StateChanged, sys, map[string]any{"kind": "run_phase", "phase": "Running", "model": model})
+		e.RunID, e.Origin = run, envelope.OriginBroker
+		return e
+	}
+	status := func(seq int64, run string, fields map[string]any) envelope.Event {
+		p := map[string]any{"kind": "harness_status", "status": "running", "previous": ""}
+		maps.Copy(p, fields)
+		e := ev(seq, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + run}, p)
+		e.RunID, e.Origin = run, envelope.OriginHarness
+		return e
+	}
+	effort := func(seq int64, run, e string) envelope.Event { return status(seq, run, map[string]any{"effort": e}) }
+	joined := func(seq int64, run, change string) envelope.Event {
+		return ev(seq, envelope.Participant, sys, envelope.ParticipantPayload{Principal: "agent:" + run, Change: change, Role: "implementer"})
+	}
+	forged := running(3, "aaaaaaaa", "forged") // a run_phase that did not come from the broker
+	forged.Origin = envelope.OriginHarness
+	m := func(run, model, effort string) *summary.RunModel {
+		return &summary.RunModel{Run: run, Model: model, Effort: effort}
+	}
+	for name, c := range map[string]struct {
+		evs           []envelope.Event
+		current, last *summary.RunModel
+	}{
+		"no run told anything": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"), status(2, "aaaaaaaa", nil)}, nil, nil},
+		"the present run": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"), running(2, "aaaaaaaa", "agent-default"),
+			effort(3, "aaaaaaaa", "high")}, m("aaaaaaaa", "agent-default", "high"), nil},
+		"an older harness: the claim's model alone": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"),
+			running(2, "aaaaaaaa", "agent-default"), status(3, "aaaaaaaa", nil)}, m("aaaaaaaa", "agent-default", ""), nil},
+		"a run that left is the last": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"), running(2, "aaaaaaaa", "agent-default"),
+			effort(3, "aaaaaaaa", "high"), joined(4, "aaaaaaaa", "left")}, nil, m("aaaaaaaa", "agent-default", "high")},
+		"the present run and the one before": {[]envelope.Event{running(1, "aaaaaaaa", "agent-default"), effort(2, "aaaaaaaa", "high"),
+			joined(3, "bbbbbbbb", "joined"), running(4, "bbbbbbbb", "agent-cheap"), effort(5, "bbbbbbbb", "low"), effort(6, "bbbbbbbb", "low")},
+			m("bbbbbbbb", "agent-cheap", "low"), m("aaaaaaaa", "agent-default", "high")},
+		"a late status of the run before updates it, not the present one": {[]envelope.Event{running(1, "aaaaaaaa", "agent-default"),
+			joined(2, "bbbbbbbb", "joined"), running(3, "bbbbbbbb", "agent-cheap"), effort(4, "aaaaaaaa", "max")},
+			m("bbbbbbbb", "agent-cheap", ""), m("aaaaaaaa", "agent-default", "max")},
+		"a model the harness names is never shown": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"),
+			status(2, "aaaaaaaa", map[string]any{"model": "forged", "effort": "high"})}, m("aaaaaaaa", "", "high"), nil},
+		"a run_phase from elsewhere than the broker is ignored": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"), forged}, nil, nil},
+		"refused values are never shown": {[]envelope.Event{joined(1, "aaaaaaaa", "joined"), running(2, "aaaaaaaa", "a b"),
+			effort(3, "aaaaaaaa", "turbo")}, nil, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := summary.View(summary.Fold(c.evs), "26zfnuxm", "https://rooms.example/r/26zfnuxm", policy.Subject{}, 0, time.Time{})
+			if !reflect.DeepEqual(got.Status.RunModel, c.current) || !reflect.DeepEqual(got.Status.LastRunModel, c.last) {
+				t.Fatalf("runModel %+v lastRunModel %+v, want %+v and %+v", got.Status.RunModel, got.Status.LastRunModel, c.current, c.last)
+			}
+			b, _ := json.Marshal(got.Status)
+			if c.current == nil && strings.Contains(string(b), `"runModel"`) || c.last == nil && strings.Contains(string(b), `"lastRunModel"`) {
+				t.Fatalf("an absent model is in the JSON: %s", b)
 			}
 		})
 	}
