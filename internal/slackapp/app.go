@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -345,6 +346,12 @@ func (a *App) reply(ctx context.Context, ev slackEvent) string {
 	msgs, err := a.Slack.Thread(ctx, ev.Channel, ev.ThreadTS)
 	if err != nil {
 		a.log().Warn("slack thread fetch failed", "channel", ev.Channel, "err", err)
+		if errors.Is(err, ErrThreadTooLong) {
+			if _, perr := a.Slack.Post(ctx, ev.Channel, ev.ThreadTS, "This thread is too long to edit the draft: start a new one with a mention.", nil); perr != nil {
+				return "error"
+			}
+			return "refused"
+		}
 		return "error"
 	}
 	latest, filed := a.threadDraft(msgs)
@@ -412,10 +419,16 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 		}
 	}
 	say := func(text string) { sayMeta(text, nil) }
+	a.editMu.Lock() // an edit in flight finishes first, so the latest draft is the one filed
+	defer a.editMu.Unlock()
 	// Only the thread's latest draft files: an earlier one was replaced by an edit.
 	msgs, err := a.Slack.Thread(ctx, ev.Item.Channel, thread)
 	if err != nil {
 		a.log().Warn("slack thread fetch failed", "channel", ev.Item.Channel, "err", err)
+		if errors.Is(err, ErrThreadTooLong) {
+			say("This thread is too long to find its latest draft: start a new one with a mention.")
+			return "refused"
+		}
 		return "error"
 	}
 	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != ev.Item.TS {
@@ -428,7 +441,7 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 		MaxCostUSD: ch.MaxCostUSD,
 		OnBehalfOf: "slack:" + team + "/" + ev.User,
 		Ref:        "slack/" + team + "/" + ev.Item.Channel + "/" + thread,
-		Key:        team + "/" + ev.Item.Channel + "/" + ev.Item.TS,
+		Key:        team + "/" + ev.Item.Channel + "/" + thread, // one issue per thread, whatever the revision
 	})
 	if err != nil {
 		if r, ok := err.(Refused); ok { //nolint:errorlint // Refused is returned bare, never wrapped

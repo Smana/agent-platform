@@ -198,6 +198,7 @@ type fakeSlack struct {
 	posts     []post
 	msgs      map[string]Message
 	failPosts int // the next n Posts fail
+	threadErr error
 }
 
 func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta *Metadata) (string, error) {
@@ -226,6 +227,9 @@ func (f *fakeSlack) Message(_ context.Context, _, ts string) (Message, error) {
 func (f *fakeSlack) Thread(_ context.Context, _, threadTS string) ([]Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.threadErr != nil {
+		return nil, f.threadErr
+	}
 	var out []Message
 	for _, m := range f.msgs {
 		if m.TS == threadTS || m.ThreadTS == threadTS {
@@ -283,7 +287,8 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	return RunResult{Room: room, Issue: 42, Duplicate: dup}, nil
 }
 
-func (b *stubBroker) created() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.accepted) }
+func (b *stubBroker) newIssues() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.keys) }
+func (b *stubBroker) created() int   { b.mu.Lock(); defer b.mu.Unlock(); return len(b.accepted) }
 func (b *stubBroker) runCreates() []RunCreate {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -822,5 +827,36 @@ func TestSlackDraftIsMrkdwn(t *testing.T) {
 	}
 	if strings.Contains(got, "##") {
 		t.Fatalf("a raw heading in Slack: %q", got)
+	}
+}
+
+// One issue per thread: a failed "Filed" post, an edit and a check mark on the newer draft do not file twice.
+func TestRefilingAfterAFailedFiledPostIsADuplicate(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	d1 := rig.lastPost()
+	rig.slack.failPosts = 1 // the "Filed" line is lost
+	rig.react("C03", d1.ts, "U02DEF", "white_check_mark")
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	rig.react("C03", rig.lastPost().ts, "U02DEF", "white_check_mark")
+	calls := rig.broker.runCreates()
+	if len(calls) != 2 || calls[0].Key != calls[1].Key || rig.broker.created() != 2 || !strings.Contains(rig.lastPost().text, "Already filed") {
+		t.Fatalf("%+v", calls)
+	}
+	if n := rig.broker.newIssues(); n != 1 {
+		t.Fatalf("%d issues", n)
+	}
+}
+
+func TestLongThreadFailsClosed(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	d := rig.lastPost()
+	rig.slack.threadErr = ErrThreadTooLong
+	n := len(rig.posts())
+	rig.reply("U02DEF", "Acceptance: x")
+	rig.react("C03", d.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 0 || len(rig.posts()) != n+2 || !strings.Contains(rig.lastPost().text, "too long") {
+		t.Fatalf("%d %q", rig.broker.created(), rig.lastPost().text)
 	}
 }

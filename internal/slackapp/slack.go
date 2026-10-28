@@ -138,8 +138,11 @@ const (
 	threadMaxPages = 5
 )
 
-// Thread is conversations.replies for a thread, followed over a few pages at most: a thread longer
-// than that is read as far as it goes, which is the draft's start, not its latest.
+// ErrThreadTooLong is a thread with more pages than Thread follows: its latest draft cannot be
+// known, so nothing is edited or filed from it.
+var ErrThreadTooLong = errors.New("slackapp: slack: the thread is too long")
+
+// Thread is conversations.replies for a thread, followed over a few pages at most.
 func (c *SlackClient) Thread(ctx context.Context, channel, threadTS string) ([]Message, error) {
 	var out []Message
 	cursor := ""
@@ -164,10 +167,10 @@ func (c *SlackClient) Thread(ctx context.Context, channel, threadTS string) ([]M
 			out = append(out, msg)
 		}
 		if cursor = a.ResponseMetadata.NextCursor; cursor == "" {
-			break
+			return out, nil
 		}
 	}
-	return out, nil
+	return nil, ErrThreadTooLong
 }
 
 func (c *SlackClient) url(method string) string {

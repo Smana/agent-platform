@@ -5,6 +5,7 @@ package slackapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -107,5 +108,14 @@ func TestSlackThreadFollowsTheCursor(t *testing.T) {
 	if err != nil || len(msgs) != 2 || len(cursors) != 2 || cursors[1] != "c2" ||
 		msgs[1].Metadata == nil || msgs[1].Metadata.EventPayload.Author != "U02DEF" || msgs[1].Metadata.EventPayload.Rev != 2 {
 		t.Fatalf("%v %v %+v", err, cursors, msgs)
+	}
+}
+
+func TestSlackThreadPastTheLastPageFailsClosed(t *testing.T) {
+	c := slackServer(t, func(string, *http.Request, []byte) string {
+		return `{"ok":true,"messages":[{"ts":"1729.0001","user":"U02DEF","text":"p"}],"response_metadata":{"next_cursor":"more"}}`
+	})
+	if _, err := c.Thread(context.Background(), "C03", "1729.0001"); !errors.Is(err, ErrThreadTooLong) {
+		t.Fatalf("%v", err)
 	}
 }
