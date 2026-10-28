@@ -201,18 +201,18 @@ func TestTokenFetchUsesHTTPClientFromContext(t *testing.T) {
 func TestBrokerSlackLink(t *testing.T) {
 	f := newFakeBroker(t, "tok", `{"structuredContent":{"url":"https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz","expiresAt":"x"}}`)
 	b := Broker{URL: f.srv.URL, Tokens: staticTokens("tok"), HC: f.srv.Client()}
-	u, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "dana")
+	u, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "dana.h", "dana")
 	if err != nil || u != "https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz" {
 		t.Fatalf("%q %v", u, err)
 	}
 	if c := f.calls[0]; c.Params.Name != "slack_link_code" || c.Params.Arguments["team"] != "T01ABC" || c.Params.Arguments["user"] != "U02DEF" ||
-		c.Params.Arguments["name"] != "dana" {
+		c.Params.Arguments["handle"] != "dana.h" || c.Params.Arguments["name"] != "dana" {
 		t.Fatalf("%+v", c)
 	}
 	for _, bad := range []string{"https://evil.example/phish?code=abcdefghijklmnopqrstuvwxyz", "https://rooms.example/link/slack?code=x",
 		"https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz&next=evil", "javascript:alert(1)"} {
 		f.result = `{"structuredContent":{"url":` + jsonString(bad) + `}}`
-		if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", ""); err == nil {
+		if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "", ""); err == nil {
 			t.Errorf("%s: passed on", bad)
 		}
 	}
@@ -225,7 +225,7 @@ func TestBrokerSlackLink(t *testing.T) {
 	}))
 	t.Cleanup(off.Close)
 	b.URL, b.HC = off.URL, off.Client()
-	if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", ""); !errors.Is(err, ErrUnknownTool) {
+	if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "", ""); !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("off: %v", err)
 	}
 }

@@ -47,21 +47,39 @@ func TestSlackLinkCodeIsSingleUseAndShortLived(t *testing.T) {
 	if sub, found, err := s.SlackLink(ctx, "T01ABC", "U02DEF"); err != nil || !found || sub != "zsub1" {
 		t.Fatalf("the link: %q %v %v", sub, found, err)
 	}
-	// A second code replaces the first; consuming it moves the link to the new sub.
+	// A second code replaces the first. A link is never moved to another account: that is
+	// already_linked and leaves the code unused; the same account refreshes it; after an unlink the
+	// other account may link.
 	if err := s.MintSlackCode(ctx, codeHash("two"), c, now); err != nil {
 		t.Fatal(err)
 	}
+	c.Handle = "dana.h"
 	if err := s.MintSlackCode(ctx, codeHash("three"), c, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SlackCode(ctx, codeHash("two"), now); !errors.Is(err, ErrCodeInvalid) {
 		t.Fatalf("an earlier code of the same user survives a new one: %v", err)
 	}
-	if _, err := s.LinkSlack(ctx, codeHash("three"), "T01ABC", "zsub2", now); err != nil {
+	if _, err := s.LinkSlack(ctx, codeHash("three"), "T01ABC", "zsub2", now); !errors.Is(err, ErrAlreadyLinked) {
+		t.Fatalf("a link moved to another account: %v", err)
+	}
+	if sub, _, _ := s.SlackLink(ctx, "T01ABC", "U02DEF"); sub != "zsub1" {
+		t.Fatalf("the refused move changed the link: %q", sub)
+	}
+	if got, err := s.LinkSlack(ctx, codeHash("three"), "T01ABC", "zsub1", now); err != nil || got.Handle != "dana.h" {
+		t.Fatalf("the same account's refresh: %+v %v", got, err)
+	}
+	if links, _ := s.SlackLinksOf(ctx, "zsub1"); len(links) != 1 || links[0].Handle != "dana.h" || links[0].Name != "dana" {
+		t.Fatalf("%+v", links)
+	}
+	if _, err := s.UnlinkSlack(ctx, "T01ABC", "U02DEF", ""); err != nil {
 		t.Fatal(err)
 	}
-	if sub, _, _ := s.SlackLink(ctx, "T01ABC", "U02DEF"); sub != "zsub2" {
-		t.Fatalf("a re-link keeps the old account: %q", sub)
+	if err := s.MintSlackCode(ctx, codeHash("four"), c, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LinkSlack(ctx, codeHash("four"), "T01ABC", "zsub2", now); err != nil {
+		t.Fatalf("after an unlink: %v", err)
 	}
 	if _, found, err := s.SlackLink(ctx, "T01ABC", "U09NONE"); err != nil || found {
 		t.Fatalf("an unknown user is linked: %v %v", found, err)

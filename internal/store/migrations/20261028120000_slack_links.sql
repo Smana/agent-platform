@@ -5,6 +5,7 @@ CREATE TABLE slack_link_codes (
   code_sha256  bytea       PRIMARY KEY CHECK (length(code_sha256) = 32),
   team_id      text        NOT NULL CHECK (team_id ~ '^T[A-Z0-9]{2,20}$'),
   user_id      text        NOT NULL CHECK (user_id ~ '^[UW][A-Z0-9]{2,20}$'),
+  handle       text        NOT NULL DEFAULT '' CHECK (length(handle) <= 80),
   display_name text        NOT NULL DEFAULT '' CHECK (length(display_name) <= 80),
   expires_at   timestamptz NOT NULL,
   used_at      timestamptz
@@ -14,6 +15,7 @@ CREATE INDEX slack_link_codes_user ON slack_link_codes (team_id, user_id);
 CREATE TABLE slack_links (
   team_id      text        NOT NULL CHECK (team_id ~ '^T[A-Z0-9]{2,20}$'),
   user_id      text        NOT NULL CHECK (user_id ~ '^[UW][A-Z0-9]{2,20}$'),
+  handle       text        NOT NULL DEFAULT '' CHECK (length(handle) <= 80),
   display_name text        NOT NULL DEFAULT '' CHECK (length(display_name) <= 80),
   sub          text        NOT NULL CHECK (length(sub) BETWEEN 1 AND 128),
   linked_at    timestamptz NOT NULL,

@@ -145,11 +145,11 @@ func TestSlackEphemeralAndUserName(t *testing.T) {
 	if got["channel"] != "C03" || got["user"] != "U02DEF" || got["thread_ts"] != "1729.0001" || got["text"] != "hi" {
 		t.Fatalf("%+v", got)
 	}
-	if n, err := c.UserName(context.Background(), "U02DEF"); err != nil || n != "Dana H" {
-		t.Fatalf("%q %v", n, err)
+	if h, n, err := c.UserName(context.Background(), "U02DEF"); err != nil || h != "dana.h" || n != "Dana H" {
+		t.Fatalf("%q %q %v", h, n, err)
 	}
 	answer = `{"ok":false,"error":"missing_scope"}`
-	if n, err := c.UserName(context.Background(), "U02DEF"); err == nil || n != "" {
+	if _, n, err := c.UserName(context.Background(), "U02DEF"); err == nil || n != "" {
 		t.Fatalf("missing_scope: %q %v", n, err)
 	}
 }

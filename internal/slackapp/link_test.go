@@ -13,14 +13,14 @@ import (
 // say so.
 func TestLinkCommands(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
-	rig.slack.names = map[string]string{"U02DEF": "dana"}
+	rig.slack.names = map[string][2]string{"U02DEF": {"dana.h", "dana"}}
 	rig.mention("C03", "1729.0001", "<@U0BOT>  Link ")
 	w := rig.slack.whispers()
 	if len(w) != 1 || w[0].user != "U02DEF" || w[0].channel != "C03" || w[0].thread != "1729.0001" ||
 		!strings.Contains(w[0].text, "<https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz|") || !strings.Contains(w[0].text, "Keep it to yourself") {
 		t.Fatalf("%+v", w)
 	}
-	if len(rig.posts()) != 0 || len(rig.broker.links) != 1 || rig.broker.links[0] != "T01ABC/U02DEF/dana" {
+	if len(rig.posts()) != 0 || len(rig.broker.links) != 1 || rig.broker.links[0] != "T01ABC/U02DEF/dana.h/dana" {
 		t.Fatalf("a link posted in the channel or drafted: %d posts, %v", len(rig.posts()), rig.broker.links)
 	}
 	if rig.metrics.count("events", "link") != 1 {
@@ -65,7 +65,7 @@ func TestFiledNamesTheSponsor(t *testing.T) {
 }
 
 // B: a ✅ on the App's draft is never refused without a word. Each refusal names the reason and
-// the fix, once per draft, user and reason; a passing failure is said each time.
+// the fix, once per draft, user and reason; a passing failure is said again after retryEvery.
 func TestNoSilentCheckMark(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.mention("C03", "1729.0001", draftText)
@@ -109,10 +109,13 @@ func TestNoSilentCheckMark(t *testing.T) {
 		rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
 		said(want)
 	}
-	// A passing one is said on each ✅: reacting again is its fix.
+	// A passing one is said again only after retryEvery: reacting again is its fix, a burst is not.
 	rig.broker.runErr = Refused("rejected: link_unverified")
 	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
 	said("could not check this just now; react again to retry")
+	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
+	silent("a retry line within retryEvery")
+	rig.now = rig.now.Add(retryEvery)
 	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
 	said("react again to retry")
 	rig.broker.runErr = errors.New("connection refused")

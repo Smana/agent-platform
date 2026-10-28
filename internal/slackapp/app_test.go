@@ -201,7 +201,7 @@ type fakeSlack struct {
 	failPosts  int // the next n Posts fail
 	threadErr  error
 	msgErr     error
-	names      map[string]string
+	names      map[string][2]string // user -> handle, display name
 }
 
 type ephemeral struct{ channel, user, thread, text string }
@@ -213,13 +213,13 @@ func (f *fakeSlack) PostEphemeral(_ context.Context, channel, user, threadTS, te
 	return nil
 }
 
-func (f *fakeSlack) UserName(_ context.Context, user string) (string, error) {
+func (f *fakeSlack) UserName(_ context.Context, user string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if n, ok := f.names[user]; ok {
-		return n, nil
+		return n[0], n[1], nil
 	}
-	return "", errors.New("missing_scope")
+	return "", "", errors.New("missing_scope")
 }
 
 func (f *fakeSlack) whispers() []ephemeral {
@@ -288,10 +288,10 @@ type stubBroker struct {
 	unlinked map[string]bool
 }
 
-func (b *stubBroker) SlackLinkCode(_ context.Context, team, user, name string) (string, error) {
+func (b *stubBroker) SlackLinkCode(_ context.Context, team, user, handle, name string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.links = append(b.links, team+"/"+user+"/"+name)
+	b.links = append(b.links, team+"/"+user+"/"+handle+"/"+name)
 	if b.linkErr != nil {
 		return "", b.linkErr
 	}

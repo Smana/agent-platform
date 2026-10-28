@@ -69,9 +69,12 @@ func (m *memLinks) LinkSlack(_ context.Context, h []byte, team, sub string, now 
 	if !ok || c.used || !c.Expires.After(now) || c.Team != team {
 		return store.SlackCode{}, store.ErrCodeInvalid
 	}
-	c.used = true
 	key := c.Team + "/" + c.User
-	m.links[key], m.subs[key] = store.SlackLink{Team: c.Team, User: c.User, Name: c.Name, LinkedAt: now}, sub
+	if held, ok := m.subs[key]; ok && held != sub {
+		return store.SlackCode{}, store.ErrAlreadyLinked
+	}
+	c.used = true
+	m.links[key], m.subs[key] = store.SlackLink{Team: c.Team, User: c.User, Handle: c.Handle, Name: c.Name, LinkedAt: now}, sub
 	return c.SlackCode, nil
 }
 
@@ -118,10 +121,11 @@ func slackLinkOn(links *memLinks) option {
 	}
 }
 
-// mint asks slack_link_code as the Slack App and returns the code from its url.
+// mint asks slack_link_code as the Slack App and returns the code from its url; the user's handle
+// is "h-<name>".
 func mint(t *testing.T, e env, user, name string) string {
 	t.Helper()
-	got := call(t, e, bearer("slack-app"), "slack_link_code", map[string]any{"team": "T01ABC", "user": user, "name": name})
+	got := call(t, e, bearer("slack-app"), "slack_link_code", map[string]any{"team": "T01ABC", "user": user, "handle": "h-" + name, "name": name})
 	var out struct{ URL, ExpiresAt string }
 	if got.isError || json.Unmarshal(got.structured, &out) != nil {
 		t.Fatalf("mint: %+v", got)
@@ -188,8 +192,9 @@ func TestSlackLinkConfirmAndUnlink(t *testing.T) {
 	e := setup(t, mcpOn, withSponsored(sponsoredP), slackLinkOn(links))
 	code := mint(t, e, "U02DEF", "dana\u202e<b>")
 	status, page := linkReq(t, e, http.MethodGet, "/link/slack?code="+code, header("dana"), nil)
-	if status != http.StatusOK || !strings.Contains(page, "Link Slack user <strong>dana&lt;b&gt; (U02DEF)</strong> in workspace T01ABC") ||
-		!strings.Contains(page, "(GitHub: <strong>@dana</strong>)") || !strings.Contains(page, "Confirm only if this Slack user is you") {
+	if status != http.StatusOK || !strings.Contains(page, "Link Slack user <strong>@h-dana&lt;b&gt; (U02DEF)</strong> in workspace T01ABC") ||
+		!strings.Contains(page, "Display name, set by that user: dana&lt;b&gt;") ||
+		!strings.Contains(page, "(GitHub: <strong>@dana</strong>)") || !strings.Contains(page, "Never confirm a link someone sent you") {
 		t.Fatalf("the confirmation (name inert, no bidi control): %d\n%s", status, page)
 	}
 	if links.linkedTo("T01ABC", "U02DEF") != "" {
@@ -199,22 +204,36 @@ func TestSlackLinkConfirmAndUnlink(t *testing.T) {
 	for name, h := range map[string]http.Header{
 		"no Origin":      header("dana"),
 		"another Origin": header("dana", "Origin", "https://evil.example"),
+		// P18: roomctl's bearer (a local agent's) can forge any Origin, so it never links.
+		"a roomctl token": header("dana", "Origin", linkOrigin, "X-Test-Client", "roomctl"),
 	} {
 		if status, _ := linkReq(t, e, http.MethodPost, "/link/slack", h, form); status != http.StatusForbidden {
 			t.Fatalf("%s: %d", name, status)
 		}
 	}
-	h := header("dana", "Origin", linkOrigin)
+	if links.linkedTo("T01ABC", "U02DEF") != "" {
+		t.Fatal("a refused POST linked")
+	}
+	h := header("dana", "Origin", linkOrigin+":443") // a default port is the same origin
 	status, page = linkReq(t, e, http.MethodPost, "/link/slack", h, form)
-	if status != http.StatusOK || !strings.Contains(page, "Linked: Slack user dana&lt;b&gt; (U02DEF) now files tasks sponsored by @dana") ||
+	if status != http.StatusOK || !strings.Contains(page, "Linked: Slack user @h-dana&lt;b&gt; (U02DEF) now files tasks sponsored by @dana") ||
 		links.linkedTo("T01ABC", "U02DEF") != "dana" {
 		t.Fatalf("confirm: %d %q\n%s", status, links.linkedTo("T01ABC", "U02DEF"), page)
 	}
 	if _, page := linkReq(t, e, http.MethodPost, "/link/slack", h, form); !strings.Contains(page, "expired or was already used") {
 		t.Fatalf("a replay: %s", page)
 	}
-	// Someone else cannot unlink it; its own account can.
+	// A link is never moved to another account: unlink first.
+	moved := mint(t, e, "U02DEF", "dana")
+	if _, page := linkReq(t, e, http.MethodPost, "/link/slack", header("eve", "Origin", linkOrigin), url.Values{"code": {moved}}); !strings.Contains(page, "linked to another account") ||
+		links.linkedTo("T01ABC", "U02DEF") != "dana" {
+		t.Fatalf("a link moved: %s", page)
+	}
+	// Someone else cannot unlink it, nor a roomctl token; its own web session can.
 	unlink := url.Values{"team": {"T01ABC"}, "user": {"U02DEF"}}
+	if status, _ := linkReq(t, e, http.MethodPost, "/link/slack/unlink", header("dana", "Origin", linkOrigin, "X-Test-Client", "roomctl"), unlink); status != http.StatusForbidden {
+		t.Fatalf("a roomctl unlink: %d", status)
+	}
 	if _, page := linkReq(t, e, http.MethodPost, "/link/slack/unlink", header("eve", "Origin", linkOrigin), unlink); !strings.Contains(page, "Nothing to unlink") ||
 		links.linkedTo("T01ABC", "U02DEF") != "dana" {
 		t.Fatalf("another account unlinked: %s", page)

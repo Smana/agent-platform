@@ -49,7 +49,7 @@ var (
 type BrokerAPI interface {
 	IssueDraft(ctx context.Context, d Draft) (Draft, error)
 	RunCreate(ctx context.Context, c RunCreate) (RunResult, error)
-	SlackLinkCode(ctx context.Context, team, user, name string) (string, error)
+	SlackLinkCode(ctx context.Context, team, user, handle, name string) (string, error)
 	SlackUnlink(ctx context.Context, team, user string) (bool, error)
 }
 
@@ -78,6 +78,7 @@ type App struct {
 
 	events, deliveries seen       // event_id and webhook-id
 	answered           seen       // the ✅ refusals said, by draft, user and reason: each is said once
+	retried            throttle   // the ✅ passing failures said, by draft, user and reason: once per retryEvery
 	editMu             sync.Mutex // one draft edit at a time, so two quick replies do not branch the draft
 }
 
@@ -105,6 +106,44 @@ func (s *seen) add(id string) bool {
 	s.set[id] = struct{}{}
 	s.order = append(s.order, id)
 	return true
+}
+
+// retryEvery is how often one passing failure is said again for a draft, user and reason.
+const retryEvery = 5 * time.Minute
+
+// throttle is a bounded map of when each key was last allowed.
+type throttle struct {
+	mu    sync.Mutex
+	order []string
+	at    map[string]time.Time
+}
+
+// allow reports whether key was not allowed within retryEvery of now, and records now if so.
+func (t *throttle) allow(key string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if last, ok := t.at[key]; ok && now.Sub(last) < retryEvery {
+		return false
+	}
+	if t.at == nil {
+		t.at = map[string]time.Time{}
+	}
+	if _, ok := t.at[key]; !ok {
+		if len(t.order) >= seenCap {
+			delete(t.at, t.order[0])
+			t.order = t.order[1:]
+		}
+		t.order = append(t.order, key)
+	}
+	t.at[key] = now
+	return true
+}
+
+func (a *App) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 func (s *seen) forget(id string) {
@@ -307,11 +346,11 @@ const linkOff = "Self-serve linking is not turned on here: ask an operator to ad
 // link answers `@factory link` with a one-time link to the rooms page, for this Slack user only.
 // The name is the page's, display only; without users:read it is empty and the page shows the id.
 func (a *App) link(ctx context.Context, ev slackEvent, thread string) string {
-	name, err := a.Slack.UserName(ctx, ev.User)
+	handle, name, err := a.Slack.UserName(ctx, ev.User)
 	if err != nil {
 		a.log().Info("slack user name unread", "err", err)
 	}
-	u, err := a.Broker.SlackLinkCode(ctx, a.TeamID, ev.User, name)
+	u, err := a.Broker.SlackLinkCode(ctx, a.TeamID, ev.User, handle, name)
 	var r Refused
 	switch {
 	case errors.Is(err, ErrUnknownTool):
@@ -323,7 +362,7 @@ func (a *App) link(ctx context.Context, ev slackEvent, thread string) string {
 		return a.whisper(ctx, ev, thread, "The link could not be made, mention me with `link` again.", "error")
 	}
 	return a.whisper(ctx, ev, thread, "<"+u+"|Link your Slack user to your rooms account>: it works once, within 10 minutes, "+
-		"after you sign in. Keep it to yourself: whoever confirms it is who your :white_check_mark: files as.", "link")
+		"after you sign in. Keep it to yourself and never send it to anyone: whoever confirms it is who your :white_check_mark: files as.", "link")
 }
 
 // unlink answers `@factory unlink`: this Slack user's self-serve link goes.
@@ -422,8 +461,10 @@ func (a *App) checkMarkReply(ctx context.Context, ev slackEvent) string {
 	msgs, err := a.Slack.Thread(ctx, ev.Channel, ev.ThreadTS)
 	if err != nil {
 		a.log().Warn("slack thread fetch failed", "channel", ev.Channel, "err", err)
-		if _, perr := a.Slack.Post(ctx, ev.Channel, ev.ThreadTS, "Not filed: Slack could not be read just now; reply :white_check_mark: again to retry.", nil); perr != nil {
-			a.log().Warn("slack post failed", "channel", ev.Channel, "err", perr)
+		if a.retried.allow(ev.ThreadTS+"/"+ev.User+"/slack", a.now()) {
+			if _, perr := a.Slack.Post(ctx, ev.Channel, ev.ThreadTS, "Not filed: Slack could not be read just now; reply :white_check_mark: again to retry.", nil); perr != nil {
+				a.log().Warn("slack post failed", "channel", ev.Channel, "err", perr)
+			}
 		}
 		return "error"
 	}
@@ -535,8 +576,14 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 		}
 		return "refused"
 	}
-	// retry says a passing failure each time: the fix is to react again.
-	retry := func(text string) string { sayMeta(text, nil); return "error" }
+	// retry says a passing failure, the fix being to react again: at most once per retryEvery for a
+	// draft, user and reason, so a burst of ✅ does not spam the thread.
+	retry := func(reason, text string) string {
+		if a.retried.allow(itemTS+"/"+user+"/"+reason, a.now()) {
+			sayMeta(text, nil)
+		}
+		return "error"
+	}
 	p := m.EventPayload
 	ch, served := a.Channels[channel]
 	switch {
@@ -557,7 +604,7 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 		if errors.Is(err, ErrThreadTooLong) {
 			return refuse("too_long", "Not filed: this thread is too long to find its latest draft; start a new one with a mention.")
 		}
-		return retry("Not filed: Slack could not be read just now; react again to retry.")
+		return retry("slack", "Not filed: Slack could not be read just now; react again to retry.")
 	}
 	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != itemTS {
 		refuse("replaced", "This draft was replaced by a newer one: react on the latest draft.")
@@ -578,13 +625,13 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 			text += " A maintainer reacts :white_check_mark: to file it."
 		}
 		if passing {
-			return retry(text)
+			return retry(code, text)
 		}
 		return refuse(code, text)
 	}
 	if err != nil {
 		a.log().Warn("run_create failed", "err", err)
-		return retry("Not filed: the factory could not be reached, react again to retry.")
+		return retry("unreachable", "Not filed: the factory could not be reached, react again to retry.")
 	}
 	if !roomRE.MatchString(res.Room) {
 		a.log().Warn("run_create answered an unusable room id")

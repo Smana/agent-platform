@@ -127,10 +127,10 @@ func (b Broker) RunCreate(ctx context.Context, c RunCreate) (RunResult, error) {
 // linkPath is the page a link code opens on the broker's public URL.
 const linkPath = "/link/slack"
 
-// SlackLinkCode asks the broker for a one-time link for the Slack user, name shown on the page.
-// The answer must be the link page with one code, or it is not passed on to the user.
-func (b Broker) SlackLinkCode(ctx context.Context, team, user, name string) (string, error) {
-	sc, err := b.call(ctx, "slack_link_code", map[string]any{"team": team, "user": user, "name": name})
+// SlackLinkCode asks the broker for a one-time link for the Slack user, handle and name shown on
+// the page. The answer must be the link page with one code, or it is not passed on to the user.
+func (b Broker) SlackLinkCode(ctx context.Context, team, user, handle, name string) (string, error) {
+	sc, err := b.call(ctx, "slack_link_code", map[string]any{"team": team, "user": user, "handle": handle, "name": name})
 	if err != nil {
 		return "", err
 	}

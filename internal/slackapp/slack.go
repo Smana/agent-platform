@@ -56,8 +56,9 @@ type Slack interface {
 	Message(ctx context.Context, channel, ts string) (Message, error)
 	// PostEphemeral is a message only user sees, in channel (and threadTS, when set).
 	PostEphemeral(ctx context.Context, channel, user, threadTS, text string) error
-	// UserName is the user's display name, for the link page only; "" when Slack does not say.
-	UserName(ctx context.Context, user string) (string, error)
+	// UserName is the user's handle and display name, for the link page only; "" when Slack does
+	// not say.
+	UserName(ctx context.Context, user string) (handle, display string, err error)
 }
 
 // SlackClient is Slack's Web API over httpx. Token is read at use, so a rotated Secret applies.
@@ -138,23 +139,23 @@ func (c *SlackClient) PostEphemeral(ctx context.Context, channel, user, threadTS
 	return err
 }
 
-// UserName is users.info (users:read): the profile's display name, else its real name, else the
-// handle. Without the scope Slack answers missing_scope, an error the caller shrugs off.
-func (c *SlackClient) UserName(ctx context.Context, user string) (string, error) {
+// UserName is users.info (users:read): the handle, unique in the workspace, and the profile's
+// display name, else its real name (both set by the user). Without the scope Slack answers
+// missing_scope, an error the caller shrugs off.
+func (c *SlackClient) UserName(ctx context.Context, user string) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("users.info")+"?"+url.Values{"user": {user}}.Encode(), nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	a, err := c.do(req)
 	if err != nil || a.User == nil {
-		return "", err
+		return "", "", err
 	}
-	for _, n := range []string{a.User.Profile.DisplayName, a.User.Profile.RealName, a.User.Name} {
-		if n = strings.TrimSpace(n); n != "" {
-			return n, nil
-		}
+	display := strings.TrimSpace(a.User.Profile.DisplayName)
+	if display == "" {
+		display = strings.TrimSpace(a.User.Profile.RealName)
 	}
-	return "", nil
+	return strings.TrimSpace(a.User.Name), display, nil
 }
 
 // Message is conversations.replies for one ts (M9): the draft is a thread reply, which

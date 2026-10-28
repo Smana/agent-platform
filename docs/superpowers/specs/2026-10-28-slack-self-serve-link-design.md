@@ -71,13 +71,16 @@ sequenceDiagram
 | **Code theft** (shoulder, history, logs) | Ephemeral message seen by the user only; 10 min; single use; only its hash is stored; `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Before sign-in the URL rides oauth2-proxy's redirect through ZITADEL, which is trusted already. A thief who confirms links the *victim's* Slack user to the *thief's* account: the victim's ✅ would file sponsored by the thief, which the thief must already be entitled to (maintainer check), and the Filed line names the sponsor |
 | **Replay** | Consumption is one `UPDATE … WHERE used_at IS NULL AND expires_at > now RETURNING`: a second confirm finds nothing (`code_invalid`) |
 | **Cross-team** | The App drops another workspace's events (as today); the broker mints only for `human.slackLink.teamID` and re-checks the team when the code is consumed |
-| **CSRF** | GET never consumes. The confirm and unlink are POSTs that need the human session (oauth2-proxy's SameSite=Strict cookie), an `Origin` equal to the broker's public origin (required, not only "not foreign"), and a form body |
-| **A user linking someone else** (A sends their link to maintainer M, M confirms, A files as M) | The page names the Slack user and workspace and says, before the button, that confirming lets *that* Slack user file tasks sponsored by you; the account's links are listed with Unlink; the Filed line names the sponsor. Linking never widens what M can sponsor: M is still checked as a maintainer |
+| **CSRF** | GET never consumes. The confirm and unlink are POSTs that need the human session (oauth2-proxy's SameSite=Strict cookie), an `Origin` equal to the broker's public origin (required, not only "not foreign", default ports normalised), and a form body |
+| **A local agent on the developer's roomctl token** (it can forge any `Origin`) | The page acts for the web UI's client only (`p.ClientID == WebClient`, ruling P18): a roomctl or MCP bearer is `403 not_web` on the page, the confirm and the unlink |
+| **A user linking someone else** (A sends their link to maintainer M, M confirms, A files as M) | The page names the Slack user by their **handle and id first** (unique in the workspace), the display name second and marked "set by that user", and says "never confirm a link someone sent you"; the ephemeral message says never to send it. The account's links are listed with Unlink; the Filed line in the thread and the issue's footer on GitHub both name the sponsor, so M sees it at the first filing. Linking never widens what M can sponsor: M is still checked as a maintainer. **No separate notice is sent**: a Slack DM would reach the linked Slack user, A, not the victim M, and the broker knows no Slack id of M's; the Filed line and the GitHub issue footer are where M is told |
+| **A link moved under a user** | A link is never moved to another account silently: a confirm for a Slack user linked elsewhere is `already_linked` until that user unlinks |
 | **A forged GitHub login** | Nothing Slack sends is a login. The factory resolves the sub's GitHub link itself, through ZITADEL |
 | **A compromised Slack App** | It can mint codes (each still needs a human's confirm) and unlink. It cannot create a link or read one |
 
 Refusals (bounded outcome labels `link_code`, `linked`, `unlinked`, `code_invalid`,
-`not_linked_github`, `wrong_team`, `too_many_links`, `too_many_codes`): not signed in (oauth2-proxy
+`not_linked_github`, `wrong_team`, `too_many_links`, `too_many_codes`, `already_linked`, `not_web`,
+`bad_origin`, `error`): not signed in (oauth2-proxy
 sends to the login), no GitHub link on the account, code expired or used, team not the App's.
 
 ## B. No silent ✅
@@ -88,4 +91,5 @@ malformed ids, another workspace, an event already seen. Answered: a draft in a 
 served, a repository the channel does not list, a draft whose hash fails, a replaced draft, a
 Slack read that failed, every factory refusal (mapped to a sentence with its fix: `not_linked`,
 `not_a_maintainer`, budget, kill switch…); a ✅ typed as a reply files as the reaction does and gets the same lines. A
-refusal is said once per (draft, user, reason): a re-added ✅ does not repeat it.
+refusal is said once per (draft, user, reason): a re-added ✅ does not repeat it. A passing one
+(react again) is said at most once per 5 minutes per (draft, user, reason).

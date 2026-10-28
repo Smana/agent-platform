@@ -63,6 +63,8 @@ const (
 	linkNoGitHub     = "not_linked_github"
 	linkWrongTeam    = "wrong_team"
 	linkTooMany      = "too_many_links"
+	linkAlready      = "already_linked"
+	linkNotWeb       = "not_web"
 	linkTooManyCodes = "too_many_codes"
 	linkBadOrigin    = "bad_origin"
 	linkError        = "error"
@@ -115,7 +117,8 @@ func (s *Server) slackLinkTools() []mcpTool {
 		{name: "slack_link_code", call: s.slackLinkCode,
 			description: "Mint a one-time link for a Slack user to link their Slack user to their rooms account. Post the url to that user only.",
 			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["team","user"],"properties":{` +
-				`"team":{"type":"string","pattern":"^T[A-Z0-9]{2,20}$"},"user":{"type":"string","pattern":"^[UW][A-Z0-9]{2,20}$"},"name":{"type":"string","maxLength":256}}}`)},
+				`"team":{"type":"string","pattern":"^T[A-Z0-9]{2,20}$"},"user":{"type":"string","pattern":"^[UW][A-Z0-9]{2,20}$"},` +
+				`"handle":{"type":"string","maxLength":256},"name":{"type":"string","maxLength":256}}}`)},
 		{name: "slack_unlink", call: s.slackUnlink,
 			description: "Remove a Slack user's link, at that Slack user's own request.",
 			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["team","user"],"properties":{` +
@@ -124,9 +127,10 @@ func (s *Server) slackLinkTools() []mcpTool {
 }
 
 type slackUserArgs struct {
-	Team string `json:"team"`
-	User string `json:"user"`
-	Name string `json:"name"`
+	Team   string `json:"team"`
+	User   string `json:"user"`
+	Handle string `json:"handle"`
+	Name   string `json:"name"`
 }
 
 func (s *Server) slackUserArgs(args json.RawMessage) (slackUserArgs, error) {
@@ -161,7 +165,7 @@ func (s *Server) slackLinkCode(ctx context.Context, p authn.Principal, args json
 	code := strings.ToLower(linkCode.EncodeToString(raw))
 	now := s.now()
 	exp := now.Add(SlackLinkTTL)
-	err = s.SlackLink.Store.MintSlackCode(ctx, codeSHA256(code), store.SlackCode{Team: a.Team, User: a.User, Name: slackName(a.Name), Expires: exp}, now)
+	err = s.SlackLink.Store.MintSlackCode(ctx, codeSHA256(code), store.SlackCode{Team: a.Team, User: a.User, Handle: slackName(a.Handle), Name: slackName(a.Name), Expires: exp}, now)
 	if errors.Is(err, store.ErrTooManyCodes) {
 		s.linkCounted(ctx, linkTooManyCodes)
 		return nil, toolError(linkTooManyCodes + ": too many links are waiting; try again in a few minutes")
@@ -204,7 +208,7 @@ type linkPage struct {
 }
 
 type linkConfirm struct {
-	Code, Team, User, Name string
+	Code, Team, User, Handle, Name string
 }
 
 // The link page: no script, the room UI's CSP, and forms that post to this origin only.
@@ -217,15 +221,16 @@ var linkTemplate = template.Must(template.New("link").Parse(`<!doctype html>
 {{if .Refusal}}<p class="refusal" role="alert">{{.Refusal}}</p>{{end}}
 {{with .Confirm}}
 <section class="confirm">
-<p>Link Slack user <strong>{{if .Name}}{{.Name}} ({{.User}}){{else}}{{.User}}{{end}}</strong> in workspace {{.Team}} to your account (GitHub: <strong>@{{$.Login}}</strong>)?</p>
-<p class="warn">Confirm only if this Slack user is you. Once linked, its check marks in Slack file factory tasks sponsored by @{{$.Login}}.
-Linking grants nothing else: you must still maintain the repository.</p>
+<p>Link Slack user <strong>{{if .Handle}}@{{.Handle}} {{end}}({{.User}})</strong> in workspace {{.Team}} to your account (GitHub: <strong>@{{$.Login}}</strong>)?</p>
+{{if .Name}}<p>Display name, set by that user: {{.Name}}</p>{{end}}
+<p class="warn">Never confirm a link someone sent you. Confirm only if you posted <code>@factory link</code> yourself and this Slack user is you:
+once linked, its check marks in Slack file factory tasks sponsored by @{{$.Login}}. Linking grants nothing else: you must still maintain the repository.</p>
 <form method="post" action="/link/slack"><input type="hidden" name="code" value="{{.Code}}"><button type="submit">Link</button></form>
 </section>
 {{end}}
 <h2>Your Slack links</h2>
 {{if .Links}}<ul>{{range .Links}}
-<li>{{if .Name}}{{.Name}} ({{.User}}){{else}}{{.User}}{{end}}, workspace {{.Team}}, since {{.LinkedAt.Format "2006-01-02"}}
+<li>{{if .Handle}}@{{.Handle}} {{end}}({{.User}}){{if .Name}}, display name {{.Name}}{{end}}, workspace {{.Team}}, since {{.LinkedAt.Format "2006-01-02"}}
 <form method="post" action="/link/slack/unlink"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="user" value="{{.User}}"><button type="submit">Unlink</button></form></li>
 {{end}}</ul>{{else}}<p>None. Mention <code>@factory link</code> in Slack to make one.</p>{{end}}
 </main></body></html>
@@ -248,21 +253,42 @@ func (s *Server) slackLinkRoutes(mux *http.ServeMux) {
 	})))
 }
 
-// linkHuman is the signed-in human behind a link page, or the refusal written.
+// linkHuman is the signed-in human behind a link page, or the refusal written. Only a web UI
+// session links or unlinks (ruling P18): a roomctl or MCP bearer can set any Origin, so a local
+// agent on the developer's token must never confirm a link in their name.
 func (s *Server) linkHuman(w http.ResponseWriter, r *http.Request) (authn.Principal, bool) {
 	p, ok := s.principal(w, r)
-	if ok && (p.Kind != envelope.ActorHuman || p.Sub == "") {
-		http.Error(w, "a person's session is required", http.StatusForbidden)
+	if !ok {
 		return p, false
 	}
-	return p, ok
+	if p.Kind != envelope.ActorHuman || p.Sub == "" || s.WebClient == nil || p.ClientID == "" || p.ClientID != s.WebClient() {
+		s.linkCounted(r.Context(), linkNotWeb)
+		http.Error(w, "the rooms web UI's session is required", http.StatusForbidden)
+		return p, false
+	}
+	return p, true
+}
+
+// origin is u's scheme://host[:port], the default port dropped, as a browser sends Origin.
+func origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return strings.ToLower(u.Scheme) + "://" + host
 }
 
 // sameOrigin is a state-changing POST's CSRF check, on top of oauth2-proxy's SameSite=Strict
 // cookie: the Origin must be present and the broker's own (a browser sends it on every POST).
 func (s *Server) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
-	u, err := url.Parse(s.PublicURL)
-	if o := r.Header.Get("Origin"); err == nil && u.Host != "" && o == u.Scheme+"://"+u.Host {
+	if want, o := origin(s.PublicURL), r.Header.Get("Origin"); want != "" && o != "" && origin(o) == want {
 		return true
 	}
 	s.linkCounted(r.Context(), linkBadOrigin)
@@ -352,7 +378,7 @@ func (s *Server) linkGet(w http.ResponseWriter, r *http.Request) {
 		}
 		page.Refusal, page.Login = refusal, login
 		if refusal == "" {
-			page.Confirm = &linkConfirm{Code: code, Team: c.Team, User: c.User, Name: c.Name}
+			page.Confirm = &linkConfirm{Code: code, Team: c.Team, User: c.User, Handle: c.Handle, Name: c.Name}
 		}
 	}
 	s.renderLink(w, r, p, page)
@@ -393,6 +419,10 @@ func (s *Server) linkConfirm(w http.ResponseWriter, r *http.Request) {
 		s.linkCounted(ctx, linkCodeInvalid)
 		s.renderLink(w, r, p, linkPage{Refusal: refusalCodeInvalid})
 		return
+	case errors.Is(err, store.ErrAlreadyLinked):
+		s.linkCounted(ctx, linkAlready)
+		s.renderLink(w, r, p, linkPage{Refusal: "This Slack user is linked to another account: it must mention @factory unlink first, then ask for a new link."})
+		return
 	case errors.Is(err, store.ErrTooManyLinks):
 		s.linkCounted(ctx, linkTooMany)
 		s.renderLink(w, r, p, linkPage{Refusal: "Your account holds the most Slack users it may: unlink one below, then open the link again."})
@@ -405,8 +435,8 @@ func (s *Server) linkConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	s.linkCounted(ctx, linkLinked)
 	who := c.User
-	if c.Name != "" {
-		who = c.Name + " (" + c.User + ")"
+	if c.Handle != "" {
+		who = "@" + c.Handle + " (" + c.User + ")"
 	}
 	s.renderLink(w, r, p, linkPage{Notice: "Linked: Slack user " + who + " now files tasks sponsored by @" + login +
 		", on the repositories @" + login + " maintains."})
