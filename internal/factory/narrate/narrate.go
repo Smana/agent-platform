@@ -473,11 +473,11 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 }
 
 // Resuming says the factory resumes a run its sandbox lost, on its own, n of limit (disruption
-// design §4). A reviewer's or tester's new run uses no review round.
+// design §4). A reviewer's new run uses no review round.
 func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
 	body := fmt.Sprintf("Agent factory task `%s`: run `%s` stopped because %s; resuming automatically (%d/%d).",
 		t.Name, runID, Reason("pod_lost"), n, limit)
-	if role == "reviewer" || role == "tester" {
+	if role == "reviewer" {
 		body += " The new review run uses no review round."
 	}
 	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
@@ -864,7 +864,7 @@ func PartReverted(t *v1alpha1.Task, revert int, parentClosed bool) Event {
 // USD is a micro-USD amount as people read it, to the cent: $8.50.
 func USD(micro int64) string { return fmt.Sprintf("$%.2f", float64(micro)/1e6) }
 
-// NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
+// NoVerdict says a reviewer run ended without a verdict the factory can act on, and that
 // a new review run starts (why is one of verdict_missing, verdict_stale, room_log_too_long). Once
 // per run.
 func NoVerdict(t *v1alpha1.Task, runID, why string) Event {

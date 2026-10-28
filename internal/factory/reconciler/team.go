@@ -17,8 +17,8 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
-// The team engine (§3). Runs are sequential and only the implementer writes (S4): a reviewer or
-// tester starts from agent/<taskId> with the pull request as its task (R25) and holds no forge
+// The team engine (§3). Runs are sequential and only the implementer writes (S4): a reviewer
+// starts from agent/<taskId> with the pull request as its task (R25) and holds no forge
 // write. Its own room_verdict decides the next step; a human steers through GitHub only (R36).
 // Every run, a verifier's included, starts in Queued: the caps and the human-driver rule (C4) stay
 // in one place.
@@ -66,7 +66,7 @@ func (r *Reconciler) verifierSpec(t *v1alpha1.Task, role string) runs.Spec {
 	return s
 }
 
-// requestVerifier sends the task back to Queued for a reviewer or tester run.
+// requestVerifier sends the task back to Queued for a reviewer run.
 func (r *Reconciler) requestVerifier(t *v1alpha1.Task, role string) {
 	t.Status.NextRole = role
 	r.to(t, v1alpha1.PhaseQueued, "")
@@ -104,7 +104,7 @@ func (r *Reconciler) maxRounds(t *v1alpha1.Task) int32 {
 	return r.Cfg.Templates[t.Spec.Template].MaxReviewRounds
 }
 
-// reviewing waits for the reviewer or tester run to end, then acts on its own verdict: an approve
+// reviewing waits for the reviewer run to end, then acts on its own verdict: an approve
 // of the pull request's unmoved head goes to the next verifier or to ready; changes send the task
 // back to Queued for a revision, until the rounds run out; anything else is no verdict.
 func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {

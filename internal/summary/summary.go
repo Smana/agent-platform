@@ -68,7 +68,7 @@ type State struct {
 	Agents    map[string]bool // agent principals that joined and have not left: the runs present now
 }
 
-// Verdict is the latest reviewer or tester verdict.
+// Verdict is the latest reviewer verdict.
 type Verdict struct {
 	By      string    `json:"by"`
 	Verdict string    `json:"verdict"`

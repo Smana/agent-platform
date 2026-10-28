@@ -374,3 +374,23 @@ func TestContractBlockDefusesTheListsAndStaysBounded(t *testing.T) {
 		t.Fatalf("%d bytes:\n%.300s", len(b), b)
 	}
 }
+
+// TO1, R18, F1-R2: the tester is the test writer. A verifier set holds the reviewer alone.
+func TestNoVerifierSetHoldsATester(t *testing.T) {
+	g := newRig(t)
+	tk := &v1alpha1.Task{}
+	tk.Spec.Template = "trio" // a hand-built config still lists the tester
+	if got := g.r.nextVerifier(tk, "implementer"); got != "reviewer" {
+		t.Fatalf("next verifier %q, want the reviewer", got)
+	}
+	tk.Status.Runs = []v1alpha1.RunRecord{{ID: "aaaaaaaa", Role: "tester", Verdict: "approve"}, {ID: "bbbbbbbb", Role: "reviewer", Verdict: "approve"}}
+	if vs := verifiers(tk); len(vs) != 1 || vs[0].Role != "reviewer" {
+		t.Fatalf("verifiers %+v", vs)
+	}
+	// A tester's approve of an older head is no reviewer's: it never makes a verdict stale.
+	in := ArmInputs{PR: forge.PR{HeadSHA: head2}, ReportedHead: head2, Cfg: g.r.Cfg, Task: tk,
+		Verifiers: []v1alpha1.RunRecord{{ID: "aaaaaaaa", Role: "tester", Verdict: "approve", HeadSHA: head1}}}
+	if got := agentEvidence(in); got == "verdict_stale" {
+		t.Fatalf("a tester's approve counted: %q", got)
+	}
+}

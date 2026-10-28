@@ -16,7 +16,7 @@ import (
 // ArmInputs is everything §5.1's rule decides on. ReportedHead, Verifiers and Files serve the
 // amendment (external reviews R02, R03; ruling R52): ReportedHead is the commit of the
 // latest handoff or final room event whose broker-stamped actor is one of the task's implementer
-// runs ("" when none named one); Verifiers are the task's reviewer and tester run records, each
+// runs ("" when none named one); Verifiers are the task's reviewer run records, each
 // carrying the head it was given; Files is the forge.Diff read of the pull request's diff.
 type ArmInputs struct {
 	PR           forge.PR
@@ -208,7 +208,7 @@ func agentEvidence(in ArmInputs) string {
 	// approve predates the head the room just reported, the approval was pulled out from under.
 	for i := len(in.Verifiers) - 1; i >= 0; i-- {
 		r := in.Verifiers[i]
-		if r.Verdict != "approve" || (r.Role != "reviewer" && r.Role != "tester") {
+		if r.Verdict != "approve" || r.Role != "reviewer" {
 			continue
 		}
 		if r.HeadSHA != in.PR.HeadSHA {

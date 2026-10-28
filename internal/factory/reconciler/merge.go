@@ -576,12 +576,12 @@ func eventCommit(e envelope.Event) string {
 	return ""
 }
 
-// verifiers are the task's reviewer and tester run records, each carrying the head it was
+// verifiers are the task's reviewer run records, each carrying the head it was
 // given (R03's input to DecideArm).
 func verifiers(t *v1alpha1.Task) []v1alpha1.RunRecord {
 	var out []v1alpha1.RunRecord
 	for _, rec := range t.Status.Runs {
-		if rec.Role == "reviewer" || rec.Role == "tester" {
+		if rec.Role == "reviewer" {
 			out = append(out, rec)
 		}
 	}

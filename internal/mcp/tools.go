@@ -201,7 +201,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				return appendAs(ctx, c, envelope.Handoff, p)
 			}},
-		{Name: "room_verdict", Roles: []string{"reviewer", "tester"}, Action: policy.Chat,
+		{Name: "room_verdict", Roles: []string{"reviewer"}, Action: policy.Chat,
 			Description: "Record your review: approve or changes, a summary, and the commit you reviewed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). A verdict is not a merge.",
 			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["verdict","summary","commit"],"properties":{"verdict":{"type":"string","enum":["approve","changes"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"}}}`),
 			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
