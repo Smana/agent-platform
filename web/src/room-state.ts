@@ -72,7 +72,10 @@ export class RoomState {
         break;
       case "tool_call": {
         const args = p.args;
-        const what = args?.command !== undefined ? String(args.command) : args === undefined ? "" : JSON.stringify(args);
+        // A command reads as itself, and a finish by its message; anything else by its args.
+        const what = args?.command !== undefined ? String(args.command)
+          : typeof args?.message === "string" ? args.message
+            : args === undefined ? "" : JSON.stringify(args);
         const call: Latest = { seq: ev.seq, text: firstLine(`${String(p.tool ?? "")} ${what}`), status: "running", ts: ev.ts };
         this.set(call, ev.seq);
         if (typeof p.callId === "string") {

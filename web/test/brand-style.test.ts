@@ -135,3 +135,15 @@ describe("Maku brand header", () => {
     expect(d).not.toMatch(/href="\//);
   });
 });
+
+describe("Markdown in a message", () => {
+  it("keeps headings in the conversation's scale, never the browser's 2em", () => {
+    const all = rule(".md :is(h1, h2, h3, h4, h5, h6)");
+    expect(all).toMatch(/font-size:\s*16px/);
+    expect(all).toMatch(/font-weight:\s*700/);
+    expect(rule(".md h1")).toMatch(/font-size:\s*18px/);
+  });
+  it("sets inline code apart from prose", () => {
+    expect(rule(".md :not(pre) > code")).toMatch(/background:/);
+  });
+});

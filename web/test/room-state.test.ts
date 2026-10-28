@@ -127,6 +127,11 @@ describe("RoomState", () => {
     s.apply(agentEv(10, "tool_result", { status: "ok" })); // no callId, no output: still no throw
     expect(s.latest()).toMatchObject({ seq: 10, text: "tool result", status: "ok" });
   });
+  it("names a finish by its message, not by its JSON", () => {
+    const s = new RoomState();
+    s.apply(agentEv(3, "tool_call", { callId: "c1", tool: "finish", args: { kind: "FinishAction", message: "Review of PR #148 complete\nmore" } }));
+    expect(s.latest()?.text).toBe("finish Review of PR #148 complete");
+  });
   it("names a call with no command by its args, and ignores system messages", () => {
     const s = new RoomState();
     s.apply(agentEv(3, "tool_call", { callId: "c2", tool: "edit", args: { path: "a.go" } }));
