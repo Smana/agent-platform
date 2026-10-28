@@ -187,3 +187,16 @@ describe("fork here on touch screens", () => {
     expect(a).toMatch(/inset:\s*-12px\s+-8px/);
   });
 });
+
+describe("phone clamps and long tokens", () => {
+  it("masks the clamped Now button's padding so no third line shows under the two", () => {
+    const b = decl(phone, ".page-header .now-link");
+    expect(b).toMatch(/-webkit-line-clamp:\s*2/);
+    expect(b).toMatch(/(-webkit-)?mask(-image)?:[^;]*linear-gradient/);
+    expect(b).toMatch(/calc\(100%\s*-\s*12px\)/);
+  });
+  it("wraps a long unbroken token in message prose; pre keeps its own wrapping", () => {
+    expect(decl(outside, ".md")).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(decl(outside, "pre")).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});

@@ -359,8 +359,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .strip-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .page-header .waiting { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* The clamp's overflow clips an ::after: the button's own box grows instead, the margin
-     taking the 24 px back: 20 px of line and 24 px of padding is the 44. */
-  .page-header .now-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding-block: 12px; margin-block: -12px; }
+     taking the 24 px back: 20 px of line and 24 px of padding is the 44. The clamp hides lines
+     past the second only by clipping at the padding box, so a third line used to show in the
+     bottom padding: a mask (it never changes hit-testing, unlike clip-path) paints everything
+     but that padding. */
+  .page-header .now-link {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; padding-block: 12px; margin-block: -12px;
+    -webkit-mask: linear-gradient(#000, #000) top / 100% calc(100% - 12px) no-repeat;
+    mask: linear-gradient(#000, #000) top / 100% calc(100% - 12px) no-repeat;
+  }
 }
 
 /* Chat view */
@@ -508,6 +515,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ev { border-bottom: 1px solid var(--border); padding: 6px 0; }
 .ev-head { color: var(--muted-foreground); font-size: 13px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
+.md { overflow-wrap: anywhere; } /* a 64-hex digest has no break point; pre and code keep their own wrapping */
 .md a { overflow-wrap: anywhere; }
 /* Markdown in a message stays in the conversation's scale: a heading is a bold line, never the
    browser's 2em poster, and inline code reads as code inside the prose. */
