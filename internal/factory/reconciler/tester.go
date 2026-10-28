@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/runs"
-	"sigs.k8s.io/yaml"
 )
 
 // testerDue (F3-R1): the class writes its tests first, the task is public and holds no contract, and no
