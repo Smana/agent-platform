@@ -27,6 +27,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
+	"github.com/Smana/agent-platform/internal/ghidentity"
 	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
@@ -158,9 +159,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		out(http.StatusBadRequest, "max_cost_over_class")
 		return
 	}
-	login, reason := s.sponsorOf(sp, in)
+	login, code, reason := s.sponsorOf(ctx, sp, in)
 	if reason != "" {
-		out(http.StatusForbidden, reason)
+		out(code, reason)
 		return
 	}
 	title, text, err := cleanRequest(in)
@@ -233,24 +234,69 @@ func (s *Server) countIntake(ctx context.Context, outcome string) {
 	}
 }
 
+// reasonLinkUnverified is a self-serve link the broker or ZITADEL could not answer for: a 503.
+const reasonLinkUnverified = "link_unverified"
+
 // sponsorOf is the request's sponsor login (R1, R3, R9): a linked user's maintainer, else the
-// config's sponsor, re-checked as a maintainer of the repository either way.
-func (s *Server) sponsorOf(sp *config.Sponsored, in TaskRequest) (string, string) {
+// config's sponsor, re-checked as a maintainer of the repository either way. A Slack user is
+// linked by onBehalfOf.slack first (the config wins), else, for a principal with
+// onBehalfOf.slackLinks, by the broker's self-serve link record: its ZITADEL sub's current GitHub
+// login, never a login the caller sent.
+func (s *Server) sponsorOf(ctx context.Context, sp *config.Sponsored, in TaskRequest) (string, int, string) {
 	login := sp.Sponsor
 	if in.OnBehalfOf != "" {
 		id, found := strings.CutPrefix(in.OnBehalfOf, "slack:")
 		if !found {
-			return "", "not_linked" // only slack:<team>/<user> links exist
+			return "", http.StatusForbidden, "not_linked" // only slack:<team>/<user> links exist
 		}
 		var ok bool
 		if login, ok = sp.OnBehalfOf.Slack[id]; !ok {
-			return "", "not_linked"
+			var code int
+			var reason string
+			if login, code, reason = s.selfServeLogin(ctx, sp, id, in.Repository); reason != "" {
+				return "", code, reason
+			}
 		}
 	}
 	if !s.Cfg.RepositoryFor(in.Repository).IsMaintainer(login) {
-		return "", "not_a_maintainer"
+		return "", http.StatusForbidden, "not_a_maintainer"
 	}
-	return strings.ToLower(login), ""
+	return strings.ToLower(login), 0, ""
+}
+
+// selfServeLogin is the GitHub login a Slack user's self-serve link resolves to on repository.
+// No link, an inactive account or an account with no GitHub link is not_linked; a lookup that
+// fails is link_unverified, never a guess.
+func (s *Server) selfServeLogin(ctx context.Context, sp *config.Sponsored, id, repository string) (string, int, string) {
+	team, user, _ := strings.Cut(id, "/")
+	if !sp.OnBehalfOf.SlackLinks || s.SlackLinks == nil || s.Logins == nil {
+		return "", http.StatusForbidden, "not_linked"
+	}
+	sub, found, err := s.SlackLinks.SlackLink(ctx, team, user)
+	switch {
+	case err != nil:
+		s.logLink(ctx, "the broker's slack link is unreadable", err)
+		return "", http.StatusServiceUnavailable, reasonLinkUnverified
+	case !found:
+		return "", http.StatusForbidden, "not_linked"
+	}
+	login, err := s.Logins.Login(ctx, sub, repository)
+	switch {
+	case errors.Is(err, ghidentity.ErrInactive):
+		return "", http.StatusForbidden, "not_linked"
+	case err != nil:
+		s.logLink(ctx, "the linked account's GitHub login is unreadable", err)
+		return "", http.StatusServiceUnavailable, reasonLinkUnverified
+	case login == "":
+		return "", http.StatusForbidden, "not_linked"
+	}
+	return login, 0, ""
+}
+
+func (s *Server) logLink(ctx context.Context, msg string, err error) {
+	if s.Log != nil {
+		s.Log.WarnContext(ctx, "intake: "+msg, "error", err)
+	}
 }
 
 // cleanRequest strips hidden characters (F8) and, with a title, holds the draft to the template.
@@ -348,7 +394,7 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 	} else if err != nil {
 		return 0, nil, err
 	}
-	body := map[string]any{"task": name, "room": name}
+	body := map[string]any{"task": name, "room": name, "sponsor": login}
 	if filer == nil {
 		return http.StatusCreated, body, nil
 	}

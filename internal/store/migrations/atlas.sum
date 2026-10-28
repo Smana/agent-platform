@@ -1,4 +1,4 @@
-h1:a+fEjFhvBYPRkApERZmU0Xj3wYinUjkK04JRYJF/ceg=
+h1:G1kgjBJwaXfsKM/EVK+9ZsVSoHuHmQPXCXotndfgwEw=
 20260927120000_rooms.sql h1:2iHh9ofAjF9QEjy2L4Nk4qPz6GPfyTyceOP/Lg2nitE=
 20260929120000_verdicts.sql h1:aat8qDZyfEMLP7P/FyvK90fwdXTcVbUIJte49wiEWNg=
 20261001120000_driver_queue.sql h1:nT+Seb7xn/lYr9A+WtDkWtuGeuR/5Qw7YvrF5ueKQ+k=
@@ -8,3 +8,4 @@ h1:a+fEjFhvBYPRkApERZmU0Xj3wYinUjkK04JRYJF/ceg=
 20261005130000_approval_indexes.sql h1:Zstpv5r4/Wv1sCBrmuKJsQapiWf9604PKvu7v+Oocs4=
 20261008120000_task_facts_index.sql h1:EXFLZRZjBSVO++W/QACG654INMqlZssYB+tDXfSciDw=
 20261023120000_webhooks.sql h1:tMkdkVLBOTL4yN+I2tkeAgNyy0Vse903Oze84isKo2U=
+20261028120000_slack_links.sql h1:fT045TvYpEGLrFHb22jiYAdH7hoLFZdp+s4ffKwi0eI=

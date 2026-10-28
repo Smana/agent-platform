@@ -275,8 +275,13 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				return strings.TrimSpace(string(b))
 			}}
 	}
+	// The self-serve link: the broker's records, and the same ZITADEL resolver api.access reads.
+	var logins api.LoginResolver
+	if ga, ok := access.(api.GitHubAccess); ok {
+		logins = ga.Identity
+	}
 	apiSrv := &api.Server{Auth: auth, Log: log,
-		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
+		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped, SlackLinks: broker, Logins: logins,
 		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned,
 		Forges: func(repo string) api.IssueFiler {
 			c, ok := conns.get(repo)

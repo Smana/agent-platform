@@ -88,6 +88,11 @@ type Server struct {
 	// Access is v2 D4: whether a human may write the repository on GitHub. nil refuses every
 	// human: GitHub is the one answer to who may change a repository, and there is no bypass.
 	Access WriteChecker
+	// SlackLinks is the broker's self-serve link records (GET /v1/links/slack) and Logins the
+	// ZITADEL resolver that turns a linked sub into its current GitHub login: read only for a
+	// sponsored principal with onBehalfOf.slackLinks. Either nil makes every such link not_linked.
+	SlackLinks SlackLinkReader
+	Logins     LoginResolver
 	// People is D1's identity link, read only while budgets.perPerson is on: the person a human
 	// token is charged as. nil charges every human as their own principal.
 	People PersonResolver
@@ -101,6 +106,18 @@ type Server struct {
 	Redact interface {
 		String(s string) (string, []string)
 	}
+}
+
+// SlackLinkReader is the broker's self-serve link records: the ZITADEL sub a Slack user linked;
+// *rooms.Client implements it.
+type SlackLinkReader interface {
+	SlackLink(ctx context.Context, team, user string) (sub string, found bool, err error)
+}
+
+// LoginResolver is a ZITADEL sub's current GitHub login, "" when it has none;
+// ghidentity.ErrInactive when the user is not active. *ghidentity.Resolver implements it.
+type LoginResolver interface {
+	Login(ctx context.Context, sub, repository string) (string, error)
 }
 
 // PersonResolver names the person a human principal is charged as (v2 per-person caps D1):

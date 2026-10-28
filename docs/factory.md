@@ -555,6 +555,7 @@ flowchart LR
 | `maxCostUSD` | The largest `max_cost` one request may ask for, in (0, `dailyUSD`] |
 | `maxOpenTasks` | How many of its tasks may be open at once. Default 3. A **soft cap**: it is counted before the Task is created, so a burst of N concurrent distinct requests can open up to cap+N-1 tasks |
 | `onBehalfOf.slack` | `{"<team id>/<user id>": <maintainer login>}`: a request naming `slack:<team>/<user>` is sponsored by that maintainer instead. An unknown user is `not_linked`, a login outside `maintainers` is `not_a_maintainer` |
+| `onBehalfOf.slackLinks` | `true`: a Slack user `onBehalfOf.slack` does not list is looked up in the broker's [self-serve link](slack.md#self-serve-link) records (`GET /v1/links/slack` on `:8443`, as `system:factory`). The link names a ZITADEL account, never a login: the factory resolves the account's **current** GitHub login through `api.access`, then holds it to `maintainers` as any sponsor. No link, an inactive account or no GitHub link is `not_linked`; a lookup that fails is `503 link_unverified`. **The config wins**: a user listed in `onBehalfOf.slack` is never looked up. Needs `api.access`; refused on an internal principal |
 
 `api.projectIDFile` is required whenever `api.sponsored` is set: it names the file holding the
 ZITADEL project id, and the client's token must carry it in its audience, or the token is refused.

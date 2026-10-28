@@ -663,6 +663,10 @@ const DefaultSponsoredOpenTasks = 3
 type OnBehalfOf struct {
 	// Slack maps "<team id>/<user id>" to a maintainer's GitHub login.
 	Slack map[string]string `json:"slack,omitempty"`
+	// SlackLinks also reads a Slack user the map does not list from the broker's self-serve link
+	// records: the linked account's current GitHub login sponsors, still held to the maintainers.
+	// The map wins over a link. Needs api.access, which resolves the login.
+	SlackLinks bool `json:"slackLinks,omitempty"`
 }
 
 // Principal is the ledger key and requestedBy of the principal's tasks.
@@ -763,7 +767,7 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 		if !c.validatePrincipal(bad, "api.internalPrincipals", ip.Sponsored, seen, files, reserved) {
 			continue
 		}
-		if len(ip.OnBehalfOf.Slack) > 0 {
+		if len(ip.OnBehalfOf.Slack) > 0 || ip.OnBehalfOf.SlackLinks {
 			bad("api.internalPrincipals.%s: onBehalfOf is not allowed: an internal principal speaks for its sponsor only", ip.Name)
 		}
 		if !finite(ip.MinConfidence) || ip.MinConfidence <= 0 || ip.MinConfidence > 1 {
@@ -802,6 +806,9 @@ func (c *Config) validatePrincipal(bad func(string, ...any), list string, s Spon
 	}
 	if !githubLoginRE.MatchString(s.Sponsor) {
 		bad("%s.%s: sponsor %q is not a GitHub login", list, s.Name, s.Sponsor)
+	}
+	if s.OnBehalfOf.SlackLinks && c.API.Access == nil {
+		bad("%s.%s: onBehalfOf.slackLinks needs api.access, which resolves a linked account's GitHub login", list, s.Name)
 	}
 	if len(s.Repositories) == 0 {
 		bad("%s.%s: repositories is empty", list, s.Name)

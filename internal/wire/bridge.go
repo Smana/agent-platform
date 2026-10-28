@@ -89,6 +89,8 @@ const (
 	ReasonLogUnavailable  = "log_unavailable"   // 503: the log could not be read or written; retry
 	ReasonTimedOut        = "timed_out"         // 503: the request's deadline passed before it was written; retry
 	ReasonStreamingFailed = "streaming_refused" // 500: the connection cannot stream
+	ReasonBadSlackUser    = "bad_slack_user"    // 400: a Slack link read without a T… team and a U…/W… user
+	ReasonNotLinked       = "not_linked"        // 404: the Slack user has no self-serve link
 )
 
 // SSE event names, broker → bridge.

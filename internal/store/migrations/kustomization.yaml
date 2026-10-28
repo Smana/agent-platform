@@ -15,6 +15,7 @@ configMapGenerator:
       - ./20261005130000_approval_indexes.sql
       - ./20261008120000_task_facts_index.sql
       - ./20261023120000_webhooks.sql
+      - ./20261028120000_slack_links.sql
       - atlas.sum
     options:
       disableNameSuffixHash: true

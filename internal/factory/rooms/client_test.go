@@ -146,6 +146,17 @@ func newBroker(t *testing.T, n int) (*broker, *httptest.Server) {
 		b.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]int{"consumed": len(in.Refs)})
 	})
+	mux.HandleFunc("GET /v1/links/slack", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		if r.URL.Query().Get("team") != "T01ABC" || r.URL.Query().Get("user") != "U02DEF" {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(wire.Error{Reason: wire.ReasonNotLinked})
+			return
+		}
+		_, _ = io.WriteString(w, `{"sub":"zsub1"}`)
+	})
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
 	return b, srv
@@ -661,5 +672,24 @@ func TestEventsSinceRetainsOnlyWhatKeepSelects(t *testing.T) {
 	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 0, keep)
 	if err != nil || len(evs) != 3 || cursor != 300 {
 		t.Fatalf("%d events, cursor %d, %v", len(evs), cursor, err)
+	}
+}
+
+// The self-serve link read: a linked user's sub, an unlinked user as not found, and any other
+// refusal an error; malformed ids never reach the broker.
+func TestSlackLink(t *testing.T) {
+	r := newRig(t, 1)
+	if sub, found, err := r.c.SlackLink(t.Context(), "T01ABC", "U02DEF"); err != nil || !found || sub != "zsub1" {
+		t.Fatalf("%q %v %v", sub, found, err)
+	}
+	if _, found, err := r.c.SlackLink(t.Context(), "T01ABC", "U09NONE"); err != nil || found {
+		t.Fatalf("an unlinked user: %v %v", found, err)
+	}
+	if _, _, err := r.c.SlackLink(t.Context(), "T01ABC", "../x"); err == nil {
+		t.Fatal("a malformed user reached the broker")
+	}
+	r.b.fail["/v1/links/slack"], r.b.reason = http.StatusForbidden, wire.ReasonNotPermitted
+	if _, _, err := r.c.SlackLink(t.Context(), "T01ABC", "U02DEF"); !errors.Is(err, ErrNotPermitted) {
+		t.Fatalf("not permitted: %v", err)
 	}
 }

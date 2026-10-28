@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -23,12 +24,17 @@ type TaskRequest struct {
 }
 
 // TaskResult is the factory's answer: the task and its room (the same id), the issue filed (0
-// when none), and whether the key had already created it.
+// when none), whether the key had already created it, and the GitHub login that sponsors it ("" on
+// a duplicate, or when the factory's answer is not a login).
 type TaskResult struct {
 	Task, Room string
 	Issue      int
 	Duplicate  bool
+	Sponsor    string
 }
+
+// sponsorLogin is GitHub's login syntax: the only shape of sponsor passed on.
+var sponsorLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 
 // ErrRefused is the factory refusing a task request: its status and its code, "refused" for a
 // code outside POST /v1/tasks's closed list. A value, so errors.As matches it as written.
@@ -45,7 +51,7 @@ func (e ErrRefused) Error() string {
 // clipped to "refused", so a factory's free text never reaches a model.
 var refusalCodes = []string{"kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
 	"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
-	"max_cost_over_class", "unauthenticated", "not_permitted", "not_linked", "not_a_maintainer", "sponsored_only", "invalid_draft", "bad_text", "tasks_unavailable",
+	"max_cost_over_class", "unauthenticated", "not_permitted", "not_linked", "link_unverified", "not_a_maintainer", "sponsored_only", "invalid_draft", "bad_text", "tasks_unavailable",
 	"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "idempotency_conflict"}
 
 // CreateTask posts r to the factory's POST /v1/tasks with the caller's own token, as Request does.
@@ -95,6 +101,7 @@ func (f Factory) CreateTask(ctx context.Context, r TaskRequest) (TaskResult, err
 			Room      string `json:"room"`
 			Issue     int    `json:"issue"`
 			Duplicate bool   `json:"duplicate"`
+			Sponsor   string `json:"sponsor"`
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
 			return TaskResult{}, fmt.Errorf("runrequest: factory answer: %w", err)
@@ -102,7 +109,10 @@ func (f Factory) CreateTask(ctx context.Context, r TaskRequest) (TaskResult, err
 		if !envelope.ValidID(out.Room) || !envelope.ValidID(out.Task) { // never a task the caller cannot poll
 			return TaskResult{}, fmt.Errorf("runrequest: factory answer: no valid task and room")
 		}
-		return TaskResult{Task: out.Task, Room: out.Room, Issue: out.Issue, Duplicate: out.Duplicate}, nil
+		if !sponsorLogin.MatchString(out.Sponsor) {
+			out.Sponsor = ""
+		}
+		return TaskResult{Task: out.Task, Room: out.Room, Issue: out.Issue, Duplicate: out.Duplicate, Sponsor: out.Sponsor}, nil
 	}
 	if resp.StatusCode >= 400 {
 		var out struct {
