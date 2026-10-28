@@ -11,9 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+)
+
+// The human listener's modes, as the broker reports one at /.well-known/roomctl: the same two values
+// its config takes. A broker without the field is OIDC, so an older release reads as before.
+const (
+	HumanModeOIDC  = "oidc"
+	HumanModeLocal = "local"
 )
 
 // Config is what `roomctl configure` saves; the room list's CLI setup view
@@ -23,20 +32,49 @@ type Config struct {
 	Issuer    string `json:"issuer"`    // ZITADEL
 	ClientID  string `json:"clientID"`  // the roomctl native app
 	ProjectID string `json:"projectID"` // a token's aud must hold it, and ZITADEL adds it only when asked
+	// HumanMode is the broker's human listener mode as discovery reported it: "local" means no IdP and
+	// no token, and the three values above are empty. Empty is OIDC, an older broker's answer.
+	HumanMode string `json:"humanMode,omitempty"`
 }
 
-// Validate refuses a plain-http URL, which would carry the bearer token in clear,
-// and a missing id.
+// Validate refuses a plain-http URL, which would carry the bearer token in clear, and a missing id.
+// A local broker holds no token, so its config needs no ids — but it must still be this machine: a
+// plain-http listener is the port-forward, never a broker on another host.
 func (c Config) Validate() error {
-	for name, raw := range map[string]string{"url": c.URL, "issuer": c.Issuer} {
-		if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
-			return fmt.Errorf("%s %q is not an https URL", name, raw)
+	u, err := url.Parse(c.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return fmt.Errorf("url %q is not an absolute URL", c.URL)
+	}
+	switch c.HumanMode {
+	case HumanModeLocal:
+		if u.Scheme == "http" && !LoopbackURL(u) {
+			return fmt.Errorf("url %q: a plain-http broker is only the loopback listener of a local install (http://localhost:<port>)", c.URL)
 		}
+		return nil
+	case "", HumanModeOIDC:
+		for name, raw := range map[string]string{"url": c.URL, "issuer": c.Issuer} {
+			if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
+				return fmt.Errorf("%s %q is not an https URL", name, raw)
+			}
+		}
+		if c.ClientID == "" || c.ProjectID == "" {
+			return errors.New("the client id and the project id are both required")
+		}
+		return nil
+	default:
+		return fmt.Errorf("humanMode %q is not oidc or local: run roomctl configure again", c.HumanMode)
 	}
-	if c.ClientID == "" || c.ProjectID == "" {
-		return errors.New("the client id and the project id are both required")
+}
+
+// LoopbackURL reports whether u names this machine: localhost, or an address the standard library
+// calls loopback. A local install is reached only that way, by a port-forward.
+func LoopbackURL(u *url.URL) bool {
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" {
+		return true
 	}
-	return nil
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Dir is where roomctl keeps its config and token: <user config dir>/roomctl.

@@ -6,12 +6,10 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
@@ -23,10 +21,11 @@ import (
 const template = "rooms_tpl"
 
 // bootstrap does what CNPG does on the cluster (login roles, a database owned by
-// rooms_owner) and applies every migration to the template as rooms_owner, the way
-// Atlas does. Roles are cluster-wide, so they are created here once; the grants and
-// policies live inside the template and are copied with it. The template then refuses
-// connections, which is what keeps it untouched and clonable.
+// rooms_owner) and applies every migration to the template as rooms_owner, through the
+// migrator room-broker migrate runs: one runner, so what the suite builds is what an
+// operator's init container builds. Roles are cluster-wide, so they are created here once;
+// the grants, policies and the revision ledger live inside the template and are copied with
+// it. The template then refuses connections, which is what keeps it untouched and clonable.
 func bootstrap(ctx context.Context, super string) error {
 	tpl := pgx.Identifier{template}.Sanitize()
 	if err := run(ctx, super, `CREATE ROLE rooms_owner LOGIN PASSWORD 'owner'; -- pragma: allowlist secret
@@ -37,27 +36,8 @@ func bootstrap(ctx context.Context, super string) error {
 	if err := run(ctx, super, "CREATE DATABASE "+tpl+" OWNER rooms_owner"); err != nil {
 		return err
 	}
-	owner := as(inDB(super, template), "rooms_owner", "owner")
-	files, _ := filepath.Glob("migrations/*.sql")
-	sort.Strings(files)
-	for _, f := range files {
-		sql, err := os.ReadFile(filepath.Clean(f))
-		if err != nil {
-			return err
-		}
-		if !strings.HasPrefix(string(sql), "-- atlas:txmode none") {
-			if err := run(ctx, owner, string(sql)); err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-			continue
-		}
-		// Atlas runs such a file a statement at a time, outside a transaction: a
-		// multi-statement Exec would wrap CREATE INDEX CONCURRENTLY in one.
-		for _, stmt := range statements(string(sql)) {
-			if err := run(ctx, owner, stmt); err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-		}
+	if _, err := Migrate(ctx, as(inDB(super, template), "rooms_owner", "owner"), slog.New(slog.DiscardHandler)); err != nil {
+		return fmt.Errorf("migrate %s: %w", template, err)
 	}
 	return run(ctx, super, "ALTER DATABASE "+tpl+" WITH ALLOW_CONNECTIONS false")
 }
@@ -96,42 +76,8 @@ func inDB(dsn, name string) string {
 	return u.String()
 }
 
-// statements splits a txmode-none migration into its statements, every one of
-// them: a GRANT or a COMMENT skipped here would pass the tests and still run on
-// the cluster. These files hold no function body, so once the comment lines are
-// gone a semicolon ends each statement.
-func statements(sql string) []string {
-	var code strings.Builder
-	for line := range strings.Lines(sql) {
-		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
-			code.WriteString(line)
-		}
-	}
-	var out []string
-	for stmt := range strings.SplitSeq(code.String(), ";") {
-		if stmt = strings.TrimSpace(stmt); stmt != "" {
-			out = append(out, stmt)
-		}
-	}
-	return out
-}
-
-// Every statement of a txmode-none file runs, whatever its verb (review 4.3).
-func TestTxModeNoneStatements(t *testing.T) {
-	got := statements(`-- atlas:txmode none
-
--- a comment; with a semicolon
-CREATE INDEX CONCURRENTLY a ON events (room_id);
-GRANT SELECT ON events TO rooms_broker;
-  COMMENT ON INDEX a IS 'x';
-REINDEX INDEX CONCURRENTLY a;
-`)
-	want := []string{"CREATE INDEX CONCURRENTLY a ON events (room_id)", "GRANT SELECT ON events TO rooms_broker",
-		"COMMENT ON INDEX a IS 'x'", "REINDEX INDEX CONCURRENTLY a"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("statements = %q, want %q", got, want)
-	}
-}
+// Every statement of a txmode-none file runs, whatever its verb (review 4.3):
+// TestMigrateTxModeNoneStatements, against the production splitter.
 
 func as(dsn, user, pass string) string {
 	u, _ := url.Parse(dsn)
@@ -139,21 +85,21 @@ func as(dsn, user, pass string) string {
 	return u.String()
 }
 
-func exec(t *testing.T, dsn, sql string) {
+func exec(t *testing.T, dsn, sql string, args ...any) {
 	t.Helper()
-	if err := run(context.Background(), dsn, sql); err != nil {
+	if err := run(context.Background(), dsn, sql, args...); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // run executes sql on a connection of its own, closed before it returns.
-func run(ctx context.Context, dsn, sql string) error {
+func run(ctx context.Context, dsn, sql string, args ...any) error {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	if _, err := conn.Exec(ctx, sql); err != nil {
+	if _, err := conn.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("%w\n%s", err, sql)
 	}
 	return nil

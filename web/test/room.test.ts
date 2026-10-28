@@ -37,6 +37,21 @@ function page(get?: typeof fetch, dashboards?: () => Promise<Dashboard[]>) {
 }
 
 describe("the room page", () => {
+  it("says above everything that a run is not sandboxed", () => {
+    const p = page();
+    p.join({ ...snapshot(), runs: [{ id: "ikely2yk", role: "implementer", phase: "Running", unsandboxed: true }] }, 0);
+    const banner = p.app.querySelector<HTMLElement>(".banner-unsandboxed")!;
+    expect(banner.hidden).toBe(false);
+    expect(banner.getAttribute("role")).toBe("alert");
+    expect(banner.textContent).toContain("Not sandboxed: run ikely2yk runs without gVisor (ALLOW_UNSANDBOXED=1)");
+    const q = page();
+    q.join(snapshot(), 0);
+    expect(q.app.querySelector<HTMLElement>(".banner-unsandboxed")!.hidden).toBe(true);
+    const f = event(1, "state_changed", { kind: "run_phase", phase: "Running", unsandboxed: true });
+    q.last().recv({ ...f, event: { ...f.event, runId: "a2b3c4d5" } });
+    expect(q.app.querySelector<HTMLElement>(".banner-unsandboxed")!.textContent).toContain("run a2b3c4d5");
+  });
+
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 

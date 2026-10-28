@@ -35,7 +35,7 @@ The design's threats, the controls against each, and the package or mechanism th
 | Principal | Credential | Validated by the broker | Canonical id |
 |---|---|---|---|
 | Agent run | A projected ServiceAccount token of `xplane-run-<runId>` in `agents`, audience `room-broker`, 600 s, mounted **only** in the bridge container | Offline against the JWKS of an issuer in `runIssuers`; `sub` must match the issuer's `subPattern`; then the `AgentRun` must be live and name a room | `agent:<runId>` |
-| System caller | A ServiceAccount token with audience `rooms-system` (the platform's Kyverno policies reserve every `room-broker*` audience for `agents`) | Offline against `systemIssuer`; `sub` must be a key of the `systemPrincipals` allowlist | e.g. `system:factory` |
+| System caller | A ServiceAccount token with audience `rooms-system` (the platform's Kyverno policies reserve every `room-broker*` audience for `agents`) | Offline against `systemIssuer` (mode `jwks`), or by the apiserver when it says `mode: tokenreview`; `sub` must be a key of the `systemPrincipals` allowlist, which needs an issuer. The issuer is optional: without one, the broker's system authenticator never authenticates and the routes answer `401` | e.g. `system:factory` |
 | Human | A ZITADEL ID token and a JWT access token, both from oauth2-proxy | Offline: issuer, expiry, groups; `aud` holds the project id and a rooms client, and the token names that client: the ID token in `azp`, the access token in `client_id`, since ZITADEL access tokens carry no `azp`. The two must share the `sub` and the client | `human:<sub>` |
 
 Why offline: every consumer validates issuer-agnostically. A runtime whose identities are

@@ -1,0 +1,52 @@
+{{- if .Values.runController.enabled }}
+{{- $c := .Values.runController -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: run-controller
+  labels: {{- include "ap.labelsFor" (dict "root" . "name" "run-controller") | nindent 4 }}
+spec:
+  replicas: 1 # leader-elected; a second replica would only wait
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: run-controller
+  template:
+    metadata:
+      labels: {{- include "ap.labelsFor" (dict "root" . "name" "run-controller") | nindent 8 }}
+      annotations:
+        # The controller reads its config once at start: a changed config must roll the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/run-controller-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: run-controller
+      automountServiceAccountToken: true # the apiserver is its only peer
+      terminationGracePeriodSeconds: 40 # the manager drains for 30 s
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: run-controller
+          image: {{ include "ap.image" (dict "root" . "image" $c.image) }}
+          {{- include "ap.pullPolicy" . | nindent 10 }}
+          env:
+            - name: RUN_CONTROLLER_CONFIG
+              value: /etc/run-controller/config.yaml
+          ports:
+            - {name: metrics, containerPort: 9090}
+            - {name: probes, containerPort: 9091}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 9091}
+          readinessProbe:
+            httpGet: {path: /readyz, port: 9091}
+          securityContext: {{- include "ap.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/run-controller, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: run-controller-config}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

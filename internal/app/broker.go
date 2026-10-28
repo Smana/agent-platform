@@ -69,9 +69,9 @@ const (
 	metricsDrain = time.Second
 )
 
-// RunBroker runs room-broker's subcommand args[0]: serve (the default) or
-// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
-// ROOMS_MCP_KEY and ROOMS_GITHUB_APP_DIR.
+// RunBroker runs room-broker's subcommand args[0]: serve (the default),
+// retention or migrate. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
+// ROOMS_MCP_KEY, ROOMS_GITHUB_APP_DIR and, for migrate alone, ROOMS_MIGRATION_DATABASE_URL.
 func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func(string) string) error {
 	cmd := "serve"
 	if len(args) > 0 {
@@ -82,8 +82,21 @@ func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func
 		return serveBroker(ctx, log, getenv)
 	case "retention":
 		return runRetention(ctx, log, getenv)
+	case "migrate":
+		// The schema's owner, never the broker's role: every object the files create belongs to
+		// rooms_owner, and ROOMS_DATABASE_URL carries the broker's own credential.
+		dsn := getenv("ROOMS_MIGRATION_DATABASE_URL")
+		if dsn == "" {
+			return errors.New("room-broker migrate: ROOMS_MIGRATION_DATABASE_URL is not set")
+		}
+		n, err := store.Migrate(ctx, dsn, log)
+		if err != nil {
+			return fmt.Errorf("room-broker migrate: %w", err)
+		}
+		log.Info("schema up to date", "applied", n)
+		return nil
 	}
-	return fmt.Errorf("room-broker: unknown subcommand %q (serve, retention)", cmd)
+	return fmt.Errorf("room-broker: unknown subcommand %q (serve, retention, migrate)", cmd)
 }
 
 // runRetention is the daily DELETE-only job (§4, OD-17), connected as
@@ -120,9 +133,10 @@ func brokerEnv(getenv func(string) string) (cfgPath, dsn, ns string, err error) 
 }
 
 // serveBroker runs the Room controller, the AgentRun watch, the :8443 API, the
-// :8080 human API and its fan-out hub, the :8090 room tools, the JWKS refresh and the :9090 metrics
-// and probes until ctx ends or one of them fails. :9090 stops last, so the drain's final counts are scraped and /readyz
-// answers 503 rather than refusing connections meanwhile (review M4).
+// :8080 human API and its fan-out hub, the :8090 room tools when roomTools is on, the JWKS refresh
+// and the :9090 metrics and probes until ctx ends or one of them fails. :9090 stops last, so the
+// drain's final counts are scraped and /readyz answers 503 rather than refusing connections
+// meanwhile (review M4).
 func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	cfgPath, dsn, ns, err := brokerEnv(getenv)
 	if err != nil {
@@ -159,7 +173,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: redaction rules: %w", err)
 	}
-	a, err := authenticators(ctx, cfg, m, jwksVerifier(log))
+	a, err := authenticators(ctx, cfg, m, jwksVerifier(log), clusterTokenReviews)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -208,11 +222,21 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if len(cfg.Human.MCP.Sponsored) > 0 { // the factory's URL is the config's, never a request's
 		humans.Tasks = runrequest.Factory{URL: cfg.FactoryURL, HC: httpx.New(factoryTimeout, nil)}
 	}
-	key := mcpKey(getenv)
-	if key == "" {
-		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
+	// :8090 is the agents' listener and the config names it (I8). Absent it starts, as every existing
+	// deployment expects, and ROOMS_MCP_KEY alone decides whether calls are accepted; an explicit
+	// roomTools.enabled: false opens no port, starts no server and counts no refusal, so the key is
+	// not even read.
+	roomToolsEnabled := cfg.RoomToolsEnabled()
+	var tools http.Handler
+	if roomToolsEnabled {
+		key := mcpKey(getenv)
+		if key == "" {
+			log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
+		}
+		tools = roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
+	} else {
+		log.Info(":8090 not started: roomTools.enabled is false")
 	}
-	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
 	if err := addVerdictPoster(getenv("ROOMS_GITHUB_APP_DIR"), mgr.Add, logStore, mgr.GetClient(), ns, cfg.PublicURL, m, log); err != nil {
 		return fmt.Errorf("room-broker: verdict poster: %w", err)
 	}
@@ -225,20 +249,10 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig
-	humanLn, err := lc.Listen(ctx, "tcp", humanAddr)
+	// The config decides :8090 (I8), so a broker that serves no room tool never binds the port.
+	humanLn, mcpLn, opsLn, err := openBrokerListeners(ctx, cfg, roomToolsEnabled, lc.Listen)
 	if err != nil {
-		return fmt.Errorf("room-broker: human listener: %w", err)
-	}
-	mcpLn, err := lc.Listen(ctx, "tcp", mcpAddr)
-	if err != nil {
-		_ = humanLn.Close()
-		return fmt.Errorf("room-broker: room tools listener: %w", err)
-	}
-	opsLn, err := lc.Listen(ctx, "tcp", opsAddr)
-	if err != nil {
-		_ = humanLn.Close()
-		_ = mcpLn.Close()
-		return fmt.Errorf("room-broker: ops listener: %w", err)
+		return err
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -260,7 +274,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	g.Go(func() error { return api.ListenAndServeTLS(gctx, bridgeAddr, tlsCfg, bridgeDrain) })
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return humans.Serve(gctx, humanLn, humanDrain) })
-	g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
+	if roomToolsEnabled {
+		g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
+	}
 	g.Go(func() error { return refreshJWKS(gctx, refreshers, nil) })
 	g.Go(func() error {
 		if err := mgr.Start(gctx); err != nil {
@@ -288,9 +304,18 @@ func fanoutHub(r fanout.Reader, l fanout.Listener, m *metrics.Set, log *slog.Log
 	return hub, nil
 }
 
+// humanListenAddr is :8080, on loopback only in local mode: kubectl port-forward reaches it
+// inside the pod's network namespace, and nothing else can.
+func humanListenAddr(cfg config.Config) string {
+	if cfg.Human.EffectiveMode() == config.HumanModeLocal {
+		return "127.0.0.1" + humanAddr
+	}
+	return humanAddr
+}
+
 // humanServer is the :8080 API over the broker's parts, its acts served by
 // actor. The client ids are read at use (Ruling AS-a); the group names are literals.
-func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, ns string, roomLog humanapi.Log,
+func humanServer(cfg config.Config, humans humanapi.Authenticator, rooms client.Reader, ns string, roomLog humanapi.Log,
 	hub humanapi.Hub, runs humanapi.Runs, actor *humanapi.Actor, m *metrics.Set, log *slog.Logger,
 ) *humanapi.Server {
 	h := cfg.Human
@@ -298,13 +323,30 @@ func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, n
 	for _, r := range h.MCP.SessionStart {
 		start[strings.ToLower(r)] = true
 	}
+	mode := h.EffectiveMode()
+	webClient, roomctlClient, projectID := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), idFile(h.ProjectIDFile)
+	if mode == config.HumanModeLocal {
+		// No IdP, so no ids to read; Serve refuses nil ones. Access stays nil too (humanSide sets
+		// it only from a human.access block, which local mode refuses): the local user is an
+		// admin, and the D7 repository check gates members only.
+		local := func() string { return authn.LocalClientID }
+		webClient, roomctlClient, projectID = local, local, local
+	}
+	groups := h.EffectiveGroups()
+	// The loopback listener has no token, so its Origin is the only CSRF gate and it applies to every
+	// route (humanapi's sameOrigin); OIDC leaves it empty and keeps authn.Humans' own check.
+	var origins []string
+	if mode == config.HumanModeLocal {
+		origins = authn.LoopbackOrigins(cfg.PublicURL)
+	}
 	dashboards := make([]humanapi.Dashboard, 0, len(h.Dashboards))
 	for _, d := range h.Dashboards {
 		dashboards = append(dashboards, humanapi.Dashboard{Label: d.Label, URL: d.URL})
 	}
-	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
-		WebClient: idFile(h.ClientIDFile), PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: idFile(h.RoomctlClientIDFile),
-		ProjectID: idFile(h.ProjectIDFile),
+	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: groups.Admin, Member: groups.Member},
+		HumanMode: mode, Origins: origins,
+		WebClient: webClient, PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: roomctlClient,
+		ProjectID: projectID,
 		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log,
 		MCP: h.MCP.Enabled, SessionStart: start, Dashboards: dashboards}
 }

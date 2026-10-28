@@ -1,0 +1,54 @@
+# Default deny; one allow per flow.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: room-broker
+  ingress:
+    # Run bridges; a run's own CNP opens the matching egress.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: {{ .Values.runs.namespace }}
+          matchExpressions:
+            - {key: agents.ogenki.io/run-id, operator: Exists}
+      toPorts:
+        - ports: [{port: "8443", protocol: TCP}]
+    # Kubelet's probes.
+    - fromEntities: [host]
+      toPorts:
+        - ports: [{port: "9090", protocol: TCP}]
+    {{- with .Values.broker.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+          rules:
+            dns: [{matchPattern: "*"}]
+    # The Room and AgentRun watches, the leader lease and token reviews.
+    # Cilium applies L4 policy after service translation: kubernetes.default:443 is the control
+    # plane's own port (6443 on kind) by then, hence apiServerPorts.
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            {{- range .Values.apiServerPorts }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+          matchExpressions:
+            - {key: {{ .Values.broker.database.podLabel }}, operator: Exists}
+      toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+    {{- with .Values.broker.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}

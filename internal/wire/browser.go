@@ -37,6 +37,8 @@ type RunView struct {
 	ID    string `json:"id"`
 	Role  string `json:"role"`
 	Phase string `json:"phase"`
+	// Unsandboxed: the run's pod has no RuntimeClass.
+	Unsandboxed bool `json:"unsandboxed,omitempty"`
 }
 
 // You is the viewer's own standing in the room (§1).

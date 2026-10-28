@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -458,6 +462,132 @@ func TestDoctorOpenCodeCodeMode(t *testing.T) {
 				t.Fatalf("warn=%v want %v\n%s", got, tc.warn, &out)
 			}
 		})
+	}
+}
+
+// countingRoundTrip answers nothing and counts: a refusal that must happen before any request shows
+// a count of zero.
+type countingRoundTrip struct {
+	n      int
+	answer string
+}
+
+func (c *countingRoundTrip) RoundTrip(*http.Request) (*http.Response, error) {
+	c.n++
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(c.answer))}, nil
+}
+
+// A local broker is discovered over plain HTTP on this machine only, and its answer says a local
+// install needs no IdP values. Every other plain-HTTP host is refused before the request.
+func TestDiscoverLocal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/roomctl" || r.Header.Get("Authorization") != "" {
+			t.Errorf("%s with %q: discovery is unauthenticated", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"url":"http://` + r.Host + `","humanMode":"local"}`))
+	}))
+	t.Cleanup(srv.Close)
+	got, err := Discover(t.Context(), srv.Client(), srv.URL+"/")
+	if err != nil || got != (Config{URL: srv.URL, HumanMode: HumanModeLocal}) {
+		t.Fatalf("%+v %v", got, err)
+	}
+
+	// Another host in clear is refused before any request, though the answer would say local.
+	count := &countingRoundTrip{answer: `{"humanMode":"local"}`}
+	if _, err := Discover(t.Context(), &http.Client{Transport: count}, "http://rooms.example"); err == nil ||
+		!strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("a plain-http broker on another host: %v", err)
+	}
+	if count.n != 0 {
+		t.Fatalf("%d requests reached http://rooms.example", count.n)
+	}
+
+	// A loopback answer that reports OIDC is a broker roomctl must not read without TLS.
+	oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"humanMode":"oidc","issuer":"https://auth.example","clientID":"c","projectID":"p"}`))
+	}))
+	t.Cleanup(oidc.Close)
+	if _, err := Discover(t.Context(), oidc.Client(), oidc.URL); err == nil || !strings.Contains(err.Error(), "humanMode") {
+		t.Fatalf("a plain-http broker that is not local: %v", err)
+	}
+
+	// An OIDC broker with no roomctl client yet still names what is missing.
+	missing := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"humanMode":"oidc","issuer":"https://auth.example","clientID":"","projectID":""}`))
+	}))
+	t.Cleanup(missing.Close)
+	if _, err := Discover(t.Context(), missing.Client(), missing.URL); err == nil || !strings.Contains(err.Error(), "roomctl client") {
+		t.Fatalf("an oidc broker with no roomctl client: %v", err)
+	}
+}
+
+// Doctor on a local install reads no token file and calls no IdP: the loopback listener answers, and
+// the room list is read without an Authorization header.
+func TestDoctorLocal(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/rooms" {
+			auth = r.Header.Get("Authorization")
+		}
+		mu.Unlock()
+		if r.URL.Path == "/api/rooms" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"humanMode":"local"}`))
+	}))
+	t.Cleanup(srv.Close)
+	tokPath := filepath.Join(t.TempDir(), "token.json")
+	var out strings.Builder
+	d := Doctor{Config: Config{URL: srv.URL, HumanMode: HumanModeLocal}, HC: srv.Client(), TokenPath: tokPath, Version: "dev",
+		Lookup: func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }}
+	if err := d.Run(t.Context(), &out); err != nil {
+		t.Fatalf("%v\n%s", err, &out)
+	}
+	if !strings.Contains(out.String(), "ok   login: local broker") || !strings.Contains(out.String(), "skip skill") {
+		t.Fatalf("%s", out.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if auth != "" {
+		t.Fatalf("the room list carried %q", auth)
+	}
+	for _, p := range paths {
+		if p != "/.well-known/roomctl" && p != "/api/rooms" {
+			t.Fatalf("doctor called %s", p)
+		}
+	}
+	if _, err := os.Stat(tokPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("doctor wrote a token file: %v", err)
+	}
+}
+
+// A local broker's Host check answers publicURL's port only: discovery refuses another port up
+// front, with the port-forward that fixes it, instead of letting every later call get 403.
+func TestDiscoverLocalPortAgreement(t *testing.T) {
+	var answer atomic.Value // the test writes it, the server goroutine reads it
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(answer.Load().(string))) }))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	for _, tc := range []struct {
+		url, wantErr string
+	}{
+		{fmt.Sprintf("http://localhost:%d", port), ""},
+		{fmt.Sprintf("http://[::1]:%d", port), ""},
+		{"", ""}, // an older broker sends no url: not checked
+		{"http://localhost:1", "answers only on port 1"},
+		{"http://localhost", "names no port"},
+	} {
+		answer.Store(`{"url":"` + tc.url + `","humanMode":"local"}`)
+		_, err := Discover(t.Context(), srv.Client(), srv.URL)
+		if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("url %q: %v, want %q", tc.url, err, tc.wantErr)
+		}
 	}
 }
 

@@ -958,6 +958,20 @@ func TestTaskFactsRefuseBadRequests(t *testing.T) {
 	}
 }
 
+// A broker with no system issuer still answers the system routes: 401, never 404 and never a panic.
+// The authenticator is non-nil and refuses everything; the route needed no change.
+func TestSystemRouteWithoutIssuer(t *testing.T) {
+	_, _, w := newServer(t)
+	s := &Server{Log: newMemLog(), Systems: authn.NewSystems(nil, nil), Watch: w}
+	h := s.Routes()
+	for name, token := range map[string]string{"a bearer": "anything", "no bearer": ""} {
+		rec := call(t, h, http.MethodGet, "/v1/rooms/"+room+"/events", token, nil)
+		if rec.Code != http.StatusUnauthorized || reason(t, rec) != wire.ReasonUnauthenticated {
+			t.Fatalf("%s: %d %s, want 401 %q", name, rec.Code, rec.Body, wire.ReasonUnauthenticated)
+		}
+	}
+}
+
 func TestSystemAPI(t *testing.T) {
 	s, _, w := newServer(t)
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
@@ -1174,6 +1188,24 @@ func TestStreamEndsWithTheToken(t *testing.T) {
 	if !ended(sc) {
 		t.Fatal("the stream outlived its token")
 	}
+}
+
+// A principal whose claims carry no expiry (a TokenReview answer whose token names none) has no
+// expiry deadline: the stream lives to its cap, and the run's liveness ends it (Drop, above).
+func TestStreamWithoutTokenExpiryKeepsStreaming(t *testing.T) {
+	s, _, w := newServer(t)
+	tick := make(manualTicker, 1)
+	s.Ticker = tick.new
+	s.Runs = expiringAuth{}
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	sc, stop := openStream(t, srv, runA)
+	defer stop()
+	expectPing(t, sc)
+	<-time.After(200 * time.Millisecond) // longer than TestStreamEndsWithTheToken's expiry
+	tick <- time.Now()
+	expectPing(t, sc)
 }
 
 type expiringAuth struct{ expiry time.Time }

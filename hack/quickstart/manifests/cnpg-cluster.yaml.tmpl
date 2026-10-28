@@ -1,0 +1,29 @@
+# The rooms database. initdb makes rooms_owner (the migrate DSN, in the rooms-app Secret); the
+# migrations GRANT to rooms_broker and rooms_retention, so those exist before the broker starts.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: rooms
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: rooms
+      owner: rooms_owner
+  managed:
+    roles:
+      - name: rooms_broker
+        ensure: present
+        login: true
+        passwordSecret:
+          name: rooms-broker-password
+      - name: rooms_retention
+        ensure: present
+        login: true
+        passwordSecret:
+          name: rooms-retention-password
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}

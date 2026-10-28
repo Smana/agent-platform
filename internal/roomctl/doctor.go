@@ -75,8 +75,20 @@ func firstNonEmpty(a, b string) string {
 // Discover reads the issuer, client id and project id from the broker at base, so `configure`
 // takes the URL alone. The URL is the one asked for: a proxy in front may name the broker
 // otherwise. A broker with no roomctl client yet is refused with that reason.
+//
+// A local install is the one broker discovered over plain http, and only on this machine: its
+// listener is the port-forward, and there is no token for TLS to protect. Every other plain-http
+// URL is refused before any request, so a URL a mistyped config names is never asked.
 func Discover(ctx context.Context, hc *http.Client, base string) (Config, error) {
 	base = strings.TrimRight(base, "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return Config{}, fmt.Errorf("%q is not an http(s) URL", base)
+	}
+	if u.Scheme == "http" && !LoopbackURL(u) {
+		return Config{}, fmt.Errorf("%s: a plain-http broker is only a local install's loopback listener (http://localhost:<port>): "+
+			"use the https rooms URL", base)
+	}
 	noRedirect := *hc
 	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+setupPath, nil)
@@ -100,11 +112,41 @@ func Discover(ctx context.Context, hc *http.Client, base string) (Config, error)
 	if err := json.Unmarshal(body, &got); err != nil {
 		return Config{}, fmt.Errorf("setup values of %s: %w", base, err)
 	}
-	if got.ClientID == "" || got.ProjectID == "" {
+	switch {
+	case got.HumanMode == HumanModeLocal:
+		// No IdP values to take: the loopback listener is the whole credential.
+		if err := samePort(u, got.URL); err != nil {
+			return Config{}, err
+		}
+	case got.HumanMode != "" && got.HumanMode != HumanModeOIDC:
+		return Config{}, fmt.Errorf("%s reports humanMode %q, which this roomctl does not know: upgrade roomctl", base, got.HumanMode)
+	case u.Scheme == "http":
+		return Config{}, fmt.Errorf("%s answers at plain http but reports humanMode %q: "+
+			"only a local broker is reached without TLS", base, got.HumanMode)
+	case got.ClientID == "" || got.ProjectID == "":
 		return Config{}, fmt.Errorf("%s has no roomctl client yet: ask an admin to finish the broker's setup", base)
 	}
 	got.URL = base
 	return got, nil
+}
+
+// samePort refuses a local broker reached on another port than its publicURL names: its Host
+// check answers only that port, so every later call would be a bare 403. An answer with no url
+// (a broker before install-anywhere) is not checked.
+func samePort(base *url.URL, public string) error {
+	if public == "" {
+		return nil
+	}
+	p, err := url.Parse(public)
+	if err != nil || p.Port() == "" {
+		return fmt.Errorf("%s reports publicURL %q, which names no port: its config is wrong", base, public)
+	}
+	if p.Port() != base.Port() {
+		return fmt.Errorf("%s: the broker's publicURL is %s, so it answers only on port %s: forward that port "+
+			"(kubectl port-forward deploy/room-broker %s:8080) and configure --url http://localhost:%s, or reinstall with LOCAL_PORT=%s",
+			base, public, p.Port(), p.Port(), p.Port(), base.Port())
+	}
+	return nil
 }
 
 // Doctor checks what a first `roomctl rooms` needs, in the order it fails, and prints the fix of
@@ -145,6 +187,8 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	if lookup == nil {
 		lookup = net.DefaultResolver.LookupHost
 	}
+	// A local broker is the loopback listener: no VPN, no certificate, no login.
+	local := d.Config.HumanMode == HumanModeLocal
 	reachable := false
 	if _, err := lookup(ctx, u.Hostname()); err != nil {
 		report(false, "dns", fmt.Sprintf("%s does not resolve: connect your VPN (Tailscale), the rooms host is private (%v)", u.Hostname(), err))
@@ -159,16 +203,22 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 		if err == nil {
 			_ = resp.Body.Close()
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			report(false, "tls", fmt.Sprint(Cause(err)))
-		} else {
+		case local && u.Scheme == "http":
+			reachable = true
+			report(true, "tls", "plain http on the loopback listener: no certificate to check")
+		default:
 			reachable = true
 			report(true, "tls", "the certificate chain is trusted")
 		}
 	}
 
-	tok, terr := Token(ctx, d.HC, d.Config, d.TokenPath)
-	if terr != nil {
+	tok, terr := "", error(nil)
+	if local {
+		report(true, "login", "local broker; no login needed")
+	} else if tok, terr = Token(ctx, d.HC, d.Config, d.TokenPath); terr != nil {
 		report(false, "login", "not logged in or the session expired: run roomctl login")
 	} else {
 		report(true, "login", "the token is valid")
@@ -287,14 +337,17 @@ func (d Doctor) skill(report func(bool, string, string), skip func(string, strin
 	}
 }
 
-// github asks the room list, whose X-Rooms-Access says whether the caller's GitHub link works.
+// github asks the room list, whose X-Rooms-Access says whether the caller's GitHub link works. A
+// local broker has no GitHub check at all: its one user is the port-forward's, and no bearer rides.
 func (d Doctor) github(ctx context.Context, tok string, report func(bool, string, string), warn func(string, string)) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.Config.URL+"/api/rooms", nil)
 	if err != nil {
 		report(false, "github", err.Error())
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	resp, err := d.HC.Do(req)
 	if err != nil {
 		report(false, "github", fmt.Sprint(Cause(err)))
@@ -310,6 +363,8 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 		_ = json.Unmarshal(body, &rows)
 	}
 	switch {
+	case d.Config.HumanMode == HumanModeLocal && resp.StatusCode == http.StatusOK:
+		report(true, "github", "a local broker has no GitHub identity check")
 	case resp.StatusCode == http.StatusUnauthorized:
 		report(false, "github", "the broker refused the token: run roomctl login")
 	case resp.StatusCode != http.StatusOK:

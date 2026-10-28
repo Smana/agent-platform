@@ -31,6 +31,10 @@ export class RoomState {
   private ran_ = false;
   // Whether the latest state frame named the runs: at or below its mark, it decides who is present.
   private runsAtMark = false;
+  // Runs the controller placed without gVisor (their Unsandboxed condition): from the state
+  // frame's runs and from a Running run_phase that says so. Never cleared: the page keeps saying it.
+  private unsandboxed_ = new Set<string>();
+  unsandboxed(): string[] { return [...this.unsandboxed_].sort(); }
   sealed = false;
   // Who closed the room and when: the close's own event. A limit seals with no closer.
   closed?: { who: string; at: string };
@@ -40,7 +44,7 @@ export class RoomState {
   // reset takes a state frame. Its queue is the store's at the mark: a page's tail
   // of 500 events rarely reaches back to what was queued for the next run.
   reset(s: { driver: string; driverEpoch: number; phase?: string; queue?: Queued[]; sealed?: boolean; approvals?: Approval[];
-    runs?: { id: string; role?: string; phase: string }[] }, throughSeq: number) {
+    runs?: { id: string; role?: string; phase: string; unsandboxed?: boolean }[] }, throughSeq: number) {
     this.driver = s.driver;
     this.phase = s.phase ?? "";
     this.driverEpoch = s.driverEpoch;
@@ -54,6 +58,7 @@ export class RoomState {
     this.release((c) => c.l.seq <= throughSeq);
     this.runsAtMark = s.runs !== undefined;
     if (s.runs) {
+      for (const r of s.runs) if (r.unsandboxed) this.unsandboxed_.add(r.id);
       this.agents = new Set(s.runs.filter((r) => !terminal.has(r.phase)).map((r) => `agent:${r.id}`));
       this.ran_ ||= s.runs.length > 0;
     }
@@ -127,6 +132,7 @@ export class RoomState {
         this.pending.delete(p.approvalId);
         break;
       case "state_changed":
+        if (p.kind === "run_phase" && p.unsandboxed === true && ev.runId) this.unsandboxed_.add(ev.runId);
         if (p.kind === "queued_removed") this.queued.delete(p.ref);
         // Only what the brief quoted is consumed; a reviewer's request consumes nothing.
         if (p.kind === "run_requested" && Array.isArray(p.consumed)) for (const ref of p.consumed) this.queued.delete(ref);

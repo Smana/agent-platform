@@ -41,7 +41,8 @@ const (
 
 const roomctlUsage = `usage: roomctl <command>
   configure --url URL [--issuer URL --client-id ID --project-id ID]
-                                  the broker's URL is enough: it serves the other three
+                                  the broker's URL is enough: it serves the other three. A local install
+                                  is http://localhost:<forwarded port>
   configure --from URL [--yes]    replace the whole config with the values the broker serves (a rooms page
                                   URL works): the fix for a stale client id after a rebuild
   login                           sign in with the device flow
@@ -70,6 +71,9 @@ const roomctlUsage = `usage: roomctl <command>
                                   a room of your own from events 1..SEQ, with an optional run; the
                                   fork asks before risky actions (attended) unless you pass --approvals
                                   unattended and its source is unattended too
+  run --repo owner/name --task TEXT [--role implementer|tester|triager]
+                                  quickstart only (a local broker): create a room, queue TEXT as the run's
+                                  task, start the run, apply its claim with your kubectl, follow it to the end
 roomctl never steers, interrupts, moves the driver token or decides (ruling P18): use the web UI`
 
 // Roomctl is roomctl's wiring: where its files live, and its two HTTP clients.
@@ -85,6 +89,9 @@ type Roomctl struct {
 	Home, Cwd string
 	LookPath  func(string) (string, error)
 	RunCmd    func(ctx context.Context, argv []string) error
+
+	// Apply creates a run's claim (roomctl run); nil runs kubectl apply -f - with the manifest on stdin.
+	Apply func(ctx context.Context, manifest []byte) error
 
 	// Capture runs a command and returns its output (setup's OpenCode service check); nil runs it.
 	Capture func(ctx context.Context, argv []string) (string, error)
@@ -142,7 +149,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "doctor", "mcp":
+	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "run", "doctor", "mcp":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -154,6 +161,11 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("%s: %w: run roomctl configure again", cfgPath, err)
 	}
 	if cmd == "login" {
+		if cfg.HumanMode == roomctl.HumanModeLocal {
+			// A local broker has no IdP: naming the port-forward is the whole of the login.
+			_, err := fmt.Fprintln(r.Out, "local broker; no login needed")
+			return err
+		}
 		tok, err := roomctl.Login(ctx, r.HC, cfg, r.Out)
 		if err != nil {
 			return err
@@ -184,6 +196,11 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		Token: func(ctx context.Context) (string, error) { return roomctl.Token(ctx, r.HC, cfg, tokPath) }}
 	switch cmd {
 	case "token":
+		if cfg.HumanMode == roomctl.HumanModeLocal {
+			// A local broker takes no token: a script pointing at it sends none, and there is none to print.
+			_, err := fmt.Fprintln(r.Out, "local broker: no token required")
+			return err
+		}
 		// For scripts: the human's own JWT access token, never a stored secret (ruling TU).
 		tok, err := c.Token(ctx)
 		if err != nil {
@@ -224,6 +241,8 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return c.Watch(ctx, pos[0], *tail, r.Out)
 	case "post":
 		return r.post(ctx, c, args)
+	case "run":
+		return r.quickstartRun(ctx, cfg, c, args)
 	}
 	return r.fork(ctx, c, cfg.URL, args)
 }
@@ -233,7 +252,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 func (r Roomctl) configure(ctx context.Context, path string, args []string) error {
 	var cfg roomctl.Config
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
-	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>")
+	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>, or http://localhost:<port> for a local install")
 	from := fs.String("from", "", "a rooms URL: take every value from the broker, whatever is stored")
 	yes := fs.Bool("yes", false, "with --from: write without asking, and accept an issuer on another domain than the URL")
 	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL (default: the broker's)")
@@ -253,10 +272,17 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 		cfg.URL = base
 	}
 	cfg.URL, cfg.Issuer = strings.TrimRight(cfg.URL, "/"), strings.TrimRight(cfg.Issuer, "/")
+	// A plain-http broker is a local install's loopback listener: refused before any request unless it
+	// is on this machine, whatever the answer would say (Discover enforces it too, for its callers).
+	u, err := url.Parse(cfg.URL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return fmt.Errorf("configure: url %q is not an http(s) URL: roomctl configure --url https://rooms.<your private domain>", cfg.URL)
+	}
+	if u.Scheme == "http" && !roomctl.LoopbackURL(u) {
+		return fmt.Errorf("configure: url %q: a plain-http broker is only a local install's loopback listener "+
+			"(http://localhost:<port>): use the https rooms URL", cfg.URL)
+	}
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ProjectID == "" {
-		if u, err := url.Parse(cfg.URL); err != nil || u.Scheme != "https" || u.Host == "" {
-			return fmt.Errorf("configure: url %q is not an https URL: roomctl configure --url https://rooms.<your private domain>", cfg.URL)
-		}
 		hc := r.HC
 		if hc == nil {
 			hc = httpx.New(roomctlTimeout, nil)
@@ -266,6 +292,7 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 			return fmt.Errorf("configure: %w", err)
 		}
 		cfg.Issuer, cfg.ClientID, cfg.ProjectID = cmp.Or(cfg.Issuer, found.Issuer), cmp.Or(cfg.ClientID, found.ClientID), cmp.Or(cfg.ProjectID, found.ProjectID)
+		cfg.HumanMode = found.HumanMode
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("configure: %w", err)
@@ -285,7 +312,11 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	if hints == nil {
 		hints = os.Stderr
 	}
-	_, err := fmt.Fprintf(hints, "configured %s; next: roomctl login\n", cfg.URL)
+	next := "next: roomctl login"
+	if cfg.HumanMode == roomctl.HumanModeLocal {
+		next = "a local broker needs no login; next: roomctl rooms"
+	}
+	_, err = fmt.Fprintf(hints, "configured %s; %s\n", cfg.URL, next)
 	return err
 }
 

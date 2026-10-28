@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+---
+# Exactly the verbs the broker calls: the Room controller reads Rooms, updates their finalizer and
+# merge-patches their status; the human API creates (new room, fork); leader election takes a Lease and emits Events.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [agents.ogenki.io]
+    resources: [rooms]
+    verbs: [get, list, watch, create, update]
+  - apiGroups: [agents.ogenki.io]
+    resources: [rooms/status]
+    verbs: [patch]
+  - apiGroups: [agents.ogenki.io]
+    resources: [rooms/finalizers]
+    verbs: [update]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: room-broker}
+subjects:
+  - {kind: ServiceAccount, name: room-broker, namespace: {{ .Release.Namespace }}}
+---
+# AgentRuns: watched, deleted when their Room is, and merge-patched by the suspend trigger. NEVER
+# created: only the run requester creates runs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: room-broker
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ap.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [{{ .Values.runs.group }}]
+    resources: [agentruns]
+    verbs: [get, list, watch, delete, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: room-broker
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- include "ap.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: room-broker}
+subjects:
+  - {kind: ServiceAccount, name: room-broker, namespace: {{ .Release.Namespace }}}
+{{- if eq .Values.broker.runIssuer.mode "tokenreview" }}
+---
+# tokenreview mode asks the apiserver who a run token belongs to.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: room-broker-{{ .Release.Namespace }}-token-review
+  labels: {{- include "ap.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects:
+  - {kind: ServiceAccount, name: room-broker, namespace: {{ .Release.Namespace }}}
+{{- end }}

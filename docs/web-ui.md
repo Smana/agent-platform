@@ -57,7 +57,8 @@ drive, then opens it.
 
 A `Use roomctl from your terminal` fold under the list sets up [roomctl](roomctl.md) for this
 broker in numbered steps (install, point it at this broker, sign in), each command in its own
-block with a Copy button that copies it exactly as shown.
+block with a Copy button that copies it exactly as shown. On a local broker the steps configure
+by URL alone and end with `roomctl run` instead of a sign-in.
 
 <img alt="The Use roomctl from your terminal fold: three numbered steps, install, point it at this broker and sign in, each in a code block with a Copy button" src="assets/web-ui/cli-setup-light.png" width="800">
 
@@ -101,6 +102,8 @@ every chat line or tool call. A sealed room shows who closed it, has no waiting 
 and no actions, and hides the composer, the Run and Driver groups and the invite. Everything an
 agent wrote is shown as text; a URL becomes a link only when it is `https`. The page keeps the
 newest 5,000 events; older ones leave the page, never the log.
+
+A run without gVisor (`ALLOW_UNSANDBOXED=1`) puts a `Not sandboxed` banner above the page for as long as it is open.
 
 ## What each standing may do
 

@@ -1,0 +1,32 @@
+# Self-signed root → CA → Issuer `quickstart-ca`, the issuerRef in values-quickstart.yaml.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: quickstart-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: quickstart-ca
+spec:
+  isCA: true
+  commonName: agent-platform-quickstart-ca
+  secretName: quickstart-ca
+  duration: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: quickstart-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: quickstart-ca
+spec:
+  ca:
+    secretName: quickstart-ca

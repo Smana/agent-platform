@@ -6,3 +6,4 @@ web/.demo-site/
 _site/
 __pycache__/
 *.pyc
+.quickstart/

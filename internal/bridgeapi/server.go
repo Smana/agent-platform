@@ -133,6 +133,8 @@ type Server struct {
 	conns     registry
 	limitOnce sync.Once
 	limit     *limiter
+
+	reviewWarned sync.Map // cause → time.Time of its last Warn
 }
 
 // Routes is the :8443 handler.
@@ -258,11 +260,30 @@ func authWhy(err error) string {
 	return "invalid"
 }
 
+// warnEvery spaces the Warn for one unchanged cause: a bridge retries a 401 forever.
+const warnEvery = time.Minute
+
+// warnReview logs a TokenReview call that failed, with its cause (never the token), at Warn: it is
+// the broker's RBAC or the apiserver, not a bad credential. Once a minute per distinct cause.
+func (s *Server) warnReview(err error) {
+	cause := err.Error()
+	now := s.now()
+	if last, ok := s.reviewWarned.Load(cause); ok && now.Sub(last.(time.Time)) < warnEvery {
+		return
+	}
+	s.reviewWarned.Store(cause, now)
+	s.log().Warn("token review failed: check the broker's system:auth-delegator binding and the apiserver", "err", cause)
+}
+
 // bridgeAuth admits a run token for a run that is live and names a room (§1 Admission).
 func (s *Server) bridgeAuth(w http.ResponseWriter, r *http.Request) (authn.Principal, runwatch.Run, bool) {
 	p, err := s.Runs.Authenticate(r)
 	if err != nil || p.RunID == "" {
-		s.log().Debug("bridge credential refused", "path", r.URL.Path, "why", authWhy(err))
+		if errors.Is(err, authn.ErrReviewUnavailable) {
+			s.warnReview(err)
+		} else {
+			s.log().Debug("bridge credential refused", "path", r.URL.Path, "why", authWhy(err))
+		}
 		fail(w, http.StatusUnauthorized, wire.ReasonUnauthenticated)
 		return p, runwatch.Run{}, false
 	}

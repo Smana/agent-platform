@@ -591,7 +591,7 @@ func (v *viewer) snapshot(you wire.You, st store.RoomState) (*wire.Snapshot, err
 			Prompters: append([]string{}, a.Prompters...)})
 	}
 	for _, run := range v.s.Runs.InRoom(v.id) {
-		snap.Runs = append(snap.Runs, wire.RunView{ID: run.ID, Role: run.Role, Phase: run.Phase})
+		snap.Runs = append(snap.Runs, wire.RunView{ID: run.ID, Role: run.Role, Phase: run.Phase, Unsandboxed: run.Unsandboxed})
 	}
 	slices.SortFunc(snap.Runs, func(a, b wire.RunView) int { return strings.Compare(a.ID, b.ID) })
 	return snap, nil

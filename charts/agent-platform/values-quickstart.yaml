@@ -1,0 +1,16 @@
+# Laptop install: no IdP, no issuer reachable from the apiserver. Pair with a port-forward to :8080.
+broker:
+  human:
+    mode: local
+  # No room tools on a laptop: no :8090 listener, and no ROOMS_MCP_KEY to invent.
+  roomTools:
+    enabled: false
+  runIssuer:
+    mode: tokenreview
+  database:
+    brokerSecret: rooms-broker-dsn
+    ownerSecret: rooms-owner-dsn
+  tls:
+    issuerRef: {kind: Issuer, name: quickstart-ca}
+runController:
+  createRuntimeClass: true

@@ -33,6 +33,11 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   banner.className = "banner";
   banner.setAttribute("role", "status");
   banner.hidden = true;
+  // A run without gVisor (ALLOW_UNSANDBOXED=1): said above everything, for as long as the page is open.
+  const sandbox = document.createElement("div");
+  sandbox.className = "banner-unsandboxed";
+  sandbox.setAttribute("role", "alert");
+  sandbox.hidden = true;
   const needsPanel = document.createElement("section");
   const lead = document.createElement("section");
   lead.className = "summary";
@@ -85,7 +90,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   mountThemeButton(meta, theme);
   meta.append(status);
   footer.append(session, composerEl, meta);
-  app.replaceChildren(header, banner, needsPanel, lead, skeleton, main, forkPanel, footer);
+  app.replaceChildren(sandbox, header, banner, needsPanel, lead, skeleton, main, forkPanel, footer);
   const views = mountViews(main, (seq) => fork.open(seq), () => snap?.you.principal);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -110,6 +115,12 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   // page says it is checking the room rather than reconnecting.
   let absent = 0;
   let checking = false;
+  const showSandbox = () => {
+    const ids = state.unsandboxed();
+    sandbox.hidden = ids.length === 0;
+    sandbox.textContent = sandbox.hidden ? "" : `Not sandboxed: run ${ids.join(", ")} runs without gVisor (ALLOW_UNSANDBOXED=1). ` +
+      "Its code runs as a plain container that holds your model key and GitHub token.";
+  };
   const showBanner = () => {
     banner.hidden = connection === "live" && !checking;
     banner.textContent = banner.hidden ? "" : checking ? "Checking the room…" : connection.charAt(0).toUpperCase() + connection.slice(1);
@@ -205,6 +216,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
       showBanner();
       state.reset(s, throughSeq);
       needsPanelView.refresh();
+      showSandbox();
       refreshStrip();
       // One you for the page: the controls and the composer read it, and an invite that
       // changes the role updates it in place.
@@ -234,6 +246,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
       if (changesSummary(e)) scheduleSummary();
       state.apply(e);
       needsPanelView.refresh();
+      showSandbox();
       refreshStrip();
       controls?.refresh();
       composer?.refresh();
@@ -296,12 +309,14 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
       showStatus();
       showBanner();
       composer?.setLive(s === "live");
+      showSandbox();
       refreshStrip();
       pending.status(s);
     },
   }, o);
   const pending = new PendingActs(sayAct);
   const fork = mountFork(forkPanel, sender, state);
+  showSandbox();
   refreshStrip();
   loadSummary();
   conn.connect();

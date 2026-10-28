@@ -3,6 +3,7 @@
 package humanapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/roomctrl"
@@ -169,9 +171,12 @@ func (s *Server) writeSetup(w http.ResponseWriter, dashboards []Dashboard) {
 		ClientID  string `json:"clientID"`
 		ProjectID string `json:"projectID"`
 		Version   string `json:"version"`
+		// HumanMode says whether roomctl needs an IdP and a token. Additive: a broker without the
+		// field, and a roomctl that ignores it, read each other as before (OIDC).
+		HumanMode string `json:"humanMode"`
 		// Dashboards are the templates, absent when none is configured.
 		Dashboards []Dashboard `json:"dashboards,omitempty"`
-	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version, dashboards})
+	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version, cmp.Or(s.HumanMode, config.HumanModeOIDC), dashboards})
 }
 
 // roomRow is one row of GET /api/rooms.

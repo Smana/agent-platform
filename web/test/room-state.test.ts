@@ -261,4 +261,14 @@ describe("RoomState", () => {
     for (let i = 1; i <= maxRows; i++) s.apply(agentEv(maxRows + 1 + i, "tool_result", { callId: `c${i}`, status: "ok" }));
     expect(s.latest()).toMatchObject({ text: `t ${maxRows}`, status: "ok" }); // c0 went at the cap: it holds nothing
   });
+
+  it("knows the runs that are not sandboxed, from the state frame and the log", () => {
+    const s = new RoomState();
+    s.reset({ driver: "", driverEpoch: 0, runs: [{ id: "b2b3c4d5", role: "implementer", phase: "Running", unsandboxed: true },
+      { id: "c2b3c4d5", role: "tester", phase: "Running" }] }, 1);
+    expect(s.unsandboxed()).toEqual(["b2b3c4d5"]);
+    s.apply({ ...ev(2, "state_changed", { kind: "run_phase", phase: "Running", unsandboxed: true }), runId: "a2b3c4d5" });
+    s.apply({ ...ev(3, "state_changed", { kind: "run_phase", phase: "Running" }), runId: "d2b3c4d5" });
+    expect(s.unsandboxed()).toEqual(["a2b3c4d5", "b2b3c4d5"]);
+  });
 });

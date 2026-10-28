@@ -120,9 +120,12 @@ func TestModelFrom(t *testing.T) {
 	if err != nil || m.BaseURL != "https://api.anthropic.com/v1" || m.Host != "api.anthropic.com" || m.Port != 443 {
 		t.Fatalf("defaults: %+v %v", m, err)
 	}
-	m, err = ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://stub.e2e.svc:8080/v1")})
-	if err != nil || m.Host != "stub.e2e.svc" || m.Port != 8080 {
+	m, err = ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://stub.e2e.svc.cluster.local:8080/v1")})
+	if err != nil || m.Host != "stub.e2e.svc.cluster.local" || m.Port != 8080 {
 		t.Fatalf("explicit: %+v %v", m, err)
+	}
+	if _, err := ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://stub.e2e.svc:8080/v1")}); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("short .svc host cannot resolve under the DNS allowlist: want an error, got %v", err)
 	}
 	m, err = ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://stub.e2e.svc.cluster.local:8080")})
 	if err != nil || m.Host != "stub.e2e.svc.cluster.local" || m.Port != 8080 {

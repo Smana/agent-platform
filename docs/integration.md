@@ -111,9 +111,10 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | Key | Meaning |
 |---|---|
 | `publicURL` | `https://rooms.<private domain>`, used in links |
-| `runIssuers[]` | `{issuer, jwksURL, subPattern}`. The cluster's OIDC issuer today; its JWKS URI is per cloud (`<issuer>/keys` on EKS, `<issuer>/jwks` on GKE) |
-| `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens |
+| `runIssuers[]` | `{mode, issuer, jwksURL, subPattern}`. `mode` is `jwks` (default): the cluster's OIDC issuer, its JWKS URI per cloud (`<issuer>/keys` on EKS, `<issuer>/jwks` on GKE). `mode: tokenreview` asks the apiserver instead and takes no `issuer` or `jwksURL`: for a cluster whose issuer the broker cannot fetch (kind); the broker's ServiceAccount needs `system:auth-delegator` |
+| `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens. Optional: only the factory uses it, and without it the system routes answer `401` |
 | `systemPrincipals` | `{<sub>: <principal>}`, e.g. `system:serviceaccount:agent-system:agent-factory: system:factory` |
+| `human.mode` | `oidc` (default): the block below. `local`: one `human:local` user in the admin and member groups, `:8080` bound to loopback (reach it by port-forward), `publicURL` exactly `http://localhost:<port>` (or a loopback address); the broker answers that port under `localhost`, `127.0.0.1` and `[::1]` and refuses any other Host or Origin. It takes no issuer, files, `origin`, `groups` or `access`; the config is refused otherwise ([quickstart](quickstart.md)) |
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build; the group names are literals |
 | `human.access` | `{readerFile, ttl}`: room visibility follows GitHub ([room access](security.md#identities)). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms |
 | `human.mcp` | `{enabled}`: serve [`POST /mcp`](api.md#post-mcp), the MCP server `roomctl mcp` relays. Off by default. On, it needs `human.roomctlClientIDFile`, since `/mcp` takes roomctl's tokens only, or the broker refuses to start |
@@ -130,6 +131,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 |---|---|
 | `ROOMS_CONFIG` | Path of the config file |
 | `ROOMS_DATABASE_URL` | The `uri` of `xplane-rooms-cnpg-role-rooms-broker` (the retention job: `…-rooms-retention`) |
+| `ROOMS_MIGRATION_DATABASE_URL` | `migrate` only: the `uri` of `xplane-rooms-cnpg-role-rooms-owner`. The migrations run as that role and refuse any other, so the broker's own DSN never reaches them |
 | `POD_NAMESPACE` | Where Rooms and the leader lease live |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
 | `ROOMS_MCP_KEY` | The key the MCPRoute injects. Unset: `:8090` refuses every call |

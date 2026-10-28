@@ -280,7 +280,9 @@ func (r *Relay) forward(ctx context.Context, raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+tok)
+	if tok != "" { // a local broker takes no token
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	r.mu.Lock()

@@ -32,7 +32,15 @@ strings, the `wire.Reason*` constants: branch on them, not on the status text.
 | A run's bridge | `Authorization: Bearer <token>`: a projected ServiceAccount token, audience `room-broker`, 600 s, re-read from its file before every request | Signature against the JWKS of an issuer in `runIssuers`; audience; expiry; `sub` matches the issuer's `subPattern`, which yields the run id. Then the run must be live in the `AgentRun` watch (not terminal, not revoked) and have a `roomRef`. The room is the run's `roomRef`, never a request parameter |
 | A system caller | `Authorization: Bearer <token>`, audience `rooms-system` | Signature against `systemIssuer`; audience; expiry; `sub` must be a key of `systemPrincipals`, whose value becomes the principal, e.g. `system:factory` |
 
-No call reaches Kubernetes' TokenReview: validation is offline and issuer-agnostic. A run
+`systemIssuer` is optional: only the factory calls these routes, and a broker without one still
+builds a system authenticator that never authenticates, so the system routes answer `401` rather
+than disappearing. It takes `mode: jwks` (the default, verifying against `issuer` and `jwksURL`) or
+`mode: tokenreview`, which asks the apiserver and needs no reachable issuer. `systemPrincipals`
+requires it: without an issuer no system caller could ever be vouched for, and the config is
+refused ([integration](integration.md#the-brokers-configuration)).
+
+No call reaches Kubernetes' TokenReview unless an issuer says `mode: tokenreview`: every other token
+is validated offline and issuer-agnostically. A run
 that ends, is revoked or is deleted has its streams cut on the watch event.
 
 ### Endpoints
@@ -342,8 +350,8 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket |
 | `POST /mcp` | The [MCP server](#post-mcp) `roomctl mcp` relays, when `human.mcp.enabled`; else `404` |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member, on a `repository` they can read (room access). `400` for another data class, a missing or malformed repository, an unknown field or a principal the Room CRD would refuse, `404` for a repository the caller cannot read or the factory App cannot see (missing, or the App not installed), `409` when a Room of the generated id exists, `429` past the caller's action budget (10/s, burst 20, shared with acts), `500` when the Room is refused for any other reason, such as the broker lacking `create` on rooms (logged at WARN), `503` when the API server is unreachable, overloaded or times out, or `access_unverified` when the caller's access cannot be checked. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post |
-| `GET /.well-known/roomctl` | The same `{url, issuer, clientID, projectID, version}` with no sign-in, for `roomctl configure --url`; none of it is a secret. The proxy in front must let this path through unauthenticated |
-| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`, and the broker's version, whose roomctl release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID`. `dashboards?` (`[{label, url}]`): the room page's link templates from [`human.dashboards`](integration.md#the-brokers-configuration), unfilled; the page fills `{room}`, `{run}` and `{task}` per room. Absent when none is configured. They are not secrets, so any member gets them; `/.well-known/roomctl` leaves them out, since `roomctl configure` has no use for them |
+| `GET /.well-known/roomctl` | The same `{url, issuer, clientID, projectID, version, humanMode}` with no sign-in, for `roomctl configure --url`; none of it is a secret. `humanMode` is `oidc` or `local` (`local`: no IdP, no token, and the `roomctl` values are empty). The proxy in front must let this path through unauthenticated |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version, humanMode}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`, and the broker's version, whose roomctl release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID`. `dashboards?` (`[{label, url}]`): the room page's link templates from [`human.dashboards`](integration.md#the-brokers-configuration), unfilled; the page fills `{room}`, `{run}` and `{task}` per room. Absent when none is configured. They are not secrets, so any member gets them; `/.well-known/roomctl` leaves them out, since `roomctl configure` has no use for them |
 
 ### `GET /api/rooms/{id}/summary`
 
@@ -407,7 +415,7 @@ One JSON object per text frame.
 | client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
 | client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` |
 | client → broker | `ping` | Every 30 s |
-| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it). `approvals` is the pending approvals, `[{approvalId, runId, callId, class, action, expiresAt, seq}]`, read like `queue`: a card per approval, however far behind the tail its request is |
+| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `runs` is `[{id, role, phase, unsandboxed}]`; `unsandboxed` is true for a run whose pod has no RuntimeClass. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it). `approvals` is the pending approvals, `[{approvalId, runId, callId, class, action, expiresAt, seq}]`, read like `queue`: a card per approval, however far behind the tail its request is |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
@@ -791,8 +799,14 @@ A key line prefixed with `whsec_` is the secret the Standard Webhooks libraries 
 ## `:8090` — room tools
 
 An MCP server on `POST /mcp`, reached only through an `agent-router` `MCPRoute`, which authenticates
-the run first and injects a generated key in `X-Room-Mcp-Key` (`ROOMS_MCP_KEY`). The
-broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against each
+the run first and injects a generated key in `X-Room-Mcp-Key` (`ROOMS_MCP_KEY`).
+
+The listener is the config's top-level `roomTools` block, apart from `human.mcp`: absent, or with no
+`enabled`, it is on, as every deployed broker runs it; an explicit `roomTools.enabled: false` binds
+no `:8090` at all and starts no server, so `ROOMS_MCP_KEY` is not even read. On, `ROOMS_MCP_KEY`
+alone decides whether a call is accepted, and without it every call is refused (`401`).
+
+The broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against each
 run issuer's `subPattern` in turn, and reads the run's room and role from its `AgentRun`, never from a
 header or an argument. It exposes `initialize`, `ping`, `tools/list` and `tools/call` only: no
 `resources` or `prompts`, which the gateway would not authorize by role. It answers `POST` only and

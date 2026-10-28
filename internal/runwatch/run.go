@@ -51,6 +51,11 @@ type Run struct {
 	ResumedAt                       time.Time
 	// ResourceVersion is the claim's, so a write decided on this read fails if the claim moved.
 	ResourceVersion string
+	// Unsandboxed is the run controller's Unsandboxed condition: its pod has no RuntimeClass
+	// (3a R5). The controller writes it with the phase, so the Running step carries it; were
+	// runwatch to see Running first, the idempotent step would omit it and only the state
+	// frame would say so.
+	Unsandboxed bool
 	// Model is spec.model, the C5 logical model the run was given: the claim's, never the
 	// sandbox's, so the room and rooms_run_info may name it. Empty when unset or outside
 	// envelope.ValidModel.
@@ -101,10 +106,22 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	r.OperatingMode, r.RemainingSeconds = ann[OperatingModeAnnotation], ann[RemainingSecondsAnnotation]
 	r.ResumedAt, _ = time.Parse(time.RFC3339, ann[ResumedAtAnnotation])
 	r.ResourceVersion = u.GetResourceVersion()
+	r.Unsandboxed = conditionTrue(u, "Unsandboxed")
 	if m := str("spec", "model"); envelope.ValidModel(m) {
 		r.Model = m
 	}
 	return r, true
+}
+
+// conditionTrue reports whether the claim's status carries condition typ with status True.
+func conditionTrue(u *unstructured.Unstructured, typ string) bool {
+	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+	for _, c := range conds {
+		if m, ok := c.(map[string]any); ok && m["type"] == typ {
+			return m["status"] == "True"
+		}
+	}
+	return false
 }
 
 // readyTransition is the Ready condition's lastTransitionTime: a stand-in for a

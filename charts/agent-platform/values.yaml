@@ -1,0 +1,99 @@
+# The ONE source of the run kind: the broker's `runs:` and its run-issuer subPattern both render
+# from here, so they cannot disagree.
+runs:
+  group: agents.ogenki.io
+  namespace: agents
+  namePrefix: run-
+# Create the runs.namespace object. The default-deny CiliumNetworkPolicy is rendered either way:
+# turn this off when the namespace exists already (Helm cannot adopt an unowned one).
+createRunsNamespace: true
+
+# Where the kube-apiserver listens AFTER Cilium's service translation: 443 on EKS/GKE, 6443 on
+# kind and kubeadm. Every CiliumNetworkPolicy that reaches the apiserver renders these.
+apiServerPorts: [443, 6443]
+
+broker:
+  image:
+    repository: ghcr.io/smana/room-broker
+    # Required: "<version>@sha256:<digest>". Never a bare tag (see e2e.unpinnedImages).
+    tag: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  # Humans. mode oidc: the block below is rendered verbatim into the broker config.
+  # mode local: one loopback user behind a port-forward, no IdP; the broker takes no other key.
+  human:
+    mode: oidc
+    # issuer, jwksURL, clientIDFile, projectIDFile, origin, groups, access ... (internal/config)
+  # The agents' room tools listener, :8090 (internal/config's roomTools, I8). On by default, as every
+  # existing deployment runs it; ROOMS_MCP_KEY alone decides whether calls are accepted, so bring it
+  # through extraEnv. Off, the broker binds no :8090 at all.
+  roomTools:
+    enabled: true
+  # Who may call :8443 as a run. mode jwks verifies against issuer/jwksURL; tokenreview asks the
+  # apiserver (a cluster whose issuer is unreachable, e.g. kind) and binds system:auth-delegator.
+  runIssuer:
+    mode: jwks
+    issuer: ""
+    jwksURL: ""
+  # Optional: the factory's system-API tokens. Empty = no systemIssuer in the config.
+  systemIssuer: {}
+  systemPrincipals: {}
+  factoryURL: ""
+  # oidc mode: the https URL humans reach the broker at. local mode: http://localhost:<the port you
+  # forward>, default http://localhost:8080; the broker answers that port only.
+  publicURL: ""
+  database:
+    # Secret with key `uri`: the broker's DSN (rooms_broker). Empty omits ROOMS_DATABASE_URL:
+    # then supply it through extraEnv.
+    brokerSecret: ""
+    # Secret with key `uri`: the migrate DSN (rooms_owner). Empty = no migrate init container.
+    ownerSecret: ""
+    # Pod label that selects the PostgreSQL pods in the release namespace (CNPG's by default).
+    podLabel: cnpg.io/cluster
+  tls:
+    # The Secret mounted at /etc/room-broker/tls (tls.crt, tls.key). A Certificate is rendered
+    # for it only when issuerRef.name is set; otherwise bring the Secret yourself.
+    secretName: room-broker-tls
+    issuerRef: {kind: ClusterIssuer, name: ""}
+  # Escape hatches for oidc mode's files, ROOMS_MCP_KEY and the IdP's network flows.
+  # Secrets only through valueFrom.secretKeyRef, never a plaintext value.
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  networkPolicy:
+    extraIngress: []
+    extraEgress: []
+
+# The cluster's DNS domain: the run bridge must reach the broker by its fully qualified name.
+clusterDomain: cluster.local
+
+runController:
+  enabled: true
+  image:
+    repository: ghcr.io/smana/run-controller
+    tag: ""
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+  # The run pod's two images, same "<version>@sha256:<digest>" rule as the broker's.
+  images:
+    harness: {repository: ghcr.io/smana/agent-harness, tag: ""}
+    bridge: {repository: ghcr.io/smana/room-bridge, tag: ""}
+  # Secrets in runs.namespace the controller reads: model (api_key, model, base_url) and git.
+  modelSecret: agent-model
+  gitSecret: agent-git
+  # Empty + allowUnsandboxed=false: the controller refuses every run. createRuntimeClass renders
+  # the RuntimeClass of that name for the handler. Off by default: it is cluster-scoped, so opt in only
+  # where no such RuntimeClass exists.
+  runtimeClassName: gvisor
+  runtimeHandler: runsc
+  createRuntimeClass: false # a cluster-scoped name: opt in where no such RuntimeClass exists (the quickstart does)
+  allowUnsandboxed: false
+  # Replaces the built-in profiles (github, pypi, npm, golang, crates) when set.
+  egressProfiles: {}
+
+# CI only: images `kind load`ed have no registry digest. Accepts a bare tag and never pulls.
+e2e:
+  unpinnedImages: false
