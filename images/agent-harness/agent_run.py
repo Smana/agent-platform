@@ -795,6 +795,50 @@ def contract_env(decl, prefetched=None) -> dict:
     return env
 
 
+CONTRACT_SUBJECT = "test: the test contract"
+PROVISIONAL = "test: the test contract (unchecked)"
+
+
+def _one_line(v: str) -> str:
+    return " ".join(str(v).split())
+
+
+def squash(base: str, message: str) -> str | None:
+    """HEAD's tree as one commit on base (F1-R4), or None when the model committed nothing since it."""
+    if not base or _git_out("rev-list", "--count", "%s..HEAD" % base) in ("", "0"):
+        return None
+    return _git_out("commit-tree", "HEAD^{tree}", "-p", base, "-m", message) or None
+
+
+def sign(env: dict, base: str, res: dict) -> str:
+    """The contract commit: the same tree and parent, the fixed subject and the trailers (R12)."""
+    trailers = [("Agent-Run", env["RUN_ID"]), ("Agent-Task", env.get("TASK_ID", "")), ("Agent-Contract", env["RUN_ID"])]
+    trailers += [("Agent-Contract-File", f) for f in res["files"]]
+    trailers += [("Agent-Contract-Id", i) for i in res["ids"]]
+    body = "\n".join("%s: %s" % (k, _one_line(v)) for k, v in trailers if _one_line(v))
+    return _git_out("commit-tree", "HEAD^{tree}", "-p", base, "-m", CONTRACT_SUBJECT, "-m", body)
+
+
+def push_contract(env: dict, sha: str) -> str | None:
+    """Pushes sha to the run's branch at the fetch URL, never forced (F1-R5); the refusal, or None."""
+    url = _git_out("remote", "get-url", "origin")
+    ac = checks_module()
+    p = subprocess.run(["git", "-C", REPO_DIR, *ac.guards(REPO_DIR), "push", "-q", url, "%s:refs/heads/%s" % (sha, env["BRANCH"])],
+                       capture_output=True, text=True, errors="replace", timeout=120)
+    return None if p.returncode == 0 else redact(p.stderr.strip())[:200] or "the push was refused"
+
+
+def red_check(env: dict, base: str, tc_env: dict) -> tuple[int, dict]:
+    tc = contract_module()
+    sha = squash(base, PROVISIONAL)
+    if sha is None:
+        return tc.NOT_OK, {"result": "not_testable", "why": "no commit since the base", "files": []}
+    try:
+        return tc.red(REPO_DIR, sha, tc_env, lambda m: print("agent-run contract: " + m, file=sys.stderr, flush=True), base=base)
+    except tc.Undeclared:
+        return tc.UNDECLARED, {"result": "contract_not_red", "why": "the repository declares no tests", "files": []}
+
+
 def _load(path: str) -> dict | None:
     try:
         with open(path) as f:

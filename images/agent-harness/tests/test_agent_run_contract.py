@@ -131,3 +131,80 @@ class ToolchainTest(Origin, unittest.TestCase):
         git(self.repo, "update-ref", "refs/remotes/origin/HEAD", other)
         self.assertEqual(start, self.base)
         self.assertEqual(agent_run.start_base(), other, "a later read would move: the harness reads once")
+
+
+def say(m):
+    pass
+
+
+class RedCheckTest(Origin, unittest.TestCase):
+    RED = {"t/test-name.sh": 'out="$(bash bin/greet ada)"; [ "$out" = "hello ada" ]\n'}
+
+    def check(self):
+        return agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+
+    def origin_log(self, fmt, ref="agent/x"):
+        return git(self.origin, "log", "-1", "--format=" + fmt, ref)
+
+    def test_a_red_suite_is_signed_and_pushed(self):
+        self.commit(self.RED)
+        code, res = self.check()
+        self.assertEqual((code, res["result"]), (tc.OK, "contract_ready"))
+        self.assertIsNone(agent_run.push_contract(self.env, agent_run.sign(self.env, self.base, res)))
+        self.assertEqual(self.origin_log("%(trailers:key=Agent-Contract,valueonly)"), "run-t")
+        self.assertEqual(self.origin_log("%(trailers:key=Agent-Contract-Id,valueonly)"), "t/test-name.sh")
+        self.assertEqual(self.origin_log("%(trailers:key=Agent-Run,valueonly)"), "run-t")
+        self.assertEqual(self.origin_log("%(trailers:key=Agent-Task,valueonly)"), "task-1")
+        self.assertEqual(self.origin_log("%s"), agent_run.CONTRACT_SUBJECT)
+        self.assertEqual(git(self.origin, "rev-list", "--count", "main..agent/x"), "1")
+        self.assertEqual(self.origin_log("%P"), self.base)
+
+    def test_two_commits_are_squashed_onto_the_base(self):
+        self.commit(self.RED, "one")
+        self.commit({"t/test-other.sh": "exit 1\n"}, "two")
+        code, res = self.check()
+        self.assertEqual(res["result"], "contract_ready")
+        self.assertIsNone(agent_run.push_contract(self.env, agent_run.sign(self.env, self.base, res)))
+        self.assertEqual(git(self.origin, "rev-list", "--count", "main..agent/x"), "1")
+        files = self.origin_log("%(trailers:key=Agent-Contract-File,valueonly)").split("\n")
+        self.assertEqual(sorted(f for f in files if f), ["t/test-name.sh", "t/test-other.sh"])
+
+    def test_nothing_committed_is_not_testable(self):
+        self.assertIsNone(agent_run.squash(self.base, agent_run.PROVISIONAL))
+        code, res = self.check()
+        self.assertEqual(res["result"], "not_testable")
+        self.assertNotEqual(git(self.origin, "branch", "--list", "agent/x"), "agent/x")
+
+    def test_a_file_outside_the_test_paths_is_outside(self):
+        self.commit({**self.RED, "bin/greet": "#!/usr/bin/env bash\necho changed\n"})
+        code, res = self.check()
+        self.assertEqual((code, res["result"]), (tc.OUTSIDE, "contract_outside_tests"))
+        self.assertEqual(git(self.origin, "branch", "--list", "agent/x"), "")
+
+    def test_a_passing_suite_is_not_red(self):
+        self.commit({"t/test-vacuous.sh": "exit 0\n"})
+        code, res = self.check()
+        self.assertEqual(res["result"], "contract_not_red")
+        self.assertIn("t/test-vacuous.sh", res["why"])
+
+    def test_a_refused_push_is_reported_not_raised(self):
+        self.commit(self.RED)
+        _, res = self.check()
+        sha = agent_run.sign(self.env, self.base, res)
+        refs = os.path.join(self.origin, "refs")
+        subprocess.run(["chmod", "-R", "a-w", refs], check=True)
+        self.addCleanup(subprocess.run, ["chmod", "-R", "u+w", refs])
+        if os.access(refs, os.W_OK):
+            self.skipTest("running as a user the permissions do not bind")
+        why = agent_run.push_contract(self.env, sha)
+        self.assertIsInstance(why, str)
+        self.assertTrue(why)
+
+    def test_trailer_values_carry_no_newline(self):
+        self.commit(self.RED)
+        res = {"files": ["t/test-name.sh"], "ids": ["t/a\nb: x", "t/c"]}
+        sha = agent_run.sign(self.env, self.base, res)
+        msg = git(self.repo, "show", "-s", "--format=%B", sha)
+        parsed = subprocess.run(["git", "interpret-trailers", "--parse"], input=msg, capture_output=True, text=True).stdout.splitlines()
+        ids = [t.split(": ", 1)[1] for t in parsed if t.startswith("Agent-Contract-Id")]
+        self.assertEqual(ids, ["t/a b: x", "t/c"])
