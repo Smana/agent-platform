@@ -93,7 +93,7 @@ A factory brief folded under `Show more`, with the `Dashboards` chip at the end 
 
 On a phone the strip stays compact above the conversation:
 
-<img alt="The same room on a phone, light theme" src="assets/web-ui/room-phone-light.png" width="260"> <img alt="The same room on a phone, dark theme" src="assets/web-ui/room-phone-dark.png" width="260">
+<img alt="The same room on a phone: the status line first, the title and the waiting lines clamped to two lines" src="assets/web-ui/room-phone-light.png" width="300">
 
 Destructive acts ask first: **interrupt**, **take**, **steer now** and **close room** turn into
 `confirm: …` beside a cancel, and go back after 10 s, on cancel, or when the control is hidden.
