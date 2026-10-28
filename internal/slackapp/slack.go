@@ -54,6 +54,11 @@ type Slack interface {
 	Thread(ctx context.Context, channel, threadTS string) ([]Message, error)
 	Post(ctx context.Context, channel, threadTS, text string, meta *Metadata) (ts string, err error)
 	Message(ctx context.Context, channel, ts string) (Message, error)
+	// PostEphemeral is a message only user sees, in channel (and threadTS, when set).
+	PostEphemeral(ctx context.Context, channel, user, threadTS, text string) error
+	// UserName is the user's handle and display name, for the link page only; "" when Slack does
+	// not say.
+	UserName(ctx context.Context, user string) (handle, display string, err error)
 }
 
 // SlackClient is Slack's Web API over httpx. Token is read at use, so a rotated Secret applies.
@@ -70,6 +75,13 @@ type slackAnswer struct {
 	ResponseMetadata struct {
 		NextCursor string `json:"next_cursor"`
 	} `json:"response_metadata"`
+	User *struct {
+		Name    string `json:"name"`
+		Profile struct {
+			DisplayName string `json:"display_name"`
+			RealName    string `json:"real_name"`
+		} `json:"profile"`
+	} `json:"user"`
 	Messages []struct {
 		TS       string `json:"ts"`
 		ThreadTS string `json:"thread_ts"`
@@ -105,6 +117,45 @@ func (c *SlackClient) Post(ctx context.Context, channel, threadTS, text string, 
 		return "", err
 	}
 	return a.TS, nil
+}
+
+// PostEphemeral is chat.postEphemeral (chat:write): text that only user sees, never stored in the
+// channel's history.
+func (c *SlackClient) PostEphemeral(ctx context.Context, channel, user, threadTS, text string) error {
+	body := map[string]any{"channel": channel, "user": user, "text": text, "unfurl_links": false, "unfurl_media": false}
+	if threadTS != "" {
+		body["thread_ts"] = threadTS
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("chat.postEphemeral"), bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	_, err = c.do(req)
+	return err
+}
+
+// UserName is users.info (users:read): the handle, unique in the workspace, and the profile's
+// display name, else its real name (both set by the user). Without the scope Slack answers
+// missing_scope, an error the caller shrugs off.
+func (c *SlackClient) UserName(ctx context.Context, user string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("users.info")+"?"+url.Values{"user": {user}}.Encode(), nil)
+	if err != nil {
+		return "", "", err
+	}
+	a, err := c.do(req)
+	if err != nil || a.User == nil {
+		return "", "", err
+	}
+	display := strings.TrimSpace(a.User.Profile.DisplayName)
+	if display == "" {
+		display = strings.TrimSpace(a.User.Profile.RealName)
+	}
+	return strings.TrimSpace(a.User.Name), display, nil
 }
 
 // Message is conversations.replies for one ts (M9): the draft is a thread reply, which

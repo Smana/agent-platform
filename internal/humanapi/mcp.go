@@ -146,6 +146,9 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 			out = append(out, all[i])
 		}
 	}
+	if s.mintsLinks(p) {
+		out = append(out, s.slackLinkTools()...)
+	}
 	return out
 }
 

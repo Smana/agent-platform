@@ -32,7 +32,7 @@ func TestReactionFlow(t *testing.T) {
 	}
 	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
 	rig.react("C03", draft.ts, "U09XYZ", "white_check_mark")
-	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "not_linked") {
+	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "is not linked to a GitHub account here; mention me with `link`") {
 		t.Fatal("an unlinked user's ✅ filed, or its refusal went unsaid")
 	}
 	if refused := rig.broker.refusedCalls(); len(refused) != 1 || refused[0].OnBehalfOf != "slack:T01ABC/U09XYZ" {
@@ -194,11 +194,38 @@ type post struct {
 }
 
 type fakeSlack struct {
-	mu        sync.Mutex
-	posts     []post
-	msgs      map[string]Message
-	failPosts int // the next n Posts fail
-	threadErr error
+	mu         sync.Mutex
+	posts      []post
+	ephemerals []ephemeral
+	msgs       map[string]Message
+	failPosts  int // the next n Posts fail
+	threadErr  error
+	msgErr     error
+	names      map[string][2]string // user -> handle, display name
+}
+
+type ephemeral struct{ channel, user, thread, text string }
+
+func (f *fakeSlack) PostEphemeral(_ context.Context, channel, user, threadTS, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ephemerals = append(f.ephemerals, ephemeral{channel, user, threadTS, text})
+	return nil
+}
+
+func (f *fakeSlack) UserName(_ context.Context, user string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n, ok := f.names[user]; ok {
+		return n[0], n[1], nil
+	}
+	return "", "", errors.New("missing_scope")
+}
+
+func (f *fakeSlack) whispers() []ephemeral {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ephemeral(nil), f.ephemerals...)
 }
 
 func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta *Metadata) (string, error) {
@@ -217,6 +244,9 @@ func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta
 func (f *fakeSlack) Message(_ context.Context, _, ts string) (Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.msgErr != nil {
+		return Message{}, f.msgErr
+	}
 	m, ok := f.msgs[ts]
 	if !ok {
 		return Message{}, errors.New("message_not_found")
@@ -251,6 +281,33 @@ type stubBroker struct {
 	keys     map[string]bool
 	draftErr error
 	room     string // run_create's room, "aaaaaaaa" when empty
+	sponsor  string // run_create's sponsor
+	runErr   error  // run_create's error, before deny
+	linkErr  error
+	links    []string // team/user/name of each slack_link_code
+	unlinked map[string]bool
+}
+
+func (b *stubBroker) SlackLinkCode(_ context.Context, team, user, handle, name string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.links = append(b.links, team+"/"+user+"/"+handle+"/"+name)
+	if b.linkErr != nil {
+		return "", b.linkErr
+	}
+	return "https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz", nil
+}
+
+func (b *stubBroker) SlackUnlink(_ context.Context, team, user string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.linkErr != nil {
+		return false, b.linkErr
+	}
+	key := team + "/" + user
+	was := b.unlinked[key]
+	b.unlinked[key] = false
+	return was, nil
 }
 
 func (b *stubBroker) refuse(onBehalfOf, text string) {
@@ -273,6 +330,9 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, c)
+	if b.runErr != nil {
+		return RunResult{}, b.runErr
+	}
 	if text, ok := b.deny[c.OnBehalfOf]; ok {
 		b.refused = append(b.refused, c)
 		return RunResult{}, Refused(text)
@@ -284,7 +344,7 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	if room == "" {
 		room = "aaaaaaaa"
 	}
-	return RunResult{Room: room, Issue: 42, Duplicate: dup}, nil
+	return RunResult{Room: room, Issue: 42, Duplicate: dup, Sponsor: b.sponsor}, nil
 }
 
 func (b *stubBroker) newIssues() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.keys) }
@@ -376,7 +436,7 @@ func newAppRig(t *testing.T, ch Channel) *appRig {
 	t.Helper()
 	r := &appRig{t: t, now: time.Unix(1_790_000_000, 0), key: []byte("0123456789abcdef0123456789abcdef"),
 		slack:   &fakeSlack{msgs: map[string]Message{"1729.0001": {TS: "1729.0001", User: "U02DEF", Text: "a human"}}},
-		broker:  &stubBroker{deny: map[string]string{}, keys: map[string]bool{}},
+		broker:  &stubBroker{deny: map[string]string{}, keys: map[string]bool{}, unlinked: map[string]bool{}},
 		threads: &fakeThreads{m: map[string]Thread{}}, metrics: &fakeMetrics{n: map[string]int{}}}
 	r.app = &App{Slack: r.slack, Broker: r.broker, Threads: r.threads,
 		Verifier:    Verifier{Secret: func() string { return rigSecret }, Now: func() time.Time { return r.now }},

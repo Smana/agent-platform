@@ -557,7 +557,9 @@ the factory adds when it creates its task's room, with no GitHub check.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `run_create` | `repo`, `text`, `dataClass` (`public`), `max_cost` (USD, above 0), all required; `title?` (files the issue, with the `issue_draft` rules), `on_behalf_of?` (`slack:<team>/<user>`), `ref?`, `idempotency_key?` (at most 128 characters; default a hash of the arguments, so a retried call makes one task) | `{task, room, issue, duplicate, url}`: the factory's answer and the room's page |
+| `run_create` | `repo`, `text`, `dataClass` (`public`), `max_cost` (USD, above 0), all required; `title?` (files the issue, with the `issue_draft` rules), `on_behalf_of?` (`slack:<team>/<user>`), `ref?`, `idempotency_key?` (at most 128 characters; default a hash of the arguments, so a retried call makes one task) | `{task, room, issue, duplicate, url, sponsor?}`: the factory's answer, the room's page, and the GitHub login that sponsors a new task |
+| `slack_link_code` | `team`, `user` (Slack ids), `handle?`, `name?` (display only). Listed only to `human.slackLink.principal`; `team` must be `human.slackLink.teamID` (`wrong_team`) | `{url, expiresAt}`: `<publicURL>/link/slack?code=<code>`, single use, 10 minutes; it replaces the user's earlier code. `too_many_codes` past 1000 waiting ([Slack self-serve link](slack.md#self-serve-link)) |
+| `slack_unlink` | `team`, `user`. Listed only to `human.slackLink.principal` | `{unlinked}`: whether the Slack user had a self-serve link |
 
 Unknown fields are refused: class, tier, template, auto-merge and egress are never the caller's.
 The text passes the broker's redactor, then [`POST /v1/tasks`](#post-v1tasks) with the caller's
@@ -598,10 +600,11 @@ limits: [sponsored principals](factory.md#sponsored-principals).
 | Auth | `Authorization: Bearer`: a token from `api.humanIssuer` whose client is a sponsored principal's `clientIDFile` and whose audience holds `api.projectIDFile` |
 | `Idempotency-Key` | Required, at most 255 bytes. The Task's name derives from `api:<name>:<key>`: a replay answers `200 {duplicate: true}` and creates nothing, two requests under one key make one task. A name another request owns is `409 idempotency_conflict` |
 | Body | `repository`, `text` (at most 16 KiB), `dataClass` (`public`), `maxCostUSD` (at least 0.01), all required; `title?` (files the issue; `<area>: <what is wrong>` and the three template sections), `onBehalfOf?`, `ref?` (at most 256 characters, a git ref: letters, digits, `.`, `_`, `/`, `-`, no leading `-`, no `..`, no whitespace; the same pattern as `run_create`'s, since it is written into the agent's brief). At most 64 KiB; unknown fields refused |
-| `201` | `{task, room, issue?}`: the room is named as the task |
+| `201` | `{task, room, issue?, sponsor}`: the room is named as the task; `sponsor` is the GitHub login it is charged to |
 | `200` | `{task, room, issue, duplicate: true}` |
 | `400` | `bad_json`, `idempotency_key_required`, `bad_data_class`, `bad_ref`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class`, `invalid_draft`, `bad_text` |
 | `401`, `403` | `unauthenticated`; `not_permitted`, `sponsored_only`, `repository_not_allowed`, `not_linked`, `not_a_maintainer` |
+| `503` (link) | `link_unverified`: a [self-serve link](factory.md#sponsored-principals) the broker or ZITADEL could not answer for; retry |
 | `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
 | `503` | `kill_switch`, `meter_unpriced`, `tasks_unavailable`, `ledger_unavailable`, `intake_failed` |
 

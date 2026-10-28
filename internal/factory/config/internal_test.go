@@ -45,6 +45,7 @@ func TestInternalPrincipalConfig(t *testing.T) {
 		"confidence above 1":   {"minConfidence: 0.75", "minConfidence: 1.5", "minConfidence must be in (0, 1]"},
 		"no daily tasks":       {"dailyTasks: 5", "dailyTasks: 0", "dailyTasks must be 1 or more"},
 		"an onBehalfOf":        {"verification: true\n", "verification: true\n      onBehalfOf: {slack: {\"T01ABC/U02DEF\": smana}}\n", "onBehalfOf is not allowed"},
+		"self-serve links":     {"verification: true\n", "verification: true\n      onBehalfOf: {slackLinks: true}\n", "onBehalfOf is not allowed"},
 		"a reserved name":      {"name: runlore", "name: factory", `"factory" is reserved`},
 		"a ceiling over a day": {"maxCostUSD: 2", "maxCostUSD: 11", "maxCostUSD must be above 0 and at most dailyUSD"},
 	} {

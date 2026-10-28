@@ -83,7 +83,7 @@ func humanPhases() []string { return []string{v1alpha1.PhaseAwaitingHuman, v1alp
 func apiOutcomes() []string {
 	return []string{"admitted", "kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
 		"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
-		"max_cost_over_class", "not_linked", "not_a_maintainer", "invalid_draft", "bad_text", "tasks_unavailable",
+		"max_cost_over_class", "not_linked", "link_unverified", "not_a_maintainer", "invalid_draft", "bad_text", "tasks_unavailable",
 		"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "duplicate", "idempotency_conflict"}
 }
 

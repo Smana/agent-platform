@@ -195,3 +195,37 @@ func TestTokenFetchUsesHTTPClientFromContext(t *testing.T) {
 		t.Fatalf("%q %v %d", tok, err, hits.Load())
 	}
 }
+
+// slack_link_code's answer reaches the user only as the link page with one code; slack_unlink says
+// whether a link went; a broker without the tools is ErrUnknownTool.
+func TestBrokerSlackLink(t *testing.T) {
+	f := newFakeBroker(t, "tok", `{"structuredContent":{"url":"https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz","expiresAt":"x"}}`)
+	b := Broker{URL: f.srv.URL, Tokens: staticTokens("tok"), HC: f.srv.Client()}
+	u, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "dana.h", "dana")
+	if err != nil || u != "https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz" {
+		t.Fatalf("%q %v", u, err)
+	}
+	if c := f.calls[0]; c.Params.Name != "slack_link_code" || c.Params.Arguments["team"] != "T01ABC" || c.Params.Arguments["user"] != "U02DEF" ||
+		c.Params.Arguments["handle"] != "dana.h" || c.Params.Arguments["name"] != "dana" {
+		t.Fatalf("%+v", c)
+	}
+	for _, bad := range []string{"https://evil.example/phish?code=abcdefghijklmnopqrstuvwxyz", "https://rooms.example/link/slack?code=x",
+		"https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz&next=evil", "javascript:alert(1)"} {
+		f.result = `{"structuredContent":{"url":` + jsonString(bad) + `}}`
+		if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "", ""); err == nil {
+			t.Errorf("%s: passed on", bad)
+		}
+	}
+	f.result = `{"structuredContent":{"unlinked":true}}`
+	if gone, err := b.SlackUnlink(context.Background(), "T01ABC", "U02DEF"); err != nil || !gone {
+		t.Fatalf("%v %v", gone, err)
+	}
+	off := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool: slack_link_code"}}`)
+	}))
+	t.Cleanup(off.Close)
+	b.URL, b.HC = off.URL, off.Client()
+	if _, err := b.SlackLinkCode(context.Background(), "T01ABC", "U02DEF", "", ""); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("off: %v", err)
+	}
+}
