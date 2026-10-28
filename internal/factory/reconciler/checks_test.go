@@ -13,7 +13,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
-// v3 feature 3 (RC8, offline proof 7): a switched-on class's public implementer and reviewer claims
+// v3 feature 3 (RC8, offline proof 7): a switched-on class's public implementer, tester and reviewer claims
 // carry spec.loop.checks and the repository's egress; every other claim is today's.
 func TestASwitchedOnClassChecksItsPublicImplementerAndReviewer(t *testing.T) {
 	g := newRig(t)
@@ -27,13 +27,14 @@ func TestASwitchedOnClassChecksItsPublicImplementerAndReviewer(t *testing.T) {
 		tk.Status.PullRequest = &v1alpha1.PullRequestRef{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12"}
 		return tk
 	}
-	on := []runs.Spec{g.r.implementerSpec(task("docs", "public"), "brief"), g.r.verifierSpec(task("docs", "public"), "reviewer")}
+	on := []runs.Spec{g.r.implementerSpec(task("docs", "public"), "brief"), g.r.verifierSpec(task("docs", "public"), "reviewer"),
+		g.r.testerSpec(task("docs", "public"), "brief")}
 	for _, s := range on {
 		if !s.Checks || !reflect.DeepEqual(s.EgressProfiles, []string{"golang", "pypi"}) {
 			t.Fatalf("%s: checks %v egress %v, want on with [golang pypi]", s.Role, s.Checks, s.EgressProfiles)
 		}
 	}
-	off := []runs.Spec{g.r.verifierSpec(task("docs", "public"), "tester"), g.r.implementerSpec(task("docs", "internal"), "brief"),
+	off := []runs.Spec{g.r.testerSpec(task("docs", "internal"), "brief"), g.r.implementerSpec(task("docs", "internal"), "brief"),
 		g.r.implementerSpec(task("tests", "public"), "brief"), g.r.implementerSpec(task("review", "public"), "brief")}
 	for _, s := range off {
 		u := runs.Build(s)

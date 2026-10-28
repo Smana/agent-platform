@@ -995,6 +995,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	if scoperDue(t) {
 		return r.startScoper(ctx, t)
 	}
+	if r.testerDue(t) { // after the scoper: its scope belongs in the tester's brief (F3-R1)
+		return r.startTester(ctx, t)
+	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)
 	if err != nil {
 		return err

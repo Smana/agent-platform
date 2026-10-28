@@ -230,6 +230,17 @@ func splitHow(n int32) string {
 		"you ask a question about is never split. A maintainer approves a split before any part starts.\n", n)
 }
 
+// TesterBrief is the tester's task (TF1, TF3): the issue and its scope, and the one job, failing tests.
+func TesterBrief(t *v1alpha1.Task, nonce string, sc *Scoped) string {
+	head := fmt.Sprintf("You are the tester for agent factory task %s in %s. Write failing tests that pin down what this task "+
+		"asks for, before anyone changes the code: they must fail on the current code and pass once the task is done. "+
+		"Write them only under the paths your rules' Test contract section names, commit them on your branch and "+
+		"never push: the platform checks that they fail and pushes them. Never change the code under test. If the task "+
+		"has no behaviour a test can pin down, commit nothing and say why in the room with room_post, then finish.\n",
+		t.Name, t.Spec.Repository)
+	return fit(head, scopeBlock(sc, nonce), snapshotBlock(t, "TASK-DATA-"+nonce), t)
+}
+
 // ResumeNotice opens the brief of a run that resumes one its sandbox lost (disruption design §4):
 // the agent did nothing wrong, so it carries on from the branch and the room instead of starting over.
 func ResumeNotice(t *v1alpha1.Task) string {
@@ -237,6 +248,11 @@ func ResumeNotice(t *v1alpha1.Task) string {
 		return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
 			"was reclaimed (spot reclaim or eviction), not stopped for anything it did. Nothing of it is saved: "+
 			"start the scoping again, using room_read first for what the room already holds.\n\n", t.Name)
+	}
+	if testerRun(t) { // a tester pushes nothing itself: its commits die with its sandbox
+		return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
+			"was reclaimed (spot reclaim or eviction), not stopped for anything it did. Nothing of it is saved: "+
+			"write the tests again, using room_read first for what the room already holds.\n\n", t.Name)
 	}
 	return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
 		"was reclaimed (spot reclaim or eviction), not stopped for anything it did. What it pushed is on branch "+

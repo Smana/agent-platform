@@ -104,7 +104,7 @@ func (r *Reconciler) recordExisting(t *v1alpha1.Task, x runs.Run) error {
 	// A verifier's trigger is always "review", and the lost write is what cleared NextRole; an
 	// implementer's survives in NextTrigger, which the same write would have cleared.
 	trigger := nextTrigger(t)
-	if x.Role == "reviewer" || x.Role == "tester" {
+	if x.Role == "reviewer" {
 		trigger = "review"
 	}
 	started := metav1.NewTime(r.Now())
@@ -120,7 +120,7 @@ func (r *Reconciler) recordExisting(t *v1alpha1.Task, x runs.Run) error {
 }
 
 func phaseFor(role string) string {
-	if role == "reviewer" || role == "tester" {
+	if role == "reviewer" {
 		return v1alpha1.PhaseReviewing
 	}
 	return v1alpha1.PhaseImplementing
@@ -145,12 +145,12 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 	return s
 }
 
-// withChecks switches the repository's checks on for a public implementer or reviewer run of a class
+// withChecks switches the repository's checks on for a public implementer, tester or reviewer run of a class
 // that has them (v3 feature 3, RC8): spec.loop.checks and the repository's checks.egress. Any other
 // run, an internal one included, is today's.
 func (r *Reconciler) withChecks(s *runs.Spec, t *v1alpha1.Task) {
 	on, egress := r.repo(t).ChecksFor(t.Spec.PredictedClass)
-	if !on || t.Spec.DataClass != "public" || (s.Role != "implementer" && s.Role != "reviewer") {
+	if !on || t.Spec.DataClass != "public" || (s.Role != "implementer" && s.Role != "reviewer" && s.Role != "tester") {
 		s.Checks, s.EgressProfiles = false, nil
 		return
 	}
@@ -596,12 +596,12 @@ func (r *Reconciler) resumeBrief(ctx context.Context, t *v1alpha1.Task) (string,
 // resume sends the task back to Queued for a new run of the lost run's role, on the same branch
 // and in the same room (disruption design §4). The new run is a new AgentRun with the task's next
 // deterministic id (R48), so a replay after a lost status write never starts two; the lost one
-// stays Failed. A reviewer's or tester's re-run spends no review round.
+// stays Failed. A reviewer's re-run spends no review round.
 func (r *Reconciler) resume(ctx context.Context, t *v1alpha1.Task, run runs.Run) {
 	t.Status.Resumes++
 	n, why := int(t.Status.Resumes), run.Reason
 	record(ctx, func(ctx context.Context) { r.Metrics.Resumed(ctx, why) })
-	if run.Role == "reviewer" || run.Role == "tester" {
+	if run.Role == "reviewer" {
 		r.requestVerifier(t, run.Role) // no ReviewRounds++: the loss was the platform's, not the review's
 	} else {
 		t.Status.NextTrigger = "resume"

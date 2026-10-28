@@ -27,7 +27,8 @@ import (
 // task escalates: the verdict is there, and only the room holds it.
 const roomLogPatience = 30 * time.Minute
 
-// nextVerifier is the template's next reviewer or tester after role, or "" when none follows.
+// nextVerifier is the template's next reviewer after role, or "" when none follows. The tester is
+// the test writer since v3 feature 4 (TO1): a template that still lists it loads without it.
 func (r *Reconciler) nextVerifier(t *v1alpha1.Task, after string) string {
 	roles := r.Cfg.Templates[t.Spec.Template].Roles
 	i := slices.Index(roles, after)
@@ -35,7 +36,7 @@ func (r *Reconciler) nextVerifier(t *v1alpha1.Task, after string) string {
 		return ""
 	}
 	for _, role := range roles[i+1:] {
-		if role == "reviewer" || role == "tester" {
+		if role == "reviewer" {
 			return role
 		}
 	}
