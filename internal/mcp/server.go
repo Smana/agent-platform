@@ -232,7 +232,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		mcpwire.Write(w, req.ID, map[string]any{"protocolVersion": v,
 			"capabilities": map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":   map[string]string{"name": "room-broker", "version": version.Version}}, nil)
+			"serverInfo":   map[string]string{"name": "maku-broker", "version": version.Version}}, nil)
 	case "ping":
 		mcpwire.Write(w, req.ID, map[string]any{}, nil)
 	case "tools/list":

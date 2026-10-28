@@ -27,7 +27,7 @@ flowchart TD
   P["preflight<br/>tools, secrets, release images"] --> K["kind<br/>no CNI, no kube-proxy, runsc mounted"]
   K --> C["Cilium<br/>kube-proxy replacement"] --> M["cert-manager<br/>self-signed CA"]
   M --> N["CNPG<br/>one-instance rooms database"] --> S["Secrets<br/>agent-model, agent-git"]
-  S --> H["helm install agent-platform<br/>values-quickstart.yaml"]
+  S --> H["helm install maku<br/>values-quickstart.yaml"]
   H --> G["gVisor probe<br/>runsc, DNS, broker :8443"] --> F["print the port-forward and roomctl commands"] --> R["roomctl run<br/>room, start_run, your kubectl applies the claim"] --> W["roomctl follows the room to the run's end"]
 ```
 
@@ -41,7 +41,7 @@ In a second terminal, keep the broker forwarded (local mode answers this port on
 
 ```bash
 export KUBECONFIG=$PWD/.quickstart/kubeconfig
-kubectl -n agent-platform port-forward deploy/room-broker 8080:8080
+kubectl -n maku port-forward deploy/room-broker 8080:8080
 ```
 
 Then, in the first (`XDG_CONFIG_HOME` keeps roomctl's quickstart config apart from any other):
@@ -114,4 +114,4 @@ them (fork PRs), with a warning and a step summary saying nothing ran: a green s
 | `QUICKSTART_REPO` | A throwaway `owner/name` with a `main` branch and at least one commit |
 | `QUICKSTART_GITHUB_TOKEN` | A fine-grained PAT, Contents read on that repository (the stub model never pushes) |
 
-For the chart's values and its caveats, see the [chart README](../charts/agent-platform/README.md).
+For the chart's values and its caveats, see the [chart README](../charts/maku/README.md).

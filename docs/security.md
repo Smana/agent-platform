@@ -25,8 +25,8 @@ The design's threats, the controls against each, and the package or mechanism th
 | T11 | Denial of service | Size and rate limits; byte budgets per connection; authentication before subscription; gateway budgets bound agent loops | Payload and batch limits (`internal/envelope`, `internal/bridgeapi`); connection and rate limits (`internal/humanapi`) | A tailnet member can load the broker |
 | T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | The database's grants and triggers ([room log](room-log.md#the-guarantees)); the broker's RBAC | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential. Its room-access reader PAT reads the whole ZITADEL organization, users and their IdP links included (`ORG_OWNER_VIEWER` is org-wide, if read-only), and the factory App's metadata reads answer any login's permission on the App's repositories |
 | T13 | Untrusted issue text reaching a prompt | Every text written outside the platform is defused before an agent reads it: invisible and control characters removed, images and raw HTML defused, fence look-alikes replaced, repeated until nothing changes | `internal/factory/sanitize`: a text whose markup does not settle is replaced whole by `Withheld`, failing closed | It is a filter, not a boundary: egress policy and the merge gate's paths are the controls |
-| T14 | A forged `Agent-Run` trailer | Trailers are provenance hints, never authorisation; the merge gate binds commits to the agents App by push identity: every push to the branch must be the agents App's in GitHub's repository activity | The merge gate; [`images/agent-harness/README.md`](../images/agent-harness/README.md) | The binding is to the App, not the task: any implementer run can push as the bot. Commits are not signed |
-| T15 | Theft or misuse of the merger key | One workload mounts it; the repository's ruleset lets only that App, and a repository admin, bypass a plain merge | The chart's `mergerSecret` (`charts/agent-factory/values.yaml`); the ruleset | Whoever holds the key can merge |
+| T14 | A forged `Agent-Run` trailer | Trailers are provenance hints, never authorisation; the merge gate binds commits to the agents App by push identity: every push to the branch must be the agents App's in GitHub's repository activity | The merge gate; [`images/maku-harness/README.md`](../images/maku-harness/README.md) | The binding is to the App, not the task: any implementer run can push as the bot. Commits are not signed |
+| T15 | Theft or misuse of the merger key | One workload mounts it; the repository's ruleset lets only that App, and a repository admin, bypass a plain merge | The chart's `mergerSecret` (`charts/maku-factory/values.yaml`); the ruleset | Whoever holds the key can merge |
 | T16 | Work started on a repository by someone who may not change it, or through another repository's room or branch | A room's runs act on its `spec.repository`, a resumed branch on its last run's; every human run needs `write` on the repository on GitHub, admins included, failing closed; a label counts only from that repository's maintainers with `write`; each repository has its own GitHub connections | `internal/factory/api` (`admitRoom`, `admitResume`, `mayWrite`), `internal/repoaccess`, `internal/factory/intake`; [factory](factory.md#who-may-start-work-on-a-repository) | A permission revoked inside the 5-minute cache |
 | T17 | Two factories (a rebuilt cluster on a stale pin, a second cloud) acting on one repository | The repository's default branch names its one factory in `.github/agent-factory.yaml`, a gate path; a factory it does not name takes no intake, schedules or API runs and merges nothing; an unread fence ages out to not owned | `internal/factory/fence`; [factory](factory.md#the-ownership-fence) | Up to 15 minutes of a stale answer while GitHub is unreachable |
 
@@ -232,7 +232,7 @@ secret, never in the config. The key file is re-read at each delivery.
 
 ## The Slack App
 
-The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is the only component with a public route: `POST /slack/events`, matched exactly. The invariants, each held by a named test:
+The factory's Slack App (`cmd/maku-slack`, [docs/slack.md](slack.md)) is the only component with a public route: `POST /slack/events`, matched exactly. The invariants, each held by a named test:
 
 | # | Invariant | Test |
 |---|---|---|
@@ -293,7 +293,7 @@ Verify an image before you pin it. **The default accepts only images built by th
 from a `v*` tag:**
 
 ```bash
-IMAGE=ghcr.io/smana/room-broker@sha256:<digest>
+IMAGE=ghcr.io/smana/maku-broker@sha256:<digest>
 
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \

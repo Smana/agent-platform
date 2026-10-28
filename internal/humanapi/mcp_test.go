@@ -116,7 +116,7 @@ func TestMCPInitialize(t *testing.T) {
 	for asked, want := range map[string]string{"2025-06-18": "2025-06-18", "2025-11-25": "2025-11-25", "2026-07-28": "2025-11-25", "": "2025-11-25"} {
 		_, out := rpc(t, e, viaRoomctl("dev"), "initialize", map[string]any{"protocolVersion": asked, "capabilities": map[string]any{}})
 		res, _ := out["result"].(map[string]any)
-		if res["protocolVersion"] != want || res["serverInfo"].(map[string]any)["name"] != "room-broker" ||
+		if res["protocolVersion"] != want || res["serverInfo"].(map[string]any)["name"] != "maku-broker" ||
 			!strings.Contains(fmt.Sprint(res["instructions"]), "untrusted: true") {
 			t.Errorf("asked %q: %v", asked, out)
 		}

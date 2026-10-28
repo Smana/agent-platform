@@ -10,11 +10,11 @@ release, or a PR pre-release for an integration branch.
 ```mermaid
 flowchart LR
   subgraph ap["Smana/maku"]
-    bimg["ghcr.io/smana/room-broker"]
-    brimg["ghcr.io/smana/room-bridge"]
-    fimg["ghcr.io/smana/agent-factory"]
-    himg["ghcr.io/smana/agent-harness"]
-    chart["oci://ghcr.io/smana/charts/agent-factory<br/>(ships the Task CRD)"]
+    bimg["ghcr.io/smana/maku-broker"]
+    brimg["ghcr.io/smana/maku-bridge"]
+    fimg["ghcr.io/smana/maku-factory"]
+    himg["ghcr.io/smana/maku-harness"]
+    chart["oci://ghcr.io/smana/charts/maku-factory<br/>(ships the Task CRD)"]
     crd["config/crd/agents.ogenki.io_rooms.yaml"]
     mig["internal/store/migrations"]
   end
@@ -77,7 +77,7 @@ suspended by default.
 | cloud-native-ref `infrastructure/base/room-broker/app.yaml` and `retention-cronjob.yaml` | The broker image, same digest in both | This repo's release | `v0.11.0@sha256:…` |
 | cloud-native-ref `crd-rooms.yaml` | The `Room` CRD | `config/crd/`, or `crd-rooms.yaml` on the release; re-copied with every broker pin | — |
 | cloud-native-ref `sqlinstance.yaml` `atlasSchema.ref` | The migrations | The broker image's release tag, so schema and binary match | `v0.11.0` |
-| cloud-native-ref `flux/sources/ocirepo-agent-factory.yaml` | The factory chart, with the `Task` CRD | `oci://ghcr.io/smana/charts/agent-factory` | `0.11.0` plus its digest |
+| cloud-native-ref `flux/sources/ocirepo-agent-factory.yaml` | The factory chart, with the `Task` CRD | `oci://ghcr.io/smana/charts/maku-factory` | `0.11.0` plus its digest |
 | cloud-native-ref `tooling/base/agent-factory/helm-values-configmap.yaml` `image.tag` | The factory image | This repo's release | `v0.11.0@sha256:…` |
 | crossplane-configuration `apis/agentrun/kcl/main.k` `_BRIDGE_IMAGE` | The bridge image | This repo's release | `v0.11.0@sha256:…` |
 | crossplane-configuration, the `AgentRun` composition | The harness image | This repo's release | `v0.11.0@sha256:…` |

@@ -1,7 +1,0 @@
-apiVersion: v2
-name: agent-platform
-description: "The agent platform in one chart: the room broker and the run controller."
-type: application
-# Set by `helm package --version` from the tag (release) or the PR pre-release.
-version: 0.0.0
-appVersion: "0.0.0"

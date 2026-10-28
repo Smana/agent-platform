@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# task quickstart: kind + Cilium + gVisor + cert-manager + CNPG + agent-platform. Safe to re-run.
+# task quickstart: kind + Cilium + gVisor + cert-manager + CNPG + maku. Safe to re-run.
 # Env: MODEL_API_KEY GITHUB_TOKEN REPO (required); MODEL MODEL_BASE_URL CHART_REF AP_VERSION;
 #      LOCAL_PORT (default 8080: the port you forward; the broker's publicURL follows it);
 #      ROOMCTL (a roomctl binary to use instead of the release's; required when UP_HELM_ARGS sets the image tags);
@@ -26,13 +26,13 @@ LOCAL_PORT="${LOCAL_PORT:-8080}"
 qs_port_ok "$LOCAL_PORT" || exit 1
 qs_skew_ok "$(kubectl version --client -o json | yq -p=json '.clientVersion.minor')" "$(qs_node_minor "$KIND_NODE_IMAGE")" || exit 1
 MODEL="${MODEL:-claude-sonnet-5-5}"
-NS=agent-platform
-CHART="${CHART_REF:-charts/agent-platform}"
+NS=maku
+CHART="${CHART_REF:-charts/maku}"
 read -ra extra <<<"${UP_HELM_ARGS:-}"
 
 # --- Preflight: everything that can fail in seconds fails before the cluster exists. ---
 
-chart_args=(-f charts/agent-platform/values-quickstart.yaml --set createRunsNamespace=false --set "broker.publicURL=http://localhost:$LOCAL_PORT")
+chart_args=(-f charts/maku/values-quickstart.yaml --set createRunsNamespace=false --set "broker.publicURL=http://localhost:$LOCAL_PORT")
 if [[ $unsandboxed == 1 ]]; then
   # runctl uses runtimeClassName whenever it is non-empty; allowUnsandboxed only counts when it is empty.
   chart_args+=(--set runController.allowUnsandboxed=true --set runController.runtimeClassName= --set runController.createRuntimeClass=false)
@@ -52,10 +52,10 @@ if [[ ${UP_HELM_ARGS:-} != *image*tag* ]]; then
     echo "$AP_VERSION@$d"
   }
   # One assignment each: a failure inside a substitution embedded in an array only counts for the last one.
-  broker_tag=$(digest room-broker)
-  controller_tag=$(digest run-controller)
-  harness_tag=$(digest agent-harness)
-  bridge_tag=$(digest room-bridge)
+  broker_tag=$(digest maku-broker)
+  controller_tag=$(digest maku-run-controller)
+  harness_tag=$(digest maku-harness)
+  bridge_tag=$(digest maku-bridge)
   chart_args+=(--set "broker.image.tag=$broker_tag" --set "runController.image.tag=$controller_tag"
     --set "runController.images.harness.tag=$harness_tag" --set "runController.images.bridge.tag=$bridge_tag")
 fi
@@ -115,7 +115,7 @@ model_keys=(api_key=MODEL_API_KEY model=MODEL)
 qs_secret agents agent-model Opaque "${model_keys[@]}" | kubectl apply -f -
 qs_secret agents agent-git Opaque token=GITHUB_TOKEN | kubectl apply -f -
 
-step "agent-platform"
+step "maku"
 helm upgrade --install ap "$CHART" -n "$NS" "${chart_args[@]}" "${extra[@]}" --wait --timeout 10m
 
 if [[ $unsandboxed == 0 ]]; then

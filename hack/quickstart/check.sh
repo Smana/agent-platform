@@ -12,8 +12,8 @@ bash -n hack/quickstart/*.sh
 shellcheck -x hack/quickstart/*.sh
 
 qs=hack/quickstart
-vals=charts/agent-platform/values.yaml
-qvals=charts/agent-platform/values-quickstart.yaml
+vals=charts/maku/values.yaml
+qvals=charts/maku/values-quickstart.yaml
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # ---- sources of truth ----
@@ -37,7 +37,7 @@ for m in ca-issuer cnpg-cluster; do cat "$qs/manifests/$m.yaml.tmpl" >"$tmp/$m.y
 
 # ---- the chart as up.sh installs it ----
 dg='v0.0.0@sha256:0000'
-out=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRunsNamespace=false \
+out=$(helm template ap charts/maku -n "$ns" -f "$qvals" --set createRunsNamespace=false \
   --set broker.image.tag="$dg" --set runController.image.tag="$dg" \
   --set runController.images.harness.tag="$dg" --set runController.images.bridge.tag="$dg")
 q() { yq ea "[select(.kind == \"$1\")] | $2" - <<<"$out"; }
@@ -107,7 +107,7 @@ qs_skew_ok "$(sed -n 's/^kubectl = "1\.\([0-9]*\)\..*"/\1/p' mise.toml)" "$(qs_n
 grep -qF 'qs_skew_ok' "$qs/up.sh" || bad "up.sh has no kubectl skew preflight"
 
 # ALLOW_UNSANDBOXED=1: the three overrides really yield an unsandboxed config
-un=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRunsNamespace=false \
+un=$(helm template ap charts/maku -n "$ns" -f "$qvals" --set createRunsNamespace=false \
   --set runController.allowUnsandboxed=true --set runController.runtimeClassName= --set runController.createRuntimeClass=false \
   --set broker.image.tag="$dg" --set runController.image.tag="$dg" --set runController.images.harness.tag="$dg" --set runController.images.bridge.tag="$dg")
 grep -q 'kind: RuntimeClass' <<<"$un" && bad "unsandboxed render still has a RuntimeClass"

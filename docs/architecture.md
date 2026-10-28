@@ -13,15 +13,15 @@ the `agents` namespace is one the pod opens.
 
 | Component | Runs | Does |
 |---|---|---|
-| `agent-factory` | Deployment in `agent-system`, two replicas, one leading; chart `charts/agent-factory` | Reconciles the `Task` CRD, polls maintainer-labelled issues, answers `POST /v1/runs` on `:8082` (plaintext inside the mesh), meters each run, narrates on the issue, runs the merge gate |
+| `agent-factory` | Deployment in `agent-system`, two replicas, one leading; chart `charts/maku-factory` | Reconciles the `Task` CRD, polls maintainer-labelled issues, answers `POST /v1/runs` on `:8082` (plaintext inside the mesh), meters each run, narrates on the issue, runs the merge gate |
 | `room-broker` | Deployment `room-broker` in `agent-system`, from an `App` claim; two replicas with a PDB | The log of record, the Room controller, the `:8443`, `:8080`, `:8090` and `:9090` listeners, the retention job (`room-broker retention`) |
 | `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream |
-| `agent-harness` | The run container of the `AgentRun` pod | The agent itself; it opens the pull request with `gh pr create` and the provenance footer (`images/agent-harness/pr_footer.py`). In the test-first flow it also runs the tester's red check and signed contract push, and holds an implementer to the contract with the `pre-commit` hook and `test-contract hold` ([README](../images/agent-harness/README.md#the-test-first-tester)) |
+| `agent-harness` | The run container of the `AgentRun` pod | The agent itself; it opens the pull request with `gh pr create` and the provenance footer (`images/maku-harness/pr_footer.py`). In the test-first flow it also runs the tester's red check and signed contract push, and holds an implementer to the contract with the `pre-commit` hook and `test-contract hold` ([README](../images/maku-harness/README.md#the-test-first-tester)) |
 | Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log |
 | `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons |
 | Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room |
 | `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#reference-the-room-crd)) |
-| `Task` CRD | `charts/agent-factory`, shipped with the factory | One issue's state machine, from `Received` to `Done` ([factory](factory.md)) |
+| `Task` CRD | `charts/maku-factory`, shipped with the factory | One issue's state machine, from `Received` to `Done` ([factory](factory.md)) |
 | Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) |
 | Web UI | Embedded in the broker (`web/`, TypeScript), behind oauth2-proxy | Watch a room, post, steer, approve, fork, invite and close |
 | `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve |
@@ -204,7 +204,7 @@ rules shape the tree.
 | Rule | In practice |
 |---|---|
 | Packages split by domain or pipeline stage, never by layer | `envelope`, `redact`, `store`, `authn`, `runwatch`, `roomctrl`, `bridgeapi`, `bridge`, `policy`, `fanout`, `humanapi`, `mcp`: no `service/`, `repository/` or `handler/` |
-| `cmd/<bin>` stays thin | `cmd/room-broker`, `cmd/room-bridge`, `cmd/roomctl` and `cmd/agent-factory` parse arguments and dispatch; the wiring lives in `internal/app` |
+| `cmd/<bin>` stays thin | `cmd/maku-broker`, `cmd/maku-bridge`, `cmd/roomctl` and `cmd/maku-factory` parse arguments and dispatch; the wiring lives in `internal/app` |
 | Interfaces are declared on the consumer side | A package asks for the few methods it calls (the bridge API's `Log`, the controller's `Store`) instead of importing a wide type |
 | The store is the only SQL adapter | Nothing outside `internal/store` writes SQL, the retention job's `DELETE`s included |
 | One egress client | Every outbound HTTP call goes through `internal/httpx`; a lint rule bans the bare `net/http` helpers elsewhere |
@@ -213,9 +213,9 @@ Broker, bridge and CLI, by pipeline stage:
 
 | Package | Stage |
 |---|---|
-| `cmd/room-broker` | `serve` and `retention` subcommands |
-| `cmd/room-bridge` | The sidecar binary |
-| `cmd/run-controller` | The AgentRun controller binary |
+| `cmd/maku-broker` | `serve` and `retention` subcommands |
+| `cmd/maku-bridge` | The sidecar binary |
+| `cmd/maku-run-controller` | The AgentRun controller binary |
 | `cmd/roomctl`, `internal/roomctl` | The human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
 | `internal/roomctl/skill` | The embedded factory-handoff Agent Skill (MCP first, shell fallback), released with roomctl; `roomctl setup` and `skill install` write it, `skill.Version` reads its stamp for the doctor's `skill` drift check |
 | `internal/app` | Wiring per binary, the only importer of every adapter |
@@ -250,7 +250,7 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 
 | Stage | Package | Contract |
 |---|---|---|
-| Entry | `cmd/agent-factory` | The binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
+| Entry | `cmd/maku-factory` | The binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
 | Entry | `internal/factory/config` | The factory's config file: strict decode, defaults, validation, its hash |
 | Intake | `internal/factory/intake` | The issue poller: maintainer labels, snapshots, dedup, stop labels |
 | Intake | `internal/factory/sanitize`, `internal/factory/taskid` | Untrusted text defused to a fixpoint; task names and ids |
@@ -266,17 +266,17 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 
 | Resource | Namespace | Defined in | Built from |
 |---|---|---|---|
-| `agent-factory` Deployment, Service, PDB, RBAC and config | `agent-system` | `charts/agent-factory` here | Image `ghcr.io/smana/agent-factory`, this repo |
-| `Task` CRD | cluster; CRs in `agent-system` | `charts/agent-factory`, a copy of `config/crd/` | `api/factory/v1alpha1` here |
-| `agent-platform` chart | broker, run controller, `Room` and `AgentRun` CRDs, runs namespace | `charts/agent-platform` here | The umbrella for a cluster without cloud-native-ref; the laptop profile is the [quickstart](quickstart.md). The broker runs `human.mode: local` and `runIssuers[].mode: tokenreview` there ([integration](integration.md#the-brokers-configuration)); `room-broker migrate` is its schema init container |
-| Factory secrets: `agent-factory-github`, `agent-factory-merger`, `openbao-ca`, `agent-factory-oidc`, `agent-factory-intake` | `agent-system` | Mounted per the [chart README](../charts/agent-factory/README.md), which names each secret's source | The platform's secret store |
-| `room-broker` Deployment and Service (`App` claim `room-broker`) | `agent-system` | [cloud-native-ref](https://github.com/Smana/cloud-native-ref) `infrastructure/base/room-broker/` | Image `ghcr.io/smana/room-broker`, this repo |
+| `agent-factory` Deployment, Service, PDB, RBAC and config | `agent-system` | `charts/maku-factory` here | Image `ghcr.io/smana/maku-factory`, this repo |
+| `Task` CRD | cluster; CRs in `agent-system` | `charts/maku-factory`, a copy of `config/crd/` | `api/factory/v1alpha1` here |
+| `maku` chart | broker, run controller, `Room` and `AgentRun` CRDs, runs namespace | `charts/maku` here | The umbrella for a cluster without cloud-native-ref; the laptop profile is the [quickstart](quickstart.md). The broker runs `human.mode: local` and `runIssuers[].mode: tokenreview` there ([integration](integration.md#the-brokers-configuration)); `room-broker migrate` is its schema init container |
+| Factory secrets: `agent-factory-github`, `agent-factory-merger`, `openbao-ca`, `agent-factory-oidc`, `agent-factory-intake` | `agent-system` | Mounted per the [chart README](../charts/maku-factory/README.md), which names each secret's source | The platform's secret store |
+| `room-broker` Deployment and Service (`App` claim `room-broker`) | `agent-system` | [cloud-native-ref](https://github.com/Smana/cloud-native-ref) `infrastructure/base/room-broker/` | Image `ghcr.io/smana/maku-broker`, this repo |
 | `Room` CRD | cluster; CRs in `agent-system` | Vendored by cloud-native-ref as `crd-rooms.yaml` | `api/v1alpha1`, `config/crd/` here |
 | `SQLInstance xplane-rooms` (CNPG) | `agent-system` | cloud-native-ref | Composition in [crossplane-configuration](https://github.com/Smana/crossplane-configuration); migrations `internal/store/migrations/` here |
 | Retention CronJob `room-broker-retention` | `agent-system` | cloud-native-ref | The broker image, `retention` subcommand |
 | `Certificate room-broker-tls` | `agent-system` | cloud-native-ref | cert-manager, ClusterIssuer `openbao` |
-| `room-bridge` sidecar and its `room-token` volume | `agents` | crossplane-configuration's `AgentRun` composition | Image `ghcr.io/smana/room-bridge`, this repo |
-| `agent-harness` image | `agents` | crossplane-configuration's `AgentRun` composition | `images/agent-harness`, this repo |
+| `room-bridge` sidecar and its `room-token` volume | `agents` | crossplane-configuration's `AgentRun` composition | Image `ghcr.io/smana/maku-bridge`, this repo |
+| `agent-harness` image | `agents` | crossplane-configuration's `AgentRun` composition | `images/maku-harness`, this repo |
 | Secret `room-broker-ca` | `agents` | cloud-native-ref ExternalSecret | The platform's private CA |
 | CNPs, `VMServiceScrape`, `VMRule` | `agent-system`, `observability` | cloud-native-ref | — |
 | oauth2-proxy, `HTTPRoute` | `agent-system` | cloud-native-ref | — |
@@ -304,11 +304,11 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 
 | Binary | Runs as | Image |
 |---|---|---|
-| `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/room-broker` |
-| `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
-| `agent-factory` | The factory's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/agent-factory` | `ghcr.io/smana/agent-factory` |
-| `agent-harness` | Main container of every `AgentRun` pod: OpenHands agent-server plus `agent-run`, the git credential helper, `gh` with the PR footer and the trailer hook ([`images/agent-harness`](../images/agent-harness/README.md)) | `ghcr.io/smana/agent-harness` |
-| `run-controller` | A Deployment, on clusters without cloud-native-ref's Crossplane runtime; reconciles `agents.ogenki.io` AgentRuns into gVisor pods | `ghcr.io/smana/run-controller` |
+| `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/maku-broker` |
+| `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/maku-bridge` |
+| `agent-factory` | The factory's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/maku-factory` | `ghcr.io/smana/maku-factory` |
+| `agent-harness` | Main container of every `AgentRun` pod: OpenHands agent-server plus `agent-run`, the git credential helper, `gh` with the PR footer and the trailer hook ([`images/maku-harness`](../images/maku-harness/README.md)) | `ghcr.io/smana/maku-harness` |
+| `run-controller` | A Deployment, on clusters without cloud-native-ref's Crossplane runtime; reconciles `agents.ogenki.io` AgentRuns into gVisor pods | `ghcr.io/smana/maku-run-controller` |
 | `roomctl` | A developer's CLI: list, follow, post, queue and fork rooms; `roomctl skill install` writes the factory-handoff Agent Skill for local coding agents; `roomctl token` for scripts. Never steers or approves: those stay in the web UI | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
 
 Every image is multi-arch (`linux/amd64`, `linux/arm64`). The Go ones are static binaries on distroless `nonroot`; the harness is OpenHands' Python image, run as uid 10001.
@@ -336,7 +336,7 @@ Never `latest`. Consumers pin by digest. Every pushed image carries SLSA provena
 an SBOM as attestations, and a keyless cosign signature on its digest:
 
 ```bash
-cosign verify ghcr.io/smana/room-broker@sha256:<digest> \
+cosign verify ghcr.io/smana/maku-broker@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/release\.yaml@refs/tags/v'
 ```

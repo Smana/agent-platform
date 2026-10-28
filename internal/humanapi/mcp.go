@@ -269,7 +269,7 @@ func (s *Server) mcpInitialize(w http.ResponseWriter, req mcpwire.Request, p aut
 		caps["prompts"] = map[string]bool{"listChanged": false}
 	}
 	mcpwire.Write(w, req.ID, map[string]any{"protocolVersion": v, "capabilities": caps,
-		"serverInfo": map[string]string{"name": "room-broker", "version": version.Version}, "instructions": mcpInstructionsFor(p)}, nil)
+		"serverInfo": map[string]string{"name": "maku-broker", "version": version.Version}, "instructions": mcpInstructionsFor(p)}, nil)
 }
 
 // mcpCall is tools/call: one tool, within mcpTimeout.

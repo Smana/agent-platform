@@ -25,8 +25,8 @@ broker:
   labels: {app.kubernetes.io/name: room-broker}
   caSecret: room-broker-tls
 images:
-  harness: ghcr.io/smana/agent-harness:v0.16.0
-  bridge: ghcr.io/smana/room-bridge:v0.16.0
+  harness: ghcr.io/smana/maku-harness:v0.16.0
+  bridge: ghcr.io/smana/maku-bridge:v0.16.0
 `
 
 func cfgFrom(t *testing.T, body string) (Config, error) {

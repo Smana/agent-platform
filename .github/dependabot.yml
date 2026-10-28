@@ -40,7 +40,7 @@ updates:
       docker:
         patterns: ["*"]
     ignore:
-      # The harness's base image moves with the openhands-* pins in images/agent-harness/requirements.in
+      # The harness's base image moves with the openhands-* pins in images/maku-harness/requirements.in
       # and the lock compiled from them; a lone base bump departs from the tested set.
       - dependency-name: "openhands/agent-server"
       - dependency-name: "*"

@@ -39,7 +39,7 @@ The reference for the broker, the bridge, the factory, the CLI and the web UI; t
 | New here | [README](../README.md) → [Concepts](concepts.md) → [Architecture](architecture.md) |
 | A maintainer with a factory issue or PR | [The factory](factory.md) → [Web UI](web-ui.md) → [Concepts](concepts.md) |
 | A developer who wants the CLI | [roomctl](roomctl.md) → [Web UI](web-ui.md) |
-| Operating a cluster | [Architecture](architecture.md) → [Integration](integration.md) → [chart README](../charts/agent-factory/README.md) → [Operations](operations.md) → [Security](security.md) |
+| Operating a cluster | [Architecture](architecture.md) → [Integration](integration.md) → [chart README](../charts/maku-factory/README.md) → [Operations](operations.md) → [Security](security.md) |
 | Changing the code | [AGENTS.md](../AGENTS.md) → [Development](development.md) → [Event envelope](event-envelope.md) → [Room log](room-log.md) → [API](api.md) |
 
 Design sources: the [rooms design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-collaboration-rooms-design.md),

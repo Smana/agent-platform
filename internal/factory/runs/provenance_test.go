@@ -18,7 +18,7 @@ func TestProvenanceRoundTrip(t *testing.T) {
 	if got := u.GetAnnotations()[AnnFactoryVersion]; got != version.Version {
 		t.Fatalf("factory-version = %q, want %q", got, version.Version)
 	}
-	image := "ghcr.io/smana/agent-harness@sha256:" + strings.Repeat("c", 64)
+	image := "ghcr.io/smana/maku-harness@sha256:" + strings.Repeat("c", 64)
 	_ = unstructured.SetNestedField(u.Object, "xagentruns.cloud.ogenki.io-41b6efe", "spec", "crossplane", "compositionRevisionRef", "name")
 	_ = unstructured.SetNestedField(u.Object, image, "status", "harnessImage")
 	r, ok := FromUnstructured(u)

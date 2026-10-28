@@ -28,5 +28,5 @@ runs:
       env:
         BASE: ${{ inputs.base }}
         HEAD_SHA: ${{ inputs.head }}
-        SCRIPT: ${{ github.action_path }}/../../../images/agent-harness/test_contract.py
+        SCRIPT: ${{ github.action_path }}/../../../images/maku-harness/test_contract.py
       run: python3 "$SCRIPT" --repo "$GITHUB_WORKSPACE" ci --base "$BASE" --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY"

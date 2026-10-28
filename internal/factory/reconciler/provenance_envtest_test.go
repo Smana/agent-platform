@@ -43,7 +43,7 @@ func TestEnvtestRunProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := v1alpha1.RunProvenance{FactoryVersion: "v0.16.0", CompositionRevision: "xagentruns.cloud.ogenki.io-41b6efe",
-		HarnessImage: "ghcr.io/smana/agent-harness@sha256:" + strings.Repeat("c", 64), ServedModels: []string{"claude-opus-5-5", "glm-5.3"}}
+		HarnessImage: "ghcr.io/smana/maku-harness@sha256:" + strings.Repeat("c", 64), ServedModels: []string{"claude-opus-5-5", "glm-5.3"}}
 	tk.Status.Phase = v1alpha1.PhaseImplementing
 	tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial", Provenance: want}}
 	if err := c.Status().Update(ctx, tk); err != nil {

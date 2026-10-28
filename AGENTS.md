@@ -20,7 +20,7 @@ task check      # exit 0, or it is not done
 | `vuln` | `go run …/govulncheck@v1.8.0 ./...` | a known vulnerability reachable from our code, stdlib included |
 | `test` | `go test -race -count=1 ./...` | a failing test or a data race; never cached |
 | `crd:check` | `crd:gen`, then `git diff --exit-code -- config/crd api charts` | a committed CRD, deepcopy or the chart's CRD copy that differs from what the types generate |
-| `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
+| `chart:check` | `helm lint --strict`, `charts/maku-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 | `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
 | `docs` | `hack/docs.sh` | a reader page with a per-row status tag, or a dead relative link or anchor |
 | `scripts` | `scripts/*_test.sh` | an operator script, such as `shadow-merge-tally.sh`, no longer reading GitHub's shapes as its test fakes them |
@@ -149,9 +149,9 @@ flowchart LR
 
 | Stage | Package | Contract |
 |---|---|---|
-| Entry | `cmd/room-broker` | `serve` and `retention` subcommands |
-| Entry | `cmd/room-bridge` | the sidecar binary |
-| Entry | `cmd/factory-slack-app`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
+| Entry | `cmd/maku-broker` | `serve` and `retention` subcommands |
+| Entry | `cmd/maku-bridge` | the sidecar binary |
+| Entry | `cmd/maku-slack`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
 | Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter |
@@ -183,11 +183,11 @@ flowchart LR
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves |
 
 The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; its chart,
-`charts/agent-factory`, ships the `Task` CRD.
+`charts/maku-factory`, ships the `Task` CRD.
 
 | Stage | Package | Contract |
 |---|---|---|
-| Entry | `cmd/agent-factory` | the binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
+| Entry | `cmd/maku-factory` | the binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
 | Entry | `internal/factory/config` | the factory's config file: strict decode, defaults, validation, its hash |
 | Intake | `internal/factory/intake` | the issue poller: maintainer labels, snapshots, dedup, stop labels |
 | Intake | `internal/factory/sanitize`, `internal/factory/taskid` | untrusted text defused to a fixpoint; C2 task names and ids |

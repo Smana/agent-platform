@@ -20,7 +20,7 @@ jobs:
       id-token: write # keyless cosign signing
     strategy:
       matrix:
-        image: [room-broker, room-bridge, agent-factory, agent-harness, run-controller, factory-slack-app]
+        image: [maku-broker, maku-bridge, maku-factory, maku-harness, maku-run-controller, maku-slack]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -40,17 +40,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       # The harness's suites, before anything is pushed: a tag can point at an untested commit.
       # amd64 only: the arm64 image is published untested, as it was in cloud-native-ref.
-      - if: matrix.image == 'agent-harness'
+      - if: matrix.image == 'maku-harness'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: images/agent-harness
+          context: images/maku-harness
           target: test
           push: false
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           # The Go images build from the module root; the harness from its own directory.
-          context: ${{ matrix.image == 'agent-harness' && 'images/agent-harness' || '.' }}
+          context: ${{ matrix.image == 'maku-harness' && 'images/maku-harness' || '.' }}
           file: images/${{ matrix.image }}/Dockerfile
           platforms: linux/amd64,linux/arm64
           build-args: VERSION=${{ github.ref_name }}
@@ -95,17 +95,17 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           printf '%s' "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
-          helm package charts/agent-factory --version "$v" --app-version "$GITHUB_REF_NAME"
-          out="$(helm push "agent-factory-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
+          helm package charts/maku-factory --version "$v" --app-version "$GITHUB_REF_NAME"
+          out="$(helm push "maku-factory-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
           digest="$(sed -n 's/^Digest: //p' <<<"$out")"
           [ -n "$digest" ] || { echo "helm push printed no digest" >&2; exit 1; }
-          cosign sign --yes "ghcr.io/smana/charts/agent-factory@${digest}"
+          cosign sign --yes "ghcr.io/smana/charts/maku-factory@${digest}"
           # The umbrella chart, same version: broker and run controller, no dependency.
-          helm package charts/agent-platform --version "$v" --app-version "$GITHUB_REF_NAME"
-          out="$(helm push "agent-platform-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
+          helm package charts/maku --version "$v" --app-version "$GITHUB_REF_NAME"
+          out="$(helm push "maku-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
           digest="$(sed -n 's/^Digest: //p' <<<"$out")"
           [ -n "$digest" ] || { echo "helm push printed no digest" >&2; exit 1; }
-          cosign sign --yes "ghcr.io/smana/charts/agent-platform@${digest}"
+          cosign sign --yes "ghcr.io/smana/charts/maku@${digest}"
 
   # roomctl's binaries and their checksums, on the tag's GitHub release (P33), and the Room CRD:
   # cloud-native-ref vendors it from the release asset, not from a branch (ruling P16).
