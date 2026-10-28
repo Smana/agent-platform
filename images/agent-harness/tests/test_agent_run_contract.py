@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -208,3 +209,163 @@ class RedCheckTest(Origin, unittest.TestCase):
         parsed = subprocess.run(["git", "interpret-trailers", "--parse"], input=msg, capture_output=True, text=True).stdout.splitlines()
         ids = [t.split(": ", 1)[1] for t in parsed if t.startswith("Agent-Contract-Id")]
         self.assertEqual(ids, ["t/a b: x", "t/c"])
+
+
+class Notes:
+    def __init__(self):
+        self.finals = []
+
+    def final(self, text):
+        self.finals.append(text)
+
+
+class FakeSpan:
+    def __init__(self, name):
+        self.name, self.attrs, self.ended = name, {}, False
+
+    def set_attribute(self, k, v):
+        self.attrs[k] = v
+
+    def set_status(self, s):
+        pass
+
+    def end(self):
+        self.ended = True
+
+
+class TesterEndTest(Origin, unittest.TestCase):
+    RED = RedCheckTest.RED
+    VACUOUS = {"t/test-vacuous.sh": "exit 0\n"}
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import opentelemetry.trace  # noqa: F401  (the image has it)
+        except ImportError:
+            trace = types.ModuleType("opentelemetry.trace")
+            trace.Status, trace.StatusCode = (lambda *a, **k: None), types.SimpleNamespace(ERROR="ERROR")
+            mock.patch.dict(sys.modules, {"opentelemetry": types.ModuleType("opentelemetry"), "opentelemetry.trace": trace}).start()
+
+    def end(self, passes, files=None, cont_log=None):
+        """tester_end after a finished conversation: passes[0] is the first pass (already done by the
+        caller's commit), each later one runs when a continuation is sent."""
+        self.sent, self.spans = [], []
+        passes = list(passes)
+        notes = Notes()
+
+        def cont(cid, text):
+            self.sent.append(text)
+            passes.pop(0)()
+
+        def start(name):
+            self.spans.append(FakeSpan(name))
+            return self.spans[-1]
+
+        with mock.patch("agent_run.poll", return_value=0), mock.patch("agent_run.continue_conversation", side_effect=cont), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            end = agent_run.tester_end(self.env, "cid", self.base, dict(os.environ), notes, start)
+        self.notes = notes.finals
+        return end
+
+    def pushed(self):
+        return bool(git(self.origin, "branch", "--list", "agent/x"))
+
+    def test_red_first_time_is_pushed_and_ready(self):
+        self.commit(self.RED)
+        self.assertEqual(self.end([]), "contract_ready")
+        self.assertEqual(self.sent, [])
+        self.assertTrue(self.pushed())
+        self.assertEqual(self.notes, ["contract_ready: t/test-name.sh"])
+
+    def test_a_vacuous_test_gets_one_continuation_then_not_red(self):
+        self.commit(self.VACUOUS)
+        self.assertEqual(self.end([lambda: self.commit({"t/test-vacuous2.sh": "exit 0\n"}, "again")]), "contract_not_red")
+        self.assertEqual(len(self.sent), 1)
+        fence = [w for w in self.sent[0].split() if w.startswith("CONTRACT-")][0]
+        self.assertEqual(self.sent[0].count("\n" + fence + "\n"), 2, "the fence opens and closes the data")
+        between = self.sent[0].split("\n" + fence + "\n")[1]
+        self.assertIn("t/test-vacuous.sh", between)
+        self.assertFalse(self.pushed())
+
+    def test_a_continuation_that_fixes_it_is_ready(self):
+        self.commit(self.VACUOUS)
+        def fix():
+            git(self.repo, "rm", "-q", "t/test-vacuous.sh")
+            self.commit(self.RED, "fix")
+
+        self.assertEqual(self.end([fix]), "contract_ready")
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.pushed())
+
+    def test_outside_the_paths_continues_once_then_ends_outside(self):
+        self.commit({**self.RED, "bin/greet": "#!/usr/bin/env bash\necho x\n"})
+        self.assertEqual(self.end([lambda: self.commit({"README": "x\n"}, "still")]), "contract_outside_tests")
+        self.assertEqual(len(self.sent), 1)
+        self.assertFalse(self.pushed())
+
+    def test_could_not_run_never_continues(self):
+        decl = SHELL_DECL.replace('run: t/run.sh "$@"', "run: exit 0")
+        self.write(self.repo, {".github/agent-checks.yaml": decl})
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "decl")
+        git(self.repo, "push", "-q", "origin", "HEAD:main")
+        git(self.repo, "fetch", "-q", "origin")
+        base = git(self.repo, "rev-parse", "origin/main")
+        self.base = base
+        self.commit(self.RED)
+        self.assertEqual(self.end([]), "contract_not_red")
+        self.assertEqual(self.sent, [])
+        self.assertIn("the runner could not run", self.notes[0])
+
+    def test_no_commit_is_not_testable(self):
+        self.assertEqual(self.end([]), "not_testable")
+        self.assertEqual(self.sent, [])
+
+    def test_no_declaration_is_not_red_without_a_continuation(self):
+        git(self.repo, "rm", "-q", ".github/agent-checks.yaml")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "drop")
+        git(self.repo, "push", "-q", "origin", "HEAD:main")
+        git(self.repo, "fetch", "-q", "origin")
+        self.base = git(self.repo, "rev-parse", "origin/main")
+        self.commit(self.RED)
+        self.assertEqual(self.end([]), "contract_not_red")
+        self.assertEqual(self.sent, [])
+        self.assertIn("declares no tests", self.notes[0])
+        self.assertFalse(self.pushed())
+
+    def test_a_refused_push_is_not_red_and_pushes_nothing(self):
+        self.commit(self.RED)
+        with mock.patch("agent_run.push_contract", return_value="remote: permission denied"):
+            self.assertEqual(self.end([]), "contract_not_red")
+        self.assertEqual(self.sent, [])
+        self.assertIn("the push was refused", self.notes[0])
+        self.assertFalse(self.pushed())
+
+    def test_the_note_never_exceeds_280_characters(self):
+        files = ["t/test-%s-%02d.sh" % ("x" * 30, i) for i in range(60)]
+        note = agent_run.contract_note("contract_ready", {"files": files})
+        self.assertLessEqual(len(agent_run._short("Harness (tester): " + note, 280)), 280)
+        why = agent_run.contract_note("contract_not_red", {"why": "w" * 900})
+        self.assertLessEqual(len(agent_run._short("Harness (tester): " + why, 280)), 280)
+
+    def test_every_end_sets_the_span_error_but_ready(self):
+        self.commit(self.RED)
+        self.end([])
+        span = self.spans[0]
+        self.assertEqual(span.name, agent_run.CONTRACT_SPAN)
+        self.assertTrue(span.ended)
+        self.assertNotIn("error.type", span.attrs)
+
+    def test_a_not_ready_end_names_itself_on_the_span(self):
+        self.assertEqual(self.end([]), "not_testable")
+        self.assertEqual(self.spans[0].attrs["error.type"], "not_testable")
+
+    def test_a_poll_that_does_not_finish_after_the_continuation_stands_as_checked(self):
+        self.commit(self.VACUOUS)
+        self.sent = []
+        with mock.patch("agent_run.poll", return_value=1), \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda c, t: self.sent.append(t)), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            end = agent_run.tester_end(self.env, "cid", self.base, dict(os.environ))
+        self.assertEqual(end, "contract_not_red")
+        self.assertEqual(len(self.sent), 1)
