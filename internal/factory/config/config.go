@@ -1559,6 +1559,9 @@ type SplitPolicy struct {
 	FamilyUSD float64 `json:"familyUSD,omitempty"`
 	// ChildTier is every child's tier (SP5): omitted, standard.
 	ChildTier string `json:"childTier,omitempty"`
+	// AnyTier offers the split to every task of the class, whatever tier C7 rated it (SP1's
+	// option (b), an explicit opt-in); omitted, only a task C7 rated frontier is offered one.
+	AnyTier bool `json:"anyTier,omitempty"`
 }
 
 // MaxFamilyUSD bounds familyUSD so its conversion to micro-dollars stays in range.

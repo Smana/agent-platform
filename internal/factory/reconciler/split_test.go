@@ -94,6 +94,32 @@ func TestTriageOffersASplitOnC7sOwnFrontier(t *testing.T) {
 	}
 }
 
+// split.anyTier: off, a standard task is not offered a split; on, it is, and the scoper is told.
+func TestSplitAnyTierOffersEveryTier(t *testing.T) {
+	for name, c := range map[string]struct {
+		tier    string
+		anyTier bool
+		offered bool
+	}{
+		"standard, anyTier off": {"standard", false, false},
+		"standard, anyTier on":  {"standard", true, true},
+		"frontier, anyTier off": {"frontier", false, true},
+		"frontier, anyTier on":  {"frontier", true, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := splitRig(t, c.tier, false)
+			g.r.Cfg.Loops = map[string]config.Loop{"review": {Scope: config.ScopeScoper, Split: &config.SplitPolicy{MaxChildren: 3, AnyTier: c.anyTier}}}
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if (tk.Spec.Split != nil) != c.offered {
+				t.Fatalf("split %+v", tk.Spec.Split)
+			}
+			if got := strings.Contains(ScoperBrief(tk, "n0nce234"), "hand off split {why, children}"); got != c.offered {
+				t.Fatalf("ScoperBrief carries splitHow = %v, want %v", got, c.offered)
+			}
+		})
+	}
+}
+
 // No row, a row without split, a mode other than scoper, or no issue: no split.
 func TestNoSplitOutsideItsRow(t *testing.T) {
 	for name, edit := range map[string]func(*rig){
