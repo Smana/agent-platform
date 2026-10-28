@@ -137,20 +137,29 @@ func contractCommit(run string, files, ids []string) string {
 
 const baseSHA = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
 
-// contractIs makes the commit at sha what the tester harness pushes on baseSHA and, when report, has the
-// harness report it through room_contract (the only source the factory adopts a commit from).
-func (g *rig) contractIs(sha, run string, files, ids []string, report bool) {
-	g.f.SetCommitFull(forge.Commit{SHA: sha, Message: contractCommit(run, files, ids), Parents: []string{baseSHA}, Files: slices.Clone(files)})
-	if report {
-		g.reported(run, sha, baseSHA)
+const checksYAML = "tests:\n  paths: [scripts/ci/tests/, t/]\n  runner: [scripts/ci/tests/run.sh]\n  select: ['*']\n  run: ./run\n"
+
+// contractIs makes the commit at sha what the tester harness pushes: the fixed subject and trailers, one
+// parent that is on the default branch, and only added test files under the declaration's tests.paths.
+func (g *rig) contractIs(sha, run string, files, ids []string) {
+	var stats []forge.FileStat
+	for _, f := range files {
+		stats = append(stats, forge.FileStat{Path: f, Status: "added"})
 	}
+	g.f.SetCommitFull(forge.Commit{SHA: sha, Message: contractCommit(run, files, ids), Parents: []string{baseSHA}, Stats: stats})
+	g.f.SetAncestors("main", baseSHA)
+	g.f.SetMainFiles(map[string]string{".github/agent-checks.yaml": checksYAML})
 }
 
-// reported is the harness's room_contract event, as the broker stamps it.
-func (g *rig) reported(run, sha, base string) {
-	g.log.evs = append(g.log.evs, envelope.Event{Seq: int64(len(g.log.evs) + 1), RunID: run, Type: envelope.Message, Origin: envelope.OriginClient,
-		Actor:   envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + run, Role: "tester"},
-		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindContract, Text: "contract commit pushed", Commit: sha, Base: base, Delivery: envelope.DeliveryNone})})
+// editCommit changes the commit at contractSHA as a test of one rejection needs.
+func (g *rig) editCommit(t *testing.T, edit func(*forge.Commit)) {
+	t.Helper()
+	c, err := g.f.Commit(t.Context(), contractSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(&c)
+	g.f.SetCommitFull(c)
 }
 
 // pushed records the tester's push as GitHub's activity does: the branch's creation by the agents App.
@@ -176,7 +185,7 @@ func TestARedContractIsRecordedAndTheImplementerIsBriefed(t *testing.T) {
 	g := testerRig(t, nil)
 	files, ids := []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"}
 	g.pushed(agentsApp)
-	g.contractIs(contractSHA, rid(0), files, ids, true)
+	g.contractIs(contractSHA, rid(0), files, ids)
 	g.harnessNote(rid(0), "Harness (tester): contract_ready: 3 tests, red on the current code")
 	tk := g.endTester(t, "Succeeded", "agent_finished")
 	want := &v1alpha1.ContractStatus{RunID: rid(0), Commit: contractSHA, Files: files, IDs: ids}
@@ -238,58 +247,75 @@ func TestAForeignPushOrTrailerIsContractInvalid(t *testing.T) {
 	for name, setup := range map[string]func(g *rig){
 		"another login": func(g *rig) {
 			g.pushed("someone-else")
-			g.contractIs(contractSHA, rid(0), files, ids, true)
+			g.contractIs(contractSHA, rid(0), files, ids)
 		},
 		"two pushes": func(g *rig) {
 			g.pushed(agentsApp)
 			ps, _ := g.f.BranchActivity(t.Context(), "agent/3buqdlot")
 			g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: agentsApp, Before: contractSHA, After: strings.Repeat("d", 40)}, ps[0])
-			g.contractIs(strings.Repeat("d", 40), rid(0), files, ids, true)
+			g.contractIs(strings.Repeat("d", 40), rid(0), files, ids)
 		},
 		"another run's trailer": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(9), files, ids, true)
+			g.contractIs(contractSHA, rid(9), files, ids)
 		},
 		"no ids": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, nil, true)
+			g.contractIs(contractSHA, rid(0), files, nil)
 		},
-		// The credential helper stays: the model can push a commit that looks like the harness's. Only the
-		// commit the harness reported through room_contract is adopted.
-		"a push the harness never reported": func(g *rig) {
+		// The credential helper stays: the model can push a commit that looks like the harness's. Nothing
+		// about who pushed is trusted; the commit itself must be a contract.
+		"a parent off the default branch": func(g *rig) { // a crafted parent carrying non-test changes
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, false)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.f.SetAncestors("main") // baseSHA is no ancestor of main
 		},
-		"a push other than the reported commit": func(g *rig) {
+		"a file outside tests.paths": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, false)
-			g.reported(rid(0), strings.Repeat("e", 40), baseSHA)
+			bad := append(slices.Clone(files), "src/app.py")
+			g.contractIs(contractSHA, rid(0), bad, ids)
 		},
-		"a parent other than the recorded base": func(g *rig) {
+		"a runner file": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, false)
-			g.reported(rid(0), contractSHA, strings.Repeat("e", 40))
+			g.contractIs(contractSHA, rid(0), []string{"scripts/ci/tests/run.sh"}, ids)
 		},
-		"another subject": func(g *rig) {
+		"a delete": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, true)
-			c, _ := g.f.Commit(t.Context(), contractSHA)
-			c.Message = strings.Replace(c.Message, contractSubject, "feat: the model's own", 1)
-			g.f.SetCommitFull(c)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.editCommit(t, func(c *forge.Commit) {
+				c.Stats = append(c.Stats, forge.FileStat{Path: "scripts/ci/tests/test_old.py", Status: "removed"})
+			})
 		},
-		"two parents": func(g *rig) {
+		"a rename": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, true)
-			c, _ := g.f.Commit(t.Context(), contractSHA)
-			c.Parents = []string{baseSHA, strings.Repeat("e", 40)}
-			g.f.SetCommitFull(c)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.editCommit(t, func(c *forge.Commit) {
+				c.Stats[0].Status, c.Stats[0].Previous = "renamed", "scripts/ci/tests/test_old.py"
+			})
 		},
 		"a trailer that is not the diff": func(g *rig) {
 			g.pushed(agentsApp)
-			g.contractIs(contractSHA, rid(0), files, ids, true)
-			c, _ := g.f.Commit(t.Context(), contractSHA)
-			c.Files = append(c.Files, "src/app.py") // a file outside the trailers
-			g.f.SetCommitFull(c)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.editCommit(t, func(c *forge.Commit) {
+				c.Stats = append(c.Stats, forge.FileStat{Path: "scripts/ci/tests/test_extra.py", Status: "added"})
+			})
+		},
+		"no declaration at the parent": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.f.SetMainFiles(nil)
+		},
+		"another subject": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.editCommit(t, func(c *forge.Commit) {
+				c.Message = strings.Replace(c.Message, contractSubject, "feat: the model's own", 1)
+			})
+		},
+		"two parents": func(g *rig) {
+			g.pushed(agentsApp)
+			g.contractIs(contractSHA, rid(0), files, ids)
+			g.editCommit(t, func(c *forge.Commit) { c.Parents = []string{baseSHA, strings.Repeat("e", 40)} })
 		},
 	} {
 		g := testerRig(t, nil)
@@ -339,7 +365,7 @@ func contractedPair(t *testing.T) *rig {
 	t.Helper()
 	g := testerRigCfg(t, nil, func(c *config.Config) { c.Defaults.Template = "pair" })
 	g.pushed(agentsApp)
-	g.contractIs(contractSHA, rid(0), []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"}, true)
+	g.contractIs(contractSHA, rid(0), []string{"scripts/ci/tests/test_dry_run.py", "scripts/ci/tests/test_flags.py"}, []string{"a::one", "a::two", "b::three"})
 	g.endTester(t, "Succeeded", "agent_finished")
 	g.reconcile(t, "3buqdlot", 1)
 	if g.runs.specs[rid(1)].Role != "implementer" {
@@ -447,32 +473,23 @@ func TestNoVerifierSetHoldsATester(t *testing.T) {
 func TestAContractOverTheBoundsIsTooLarge(t *testing.T) {
 	many := make([]string, 51)
 	for i := range many {
-		many[i] = "t" + strconv.Itoa(i) + ".py"
+		many[i] = "t/t" + strconv.Itoa(i) + ".py"
 	}
 	long := strings.Repeat("x", 513)
+	longPath := "t/" + strings.Repeat("x", 511)
 	for name, c := range map[string]struct{ files, ids []string }{
 		"51 files":    {many, []string{"a::one"}},
-		"a long id":   {[]string{"t.py"}, []string{long}},
-		"51 ids":      {[]string{"t.py"}, many},
-		"a long path": {[]string{long}, []string{"a::one"}},
+		"a long id":   {[]string{"t/t.py"}, []string{long}},
+		"51 ids":      {[]string{"t/t.py"}, many},
+		"a long path": {[]string{longPath}, []string{"a::one"}},
 	} {
 		g := testerRig(t, nil)
 		g.pushed(agentsApp)
-		g.contractIs(contractSHA, rid(0), c.files, c.ids, true)
+		g.contractIs(contractSHA, rid(0), c.files, c.ids)
 		tk := g.endTester(t, "Succeeded", "agent_finished")
 		if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "contract_too_large" || tk.Status.Contract != nil {
 			t.Errorf("%s: %s %q", name, tk.Status.Phase, tk.Status.Reason)
 		}
-	}
-}
-
-// A model-posted note or push never makes a contract: a reported commit with no push recorded only waits.
-func TestAReportedCommitWithoutARecordedPushWaitsThenIsUnreported(t *testing.T) {
-	g := testerRig(t, nil)
-	g.reported(rid(0), contractSHA, baseSHA)
-	tk := g.endTester(t, "Succeeded", "agent_finished")
-	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Reason != "contract_push_unrecorded" {
-		t.Fatalf("%s %q", tk.Status.Phase, tk.Status.Reason)
 	}
 }
 

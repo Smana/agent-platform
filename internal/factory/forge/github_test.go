@@ -576,7 +576,7 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
-		_, _ = io.WriteString(w, `{"sha":"c1","author":{"login":"ogenki-agents[bot]"},"parents":[{"sha":"p1"}],"files":[{"filename":"a.py"},{"filename":"new.py","previous_filename":"old.py"}],"commit":{"message":"test: pin it\n\nAgent-Run: r1"}}`)
+		_, _ = io.WriteString(w, `{"sha":"c1","author":{"login":"ogenki-agents[bot]"},"parents":[{"sha":"p1"}],"files":[{"filename":"a.py","status":"added"},{"filename":"new.py","previous_filename":"old.py","status":"renamed"}],"commit":{"message":"test: pin it\n\nAgent-Run: r1"}}`)
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
@@ -1781,8 +1781,8 @@ func TestCommitReadsOneCommitsMessage(t *testing.T) {
 	if err != nil || c.SHA != "c1" || c.Author != "ogenki-agents[bot]" || c.Trailer("Agent-Run") != "r1" {
 		t.Fatalf("%+v %v", c, err)
 	}
-	if !slices.Equal(c.Parents, []string{"p1"}) || !slices.Equal(c.Files, []string{"a.py", "new.py", "old.py"}) || c.Subject() != "test: pin it" {
-		t.Fatalf("parents %v files %v subject %q", c.Parents, c.Files, c.Subject())
+	if !slices.Equal(c.Parents, []string{"p1"}) || len(c.Stats) != 2 || c.Stats[1].Previous != "old.py" || c.Stats[1].Status != "renamed" || c.Subject() != "test: pin it" {
+		t.Fatalf("parents %v stats %v subject %q", c.Parents, c.Stats, c.Subject())
 	}
 	if _, err := r.g.Commit(t.Context(), "nope"); err == nil {
 		t.Fatal("an unknown sha must be an error")

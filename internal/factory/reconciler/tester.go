@@ -16,6 +16,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"sigs.k8s.io/yaml"
 )
 
 // testerDue (F3-R1): the class writes its tests first, the task is public and holds no contract, and no
@@ -120,18 +121,14 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 	case err != nil:
 		return nil, "", err
 	}
-	rec, err := r.recordedContract(ctx, t)
-	if err != nil {
-		return nil, "", err
-	}
 	if len(ps) == 0 {
 		note, err := r.testerNote(ctx, t)
 		if err != nil {
 			return nil, "", err
 		}
-		// A run that succeeded, whose harness reported its commit or said the contract was ready, has a
+		// A run that succeeded, or whose harness said the contract was ready, has a
 		// push GitHub has not recorded yet; a run that failed with no note pushed none.
-		pending := rec.n > 0 || note == "contract_ready" || (note == "" && cur.Phase == "Succeeded")
+		pending := note == "contract_ready" || (note == "" && cur.Phase == "Succeeded")
 		if pending && cur.Finished != nil && r.Now().Sub(cur.Finished.Time) < contractPushWait {
 			return nil, "wait", nil
 		}
@@ -140,17 +137,18 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 		}
 		return nil, note, nil
 	}
-	// The push record is GitHub's, but a model can push too (the credential helper stays): a push the
-	// agents App made while a tester run held the room is not therefore the harness's. Adopted only
-	// when it is one creation, and the commit is the very one the harness reported through room_contract
-	// (a tool the model cannot call), on the base the harness recorded, with the fixed subject, and
-	// its trailers name exactly the files it changes.
+	// Nothing here trusts who pushed: the credential helper stays in the sandbox, so a push by the agents
+	// App may be the model's own. The contract is verified by what GitHub holds: one creation, a commit
+	// of the fixed subject on a parent that is on the default branch, whose every change is a plain
+	// addition or edit of a test file under the declaration's tests.paths, read at that parent, and whose
+	// trailers name exactly those files. That the tests are red on the base is proven at merge, by the
+	// required contract check (row 2b), not here.
 	tip := ps[0].After
 	pc, err := r.pushedBy(ctx, branch, []string{r.Cfg.AgentsLogin}, tip)
 	if err != nil {
 		return nil, "", err
 	}
-	if pc != pushFactory || len(ps) != 1 || ps[0].Type != "branch_creation" || !sha40.MatchString(tip) || rec.n != 1 || rec.commit != tip {
+	if pc != pushFactory || len(ps) != 1 || ps[0].Type != "branch_creation" || !sha40.MatchString(tip) {
 		return nil, "contract_invalid", nil
 	}
 	cm, err := r.gh(ctx).Commit(ctx, tip)
@@ -159,8 +157,18 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 	}
 	files, ids := cm.Trailers("Agent-Contract-File"), cm.Trailers("Agent-Contract-Id")
 	if cm.Trailer("Agent-Contract") != cur.ID || cm.Trailer("Agent-Run") != cur.ID || cm.Subject() != contractSubject ||
-		len(cm.Parents) != 1 || cm.Parents[0] != rec.base || cm.FilesTruncated || len(files) == 0 || len(ids) == 0 ||
-		slices.Contains(files, "") || slices.Contains(ids, "") || !sameSet(files, cm.Files) {
+		len(cm.Parents) != 1 || cm.FilesTruncated || len(files) == 0 || len(ids) == 0 ||
+		slices.Contains(files, "") || slices.Contains(ids, "") {
+		return nil, "contract_invalid", nil
+	}
+	if ok, err := r.onDefaultBranch(ctx, cm.Parents[0]); err != nil {
+		return nil, "", err
+	} else if !ok {
+		return nil, "contract_invalid", nil
+	}
+	if ok, err := r.testsOnly(ctx, cm, files); err != nil {
+		return nil, "", err
+	} else if !ok {
 		return nil, "contract_invalid", nil
 	}
 	if !within(files) || !within(ids) {
@@ -169,54 +177,59 @@ func (r *Reconciler) readContract(ctx context.Context, t *v1alpha1.Task) (*v1alp
 	return &v1alpha1.ContractStatus{RunID: cur.ID, Commit: tip, Files: files, IDs: ids}, "", nil
 }
 
-// recorded is what the tester harness reported through room_contract: how many distinct reports, and the
-// commit and base of the last.
-type recorded struct {
-	n            int
-	commit, base string
+// defaultBranch is the ref a contract's parent must be on: the base every run is cut from.
+const defaultBranch = "main"
+
+// onDefaultBranch: sha is the default branch's head or one of its ancestors, so a parent the model crafted
+// (carrying changes that never went through review) is not one.
+func (r *Reconciler) onDefaultBranch(ctx context.Context, sha string) (bool, error) {
+	if !sha40.MatchString(sha) {
+		return false, nil
+	}
+	return r.merger(ctx).IsAncestor(ctx, sha, defaultBranch)
 }
 
-// recordedContract reads the current run's room_contract events: the broker stamps their origin from
-// the run's credential and only the harness's client may call the tool, so the model cannot write one.
-func (r *Reconciler) recordedContract(ctx context.Context, t *v1alpha1.Task) (recorded, error) {
-	cur := current(t)
-	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
-		return e.Type == envelope.Message && e.RunID == cur.ID && e.Origin == envelope.OriginClient &&
-			e.Actor.Kind == envelope.ActorAgent && e.Actor.ID == "agent:"+cur.ID && e.Actor.Role == "tester"
-	})
+// checksDecl is the part of .github/agent-checks.yaml a contract is held to: the paths a tester may write
+// and the runner's own files, which are never a contract.
+type checksDecl struct {
+	Tests struct {
+		Paths  []string `json:"paths"`
+		Runner []string `json:"runner"`
+	} `json:"tests"`
+}
+
+// underPath is the declaration's rule: the path itself, or any path under a prefix ending in "/".
+func underPath(path string, prefixes []string) bool {
+	return slices.ContainsFunc(prefixes, func(p string) bool { return path == p || (strings.HasSuffix(p, "/") && strings.HasPrefix(path, p)) })
+}
+
+// testsOnly: the declaration at the contract's parent (never the change's own) names the paths, and every
+// file of the commit is added or modified, under tests.paths and not a runner file, and the trailers'
+// files are exactly them. An absent or unreadable declaration is a refusal.
+func (r *Reconciler) testsOnly(ctx context.Context, cm forge.Commit, trailers []string) (bool, error) {
+	raw, err := r.merger(ctx).FileAt(ctx, ".github/agent-checks.yaml", cm.Parents[0])
 	if err != nil {
-		return recorded{}, err
+		return false, err
 	}
-	var out recorded
-	seen := map[string]bool{}
-	for _, e := range evs {
-		var p envelope.MessagePayload
-		if json.Unmarshal(e.Payload, &p) != nil || p.Kind != envelope.KindContract {
-			continue
-		}
-		if k := p.Commit + "/" + p.Base; !seen[k] {
-			seen[k] = true
-			out.n++
-		}
-		out.commit, out.base = p.Commit, p.Base
+	var d checksDecl
+	if raw == "" || yaml.Unmarshal([]byte(raw), &d) != nil || len(d.Tests.Paths) == 0 {
+		return false, nil
 	}
-	return out, nil
+	var changed []string
+	for _, f := range cm.Stats {
+		if (f.Status != "added" && f.Status != "modified") || f.Previous != "" ||
+			!underPath(f.Path, d.Tests.Paths) || underPath(f.Path, d.Tests.Runner) {
+			return false, nil
+		}
+		changed = append(changed, f.Path)
+	}
+	return len(changed) > 0 && sameSet(changed, trailers), nil
 }
 
 // sameSet: a and b hold the same strings, whatever their order or repeats.
 func sameSet(a, b []string) bool {
-	in := func(x string, l []string) bool { return slices.Contains(l, x) }
-	for _, x := range a {
-		if !in(x, b) {
-			return false
-		}
-	}
-	for _, x := range b {
-		if !in(x, a) {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(a, func(x string) bool { return !slices.Contains(b, x) }) &&
+		!slices.ContainsFunc(b, func(x string) bool { return !slices.Contains(a, x) })
 }
 
 // within: no more values than the CRD holds, each of a bounded length.

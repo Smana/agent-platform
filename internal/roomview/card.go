@@ -211,7 +211,7 @@ func (c *card) facts(s summary.Summary) {
 	}
 	if j := s.Status.LastJudge; j != nil {
 		rows = append(rows, [2]string{"Judge", c.words(j.Verdict, judgeWords(j.Verdict), c.md()) + " " + c.quoted(j.Reason, c.md()) +
-			" (the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
+			" (reported by the run: the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
 	}
 	if s.Status.Next != "" {
 		rows = append(rows, [2]string{"Next", c.broker(s.Status.Next)})

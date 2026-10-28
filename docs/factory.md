@@ -145,21 +145,28 @@ flowchart LR
   impl --> gate["merge gate: rows 2b and 2c"]
 ```
 
-The factory reads the contract from GitHub's record of the push and the commit, never from what a
-model writes in the room: a note, a handoff summary or a commit subject decides nothing. The
-credential helper stays in the sandbox, so a push by the agents App is not proof that the harness
-made it. The harness therefore reports the commit it pushed, and the base it sat on, through
-`room_contract`, a tool only the harness's own client may call. The factory adopts a commit only
-when GitHub records one branch creation by the agents App, the branch tip is the commit the harness
-reported, it has the fixed subject `test: the test contract` and a single parent, the base the
-harness recorded, and its `Agent-Contract-File` trailers are exactly the files it changes. Anything
-else (a second push, a push by anyone else, an unreported commit, a trailer naming another run) is
-`contract_invalid`. A contract of more than 50 files or ids, or one longer than 512 bytes, is
-`contract_too_large`: the Task records at most that, and never a truncated contract. The tester's end note only names a category (`contract_ready`, `not_testable`,
-`contract_not_red`, `contract_outside_tests`), counted in `agent_factory_contracts_total`. With no
-push recorded the task has no contract: a `contract_ready` note waits up to five minutes for GitHub
-to record the push, and any other end (or a failed run) lets the implementer start without one. A
-lost sandbox resumes the tester; a person's stop or an exhausted budget escalates as for any run.
+The factory reads the contract from GitHub alone and trusts nothing about who pushed it: the
+credential helper stays in the sandbox, so a push by the agents App may be the model's own, and
+the room (a note, a handoff, a commit subject) decides nothing. It adopts a commit only when GitHub
+records one branch creation by the agents App and the commit has the fixed subject
+`test: the test contract`, trailers naming this run, and a single parent that is on the default
+branch (an ancestor of its head: a parent the model crafted is not). Read at that parent, never at
+the change, `.github/agent-checks.yaml`'s `tests.paths` must hold every file of the commit, none may
+be under `tests.runner`, each must be a plain addition or edit (no delete, rename or copy), and the
+`Agent-Contract-File` trailers must be exactly those files. Anything else (a second push, a push by
+anyone else, a trailer naming another run) is `contract_invalid`. A contract of more than 50 files
+or ids, or one longer than 512 bytes, is `contract_too_large`: the Task records at most that, and
+never a truncated contract.
+
+The tester's end note only names a category (`contract_ready`, `not_testable`, `contract_not_red`,
+`contract_outside_tests`), a hint counted in `agent_factory_contracts_total`. With no push recorded
+the task has no contract: a `contract_ready` note waits up to five minutes for GitHub to record the
+push, and any other end (or a failed run) lets the implementer start without one. A lost sandbox
+resumes the tester; a person's stop or an exhausted budget escalates as for any run.
+
+That the tests are red on the base is not checked here. It stays proven at merge by the required
+contract check (row 2b, `merge.contractCheck`): a forged or vacuous contract costs one implementer
+run and then ends `ci_red` or with a maintainer.
 
 Every implementer brief of a task with a contract carries it (the first, each revision, each CI
 fix, a resumed run's): the commit, its files and up to 50 test ids between `CONTRACT-<nonce>` fence

@@ -1078,10 +1078,8 @@ func (g *GitHub) Commit(ctx context.Context, sha string) (Commit, error) {
 		out.Parents = append(out.Parents, p.GetSHA())
 	}
 	for _, f := range c.Files {
-		out.Files = append(out.Files, f.GetFilename())
-		if p := f.GetPreviousFilename(); p != "" {
-			out.Files = append(out.Files, p)
-		}
+		out.Stats = append(out.Stats, FileStat{Path: f.GetFilename(), Previous: f.GetPreviousFilename(), Status: f.GetStatus(),
+			Additions: f.GetAdditions(), Deletions: f.GetDeletions()})
 	}
 	return out, nil
 }

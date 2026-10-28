@@ -173,10 +173,10 @@ type Commit struct {
 	SHA     string
 	Author  string // the login GitHub matched the author's email to, "" when none: never proof
 	Message string
-	// Parents and Files are read only by Commit (one commit by sha): its parents' shas and the paths
-	// it changes against them (a rename lists both names). FilesTruncated is a full page of files.
+	// Parents and Stats are read only by Commit (one commit by sha): its parents' shas and the files
+	// it changes against them, each with its status (added, modified, removed, renamed...). FilesTruncated is a full page of files.
 	Parents        []string
-	Files          []string
+	Stats          []FileStat
 	FilesTruncated bool
 }
 
