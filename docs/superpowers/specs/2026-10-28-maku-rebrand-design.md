@@ -161,3 +161,15 @@ The phase 1 plan (`docs/superpowers/plans/2026-10-28-maku-rebrand-phase1-plan.md
 6. **The Go package `internal/roomctl` becomes `internal/maku`,** following the codebase's one-binary-one-package convention.
 7. **The GitHub Pages demo** (`blog.ogenki.io/agent-platform/`) moves with the repository. Its links and README badge are updated in phase 1.
 8. **Precondition:** #165 (install anywhere) must be merged before phase 1 starts. The `agent-platform` umbrella chart and the quickstart exist only on that PR.
+
+## Corrections found while planning phase 2 (2026-10-29)
+
+Found while writing `docs/superpowers/plans/2026-10-29-maku-rebrand-phase2-plan.md`. Where they disagree with the Phase 2 section above, these supersede it.
+
+1. **Guard the copy against the running controllers.** If `migrate-group` creates a copy and writes its status afterwards, two races open. The Room controller can see a fresh Room with no status and re-open a purged log. The factory can see a Task with no phase and end a finished task as Stopped. Every copy is therefore created with a `maku.ogenki.io/migrating` annotation, which both controllers skip. The annotation is removed only after the status write is confirmed.
+2. **Rollback after `--apply` is a reverse migration, never a delete.** Once the originals are deleted, removing a finalized Room copy runs its finalizer and seals its log. Re-pinning v0.30.x is unsafe at that point. Rollback runs `migrate-group --from maku.ogenki.io --to agents.ogenki.io --apply` while v0.31.0 is still running, and only then re-pins.
+3. **The kill switch stops every open task,** so the window's verification cannot include "a test task runs end to end" before the switch is released. That check moves after the release.
+4. **`helm upgrade` never installs or changes CRDs from a chart's `crds/` directory.** The new-group CRDs are applied explicitly in the window (`kubectl apply --server-side -f` the release's CRD asset) or by a Flux Kustomization, never left to Helm.
+5. **Short kubectl names are ambiguous while both groups exist.** The runbook always uses fully-qualified resources (`rooms.agents.ogenki.io`, `rooms.maku.ogenki.io`).
+6. **The gate before deleting the old CRDs is "a fresh dry run finds nothing to migrate",** not "the report is empty".
+7. **Keys stay; the group moves.** The `agents.ogenki.io/*` label and annotation keys stay, because crossplane-configuration and policies select on them (D1). The API group, the Room finalizer and the two new migration annotations move to `maku.ogenki.io`.
