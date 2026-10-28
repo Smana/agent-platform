@@ -1,5 +1,3 @@
-# agent-platform
-
 <a href="docs/naming.md">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/png/maku-lockup-horizontal-dark.png">
