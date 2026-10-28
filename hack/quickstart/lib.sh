@@ -45,6 +45,22 @@ qs_port_ok() {
   return 1
 }
 
+# qs_retry_webhook TRIES DELAY CMD...: runs CMD, retrying only while an admission webhook does not
+# answer yet. An operator's Deployment reports ready a moment before its webhook serves (CNPG,
+# 2026-10-28: "failed calling webhook mcluster.cnpg.io"). Any other error returns at once.
+qs_retry_webhook() {
+  local tries=$1 delay=$2 i err
+  shift 2
+  err=$(mktemp)
+  for ((i = 1; i <= tries; i++)); do
+    if "$@" 2>"$err"; then rm -f "$err"; return 0; fi
+    if ! grep -q 'failed calling webhook' "$err" || ((i == tries)); then
+      cat "$err" >&2; rm -f "$err"; return 1
+    fi
+    sleep "$delay"
+  done
+}
+
 # qs_secret NS NAME TYPE KEY=VAR...: a Secret manifest on stdout. Each value is read by yq from the
 # environment variable VAR (strenv), so no value is ever a command-line argument (/proc/<pid>/cmdline
 # is world-readable). Pipe it to kubectl apply -f -.

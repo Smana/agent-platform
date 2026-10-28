@@ -15,7 +15,7 @@ for role in rooms-broker rooms-retention; do
   qs_secret "$ns" "$role-password" kubernetes.io/basic-auth username=QS_ROLE_USER password=QS_ROLE_PASSWORD | kubectl apply -f -
 done
 
-kubectl -n "$ns" apply -f hack/quickstart/manifests/cnpg-cluster.yaml.tmpl
+qs_retry_webhook 30 2 kubectl -n "$ns" apply -f hack/quickstart/manifests/cnpg-cluster.yaml.tmpl
 kubectl -n "$ns" wait --for=condition=Ready cluster/rooms --timeout=300s
 # Ready means the primary is healthy; the managed roles are created a moment later, and the broker's
 # migrations GRANT to them.
