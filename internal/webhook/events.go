@@ -67,12 +67,13 @@ func Clip(kind, v string) string {
 // room (M1): what it has sent is that subscriber's, so two subscribers at different cursors never
 // share it. The emitter warms it by replaying the room up to the subscriber's cursor.
 type Tracker struct {
-	seq    int64  // the last seq read: an entry at or below it is a replay and means nothing
-	phase  string // the last task phase seen: an event fires on a change only (M2)
-	pr     int    // the last pull request number seen, for merged, reverted and verdict_posted
-	prSent bool
-	ended  bool
-	origin string // the last origin the task facts named: every event after it repeats it (RA10)
+	seq        int64  // the last seq read: an entry at or below it is a replay and means nothing
+	phase      string // the last task phase seen: an event fires on a change only (M2)
+	pr         int    // the last pull request number seen, for merged, reverted and verdict_posted
+	prSent     bool
+	mergedSent bool // room.merged goes out once: a human merge reaches it through reason, not phase
+	ended      bool
+	origin     string // the last origin the task facts named: every event after it repeats it (RA10)
 }
 
 // Events is what ev means to a subscriber of room, whose repository is repo: none, one or a few
@@ -133,6 +134,11 @@ func (t *Tracker) task(room, repo string, f envelope.TaskFacts) []Event {
 			out = append(out, Event{Type: "room.pr_opened", Room: room, PR: t.pr})
 		}
 	}
+	if !t.mergedSent && (f.Reason == "merged" || f.Reason == "merged_verified") {
+		// A human merge is Done to Done with reason merged: no Merged phase, so the reason is the fact.
+		t.mergedSent = true
+		out = append(out, Event{Type: "room.merged", Room: room, PR: t.pr})
+	}
 	if f.Phase == t.phase {
 		return out // the factory rewrites a phase's facts (budget, run, PR): no new event
 	}
@@ -145,7 +151,10 @@ func (t *Tracker) task(room, repo string, f envelope.TaskFacts) []Event {
 	case "AwaitingHuman", "Escalated":
 		out = append(out, Event{Type: "room.waiting_for_human", Room: room, Reason: Clip("reason", f.Reason)})
 	case "Merged":
-		out = append(out, Event{Type: "room.merged", Room: room, PR: t.pr})
+		if !t.mergedSent {
+			t.mergedSent = true
+			out = append(out, Event{Type: "room.merged", Room: room, PR: t.pr})
+		}
 	case "Reverted":
 		out = append(out, Event{Type: "room.reverted", Room: room, PR: t.pr})
 	}
