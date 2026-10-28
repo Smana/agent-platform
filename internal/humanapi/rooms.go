@@ -207,7 +207,17 @@ type roomRow struct {
 	// Step is the one thing to do for the room and where: approve on its page, or merge or close
 	// the PR on GitHub. Absent when nothing waits for a human.
 	Step *summary.Step `json:"step,omitempty"`
-	You  wire.You      `json:"you"`
+	// Status is the room page's status line (summary.StatusLine) for the caller, from this row's
+	// data: fixed words and numbers, never agent text. Absent when the state is unknown.
+	Status *rowStatus `json:"status,omitempty"`
+	You    wire.You   `json:"you"`
+}
+
+// rowStatus is a row's status line: the kind the page colours by, its icon and its words.
+type rowStatus struct {
+	Kind string `json:"kind"`
+	Icon string `json:"icon"`
+	Text string `json:"text"`
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
@@ -483,10 +493,41 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
 		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
+		row.Status = s.rowStatus(room, row, live, expired, facts)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
 	return out, access, nil
+}
+
+// failed are the task phases whose status line says why they failed, from the last facts' reason.
+var failed = map[string]bool{"Rejected": true, "Reverted": true}
+
+// rowStatus is the row's status line, as the room's summary would say it to the caller: the same
+// StatusLine over the row's projected data. The run is runwatch's, in memory; the only store read
+// is the facts' reason, already read for a waiting row, and read for a failed one. nil when the
+// state is one this broker does not know.
+func (s *Server) rowStatus(room *v1alpha1.Room, row roomRow, live []store.Approval, expired int, facts factsFn) *rowStatus {
+	in := summary.StatusIn{State: row.State, Phase: cmp.Or(row.Task, row.Phase), Reason: row.Reason, PR: row.PR,
+		Issue: row.Issue, Mine: len(live), Step: row.Step, Now: s.now()}
+	if row.Phase == "Closed" || row.Phase == "Sealed" {
+		in.Phase = row.Phase // as the summary of a sealed log says its seal, not the task it stopped
+	}
+	in.Others = max(0, int(room.Status.PendingApprovals)-expired-in.Mine)
+	if failed[row.Task] {
+		in.Reason = waitReason(facts)
+	}
+	for _, r := range s.Runs.InRoom(room.Name) {
+		if r.Live() && r.Phase == "Running" {
+			in.RunRole, in.RunStart, in.RunPresent = r.Role, r.StartedAt, true
+			break
+		}
+	}
+	st := summary.StatusLine(in)
+	if st.Kind == "" {
+		return nil
+	}
+	return &rowStatus{Kind: st.Kind, Icon: st.Icon, Text: st.Words}
 }
 
 // waits are the task phases whose rows carry a reason, as the summary's status does.

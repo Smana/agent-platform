@@ -40,7 +40,12 @@ export interface RoomRow {
   id: string; phase: string; owner: string; driver: string; dataClass: string; lastSeq: number;
   repository?: string; issue?: number; title?: string; task?: string; pr?: number; needsYou?: number;
   lastEventAt?: string;
+  // status is the room page's status line, computed by the broker (summary.StatusLine): fixed words
+  // and numbers, never agent text. Absent from an older broker, or when it does not know the state.
+  status?: RowStatus;
 }
+
+export interface RowStatus { kind: string; icon: string; text: string }
 
 // lastMs is a row's last event in ms, 0 when omitted, zero or unreadable (never 1970 on screen).
 function lastMs(row: RoomRow): number {
@@ -86,6 +91,35 @@ function cell(tag: "td" | "th", ...kids: (Node | string)[]): HTMLElement {
   return c;
 }
 
+// statusCell is the room page's status line, compact: the kind's accent, the icon and the words, as
+// plain text with no live region (a list of them would chatter). The raw phase is the tooltip. A row
+// without a status shows the phase as the room page's phase chip, as before.
+function statusCell(st: RowStatus | undefined, phase: string): HTMLElement {
+  const td = cell("td");
+  td.className = "status";
+  td.title = phase;
+  if (!st?.kind) {
+    const chip = document.createElement("span");
+    chip.className = "chip chip-phase";
+    chip.textContent = phase;
+    td.append(chip);
+    return td;
+  }
+  const line = document.createElement("span");
+  line.className = "row-status";
+  line.dataset.kind = st.kind;
+  const icon = document.createElement("span");
+  icon.className = "row-status-icon";
+  icon.setAttribute("aria-hidden", "true"); // the words say it all
+  icon.textContent = st.icon;
+  const words = document.createElement("span");
+  words.className = "row-status-words";
+  words.textContent = st.text;
+  line.append(icon, " ", words);
+  td.append(line);
+  return td;
+}
+
 function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
   const c = rowCells(row, now);
   const needs = cell("td");
@@ -104,10 +138,7 @@ function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
   a.textContent = c.task;
   const repo = cell("td", c.repo);
   repo.className = "repo";
-  // The phase is the room page's phase chip (strip.ts), still plain text inside.
-  const phase = document.createElement("span");
-  phase.className = "chip chip-phase";
-  phase.textContent = c.phase;
+  const status = statusCell(row.status, c.phase);
   const last = cell("td", c.last || "—");
   const t = lastMs(row);
   if (t) last.title = new Date(t).toLocaleString();
@@ -117,7 +148,7 @@ function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
   id.className = "room-id";
   const tr = document.createElement("tr");
   tr.className = "room-row";
-  tr.append(needs, cell("td", a), repo, cell("td", phase), cell("td", c.pr), last, id);
+  tr.append(needs, cell("td", a), repo, status, cell("td", c.pr), last, id);
   return tr;
 }
 
@@ -205,7 +236,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   table.className = "rooms";
   table.setAttribute("aria-label", "Rooms");
   const head = document.createElement("tr");
-  head.append(...["Needs you", "Task", "Repository", "Phase", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
+  head.append(...["Needs you", "Task", "Repository", "Status", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
   const thead = document.createElement("thead");
   thead.append(head);
   const tbody = document.createElement("tbody");

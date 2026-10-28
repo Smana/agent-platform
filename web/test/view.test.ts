@@ -193,7 +193,23 @@ describe("the room list's layout", () => {
     expect(links[0].getAttribute("href")).toBe("/r/3kq7x2ma");
     expect(links[0].textContent).toBe("#74 Chat view");
   });
-  it("shows the phase as a chip, the room page's class, still text", async () => {
+  it("says the room page's status line, its icon and words, with the raw phase in the tooltip", async () => {
+    const root = document.createElement("div");
+    const said = [{ ...rows[0], status: { kind: "waiting-you", icon: "⏳", text: "Waiting for you — approve a pending action" } }];
+    await listRooms(root, (async () => new Response(JSON.stringify(said), { status: 200 })) as unknown as typeof fetch);
+    expect([...root.querySelectorAll("th")].map((th) => th.textContent)[3]).toBe("Status");
+    const td = root.querySelectorAll("tbody tr td")[3] as HTMLElement;
+    expect(td.title).toBe("Reviewing");
+    const line = td.querySelector<HTMLElement>(".row-status")!;
+    expect(line.dataset.kind).toBe("waiting-you");
+    expect(line.querySelector(".row-status-icon")?.textContent).toBe("⏳");
+    expect(line.querySelector(".row-status-icon")?.getAttribute("aria-hidden")).toBe("true");
+    expect(line.querySelector(".row-status-words")?.textContent).toBe("Waiting for you — approve a pending action");
+    expect(td.textContent).toBe("⏳ Waiting for you — approve a pending action");
+    expect(root.querySelector("tbody [role], tbody [aria-live]")).toBeNull(); // no live region per row
+    expect(td.querySelector(".chip-phase")).toBeNull();
+  });
+  it("falls back to the phase chip when the broker sends no status", async () => {
     const td = (await mount()).querySelectorAll("tbody tr td")[3];
     const chip = td.querySelector("span.chip.chip-phase")!;
     expect(chip.textContent).toBe("Reviewing");

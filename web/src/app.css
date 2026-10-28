@@ -701,10 +701,21 @@ table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collaps
   color: var(--card-foreground); background: transparent;
   border-color: color-mix(in srgb, var(--card-foreground) 50%, var(--card));
 }
+/* The room page's status line (strip.ts's .run-status), compact: the accent bar is the colour cue,
+   never the only one, on tokens that hold 3:1 on a card and on a hovered row in both themes. */
+.rooms .row-status { display: inline-flex; gap: 6px; align-items: baseline; padding-left: 8px; border-left: 3px solid var(--muted-foreground); color: var(--card-foreground); font-weight: 500; line-height: 1.35; }
+.rooms .row-status[data-kind="running"] { border-left-color: var(--primary); }
+.rooms .row-status[data-kind="waiting-you"], .rooms .row-status[data-kind="waiting-other"], .rooms .row-status[data-kind="waiting-pr"], .rooms .row-status[data-kind="waiting"] { border-left-color: var(--warning-border); }
+.rooms .row-status[data-kind="finished"], .rooms .row-status[data-kind="done"] { border-left-color: var(--success); }
+.rooms .row-status[data-kind="failed"] { border-left-color: var(--destructive); }
+.rooms .row-status-icon { flex: none; }
 .rooms .repo, .rooms .room-id { color: var(--muted-foreground); }
+.rooms td.repo { white-space: nowrap; } /* an owner/name reads whole; the task and the status wrap */
 .rooms .room-id code { font-size: 13px; }
 @media (max-width: 600px) {
-  .rooms th:nth-child(n+4), .rooms td:nth-child(n+4) { display: none; }
+  /* A phone keeps what needs you, the task and its status; the repository and the rest go. */
+  .rooms th:nth-child(3), .rooms td:nth-child(3), .rooms th:nth-child(n+5), .rooms td:nth-child(n+5) { display: none; }
+  .rooms .row-status { font-size: 14px; }
   .rooms th:first-child { white-space: normal; } /* "Needs / you" on two lines, not a wide column */
   .rooms th, .rooms td { padding: 8px 10px; }
 }
