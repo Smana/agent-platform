@@ -338,11 +338,12 @@ an SBOM as attestations, and a keyless cosign signature on its digest:
 ```bash
 cosign verify ghcr.io/smana/room-broker@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/maku/\.github/workflows/release\.yaml@refs/tags/v'
+  --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/release\.yaml@refs/tags/v'
 ```
 
-That accepts released images only. PR pre-releases are not release-grade (they run unreviewed branch
-code): see [verifying an image](security.md#supply-chain) for their variant.
+Releases before v0.30.0 carry the `Smana/agent-platform` identity, hence both names in the
+regexp. That accepts released images only. PR pre-releases are not release-grade (they run
+unreviewed branch code): see [verifying an image](security.md#supply-chain) for their variant.
 
 ### Where it plugs in
 

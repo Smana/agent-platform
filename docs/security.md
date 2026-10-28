@@ -297,11 +297,14 @@ IMAGE=ghcr.io/smana/room-broker@sha256:<digest>
 
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/maku/\.github/workflows/release\.yaml@refs/tags/v'
+  --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/release\.yaml@refs/tags/v'
 
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .SBOM }}'        # SPDX SBOM per platform
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}'  # SLSA provenance
 ```
+
+Releases and pre-releases before v0.30.0 carry the `Smana/agent-platform` identity, so each regexp
+accepts both repository names.
 
 **PR pre-releases are not release-grade: they run unreviewed branch code. Use them for integration
 testing only.** To verify one, accept the PR workflow instead:
@@ -309,7 +312,7 @@ testing only.** To verify one, accept the PR workflow instead:
 ```bash
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/maku/\.github/workflows/ci\.yaml@'
+  --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/ci\.yaml@'
 ```
 
 ## Reporting a vulnerability
