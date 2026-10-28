@@ -91,3 +91,21 @@ func TestSlackNotOKIsError(t *testing.T) {
 		t.Fatal("Message: ok:false accepted")
 	}
 }
+
+func TestSlackThreadFollowsTheCursor(t *testing.T) {
+	var cursors []string
+	c := slackServer(t, func(_ string, r *http.Request, _ []byte) string {
+		cur := r.URL.Query().Get("cursor")
+		cursors = append(cursors, cur)
+		if cur == "" {
+			return `{"ok":true,"messages":[{"ts":"1729.0001","user":"U02DEF","text":"parent"}],"response_metadata":{"next_cursor":"c2"}}`
+		}
+		return `{"ok":true,"messages":[{"ts":"1729.0002","thread_ts":"1729.0001","user":"U0BOT","text":"d",
+		 "metadata":{"event_type":"factory_draft","event_payload":{"repo":"a/b","author":"U02DEF","rev":2}}}]}`
+	})
+	msgs, err := c.Thread(context.Background(), "C03", "1729.0001")
+	if err != nil || len(msgs) != 2 || len(cursors) != 2 || cursors[1] != "c2" ||
+		msgs[1].Metadata == nil || msgs[1].Metadata.EventPayload.Author != "U02DEF" || msgs[1].Metadata.EventPayload.Rev != 2 {
+		t.Fatalf("%v %v %+v", err, cursors, msgs)
+	}
+}

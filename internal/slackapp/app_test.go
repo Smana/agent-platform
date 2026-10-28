@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -220,6 +221,19 @@ func (f *fakeSlack) Message(_ context.Context, _, ts string) (Message, error) {
 		return Message{}, errors.New("message_not_found")
 	}
 	return m, nil
+}
+
+func (f *fakeSlack) Thread(_ context.Context, _, threadTS string) ([]Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Message
+	for _, m := range f.msgs {
+		if m.TS == threadTS || m.ThreadTS == threadTS {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TS < out[j].TS })
+	return out, nil
 }
 
 func (f *fakeSlack) seed(m Message) { f.mu.Lock(); f.msgs[m.TS] = m; f.mu.Unlock() }
@@ -554,8 +568,8 @@ func TestDraftPostIsInert(t *testing.T) {
 			t.Fatalf("%s survived: %q", bad, p.text)
 		}
 	}
-	if strings.Count(p.text, "```") != 2 {
-		t.Fatalf("a fence in the body closed the block early: %q", p.text)
+	if strings.Contains(p.text, "```") {
+		t.Fatalf("a fence from the body survived: %q", p.text)
 	}
 	if p.meta == nil || !strings.Contains(p.meta.EventPayload.Title, "<!channel>") {
 		t.Fatal("the metadata must keep the draft as the broker returned it")
@@ -627,7 +641,186 @@ func TestSingleLineMentionPostsTheComposedDraft(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.mention("C03", "1729.0001", "<@U0BOT> docs: fix a dead link")
 	p := rig.lastPost().text
-	if !strings.HasPrefix(p, "Draft for ") || !strings.Contains(p, "## What is wrong\ndocs: fix a dead link") || !strings.Contains(p, "## Acceptance check\nNone given in Slack") {
+	if !strings.HasPrefix(p, "Draft for ") || !strings.Contains(p, "\n\n*What is wrong*\ndocs: fix a dead link\n") || !strings.Contains(p, "*Acceptance check*\nNone given in Slack") || strings.Contains(p, "##") {
 		t.Fatalf("%q", p)
+	}
+}
+
+// ---- draft editing in the thread ----
+
+func (r *appRig) reply(user, text string) {
+	r.t.Helper()
+	r.seq++
+	r.event(`{"type":"message","channel":"C03","user":"` + user + `","thread_ts":"1729.0001","ts":"1729.9` + strconv.Itoa(100+r.seq) + `","text":` + jsonString(text) + `}`)
+}
+
+func editRig(t *testing.T) *appRig {
+	t.Helper()
+	return newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+}
+
+func (r *appRig) payload(p post) DraftPayload { return p.meta.EventPayload }
+
+// Today's case: a one-line mention, then a reply that adds the acceptance check.
+func TestReplyAddsTheAcceptanceCheck(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends without a pointer")
+	first := rig.lastPost()
+	if !strings.Contains(first.text, "*Acceptance check*\n"+noAcceptance) {
+		t.Fatalf("%q", first.text)
+	}
+	rig.reply("U02DEF", "Acceptance: the runbook ends with a See also line to runbook 20")
+	if len(rig.posts()) != 2 {
+		t.Fatalf("%d posts", len(rig.posts()))
+	}
+	second := rig.lastPost()
+	p := rig.payload(second)
+	if !strings.Contains(p.Body, "## Acceptance check\nthe runbook ends with a See also line to runbook 20") ||
+		!strings.Contains(p.Body, "## What is wrong\ndocs: runbook 18 ends without a pointer") ||
+		p.Author != "U02DEF" || p.Rev != 2 || p.SHA256 != draftHash(p.Repo, p.Title, p.Body) {
+		t.Fatalf("%+v", p)
+	}
+	if rig.metrics.count("events", "edited") != 1 {
+		t.Fatal("the edit went uncounted")
+	}
+}
+
+func TestReplyKinds(t *testing.T) {
+	for _, tc := range []struct{ name, reply, want, wantTitle string }{
+		{"title", "Title: runbook 18 gets a see also", "", "docs: runbook 18 gets a see also"},
+		{"title, doc word in the body", "Title: fix the thing", "", "docs: fix the thing"},
+		{"should", "Should: end with a pointer", "## What it should be\nend with a pointer\n", ""},
+		{"expected", "Expected: a pointer", "## What it should be\na pointer\n", ""},
+		{"done when", "Done when: line one\nline two", "## Acceptance check\nline one\nline two", ""},
+		{"check", "Check: it ends with a link", "## Acceptance check\nit ends with a link", ""},
+		{"free text", "also the table is wrong", "## What is wrong\nalso the table is wrong\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := editRig(t)
+			rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+			rig.reply("U02DEF", tc.reply)
+			p := rig.payload(rig.lastPost())
+			if rig.payload(rig.posts()[0]).SHA256 == p.SHA256 {
+				t.Fatal("nothing changed")
+			}
+			if tc.want != "" && !strings.Contains(p.Body, tc.want) {
+				t.Fatalf("%q", p.Body)
+			}
+			if tc.wantTitle != "" && p.Title != tc.wantTitle {
+				t.Fatalf("%q", p.Title)
+			}
+		})
+	}
+}
+
+func TestReplyAppendsToWhatIsWrong(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18\nthe pointer is missing")
+	rig.reply("U02DEF", "and the table is stale")
+	if !strings.Contains(rig.payload(rig.lastPost()).Body, "## What is wrong\nthe pointer is missing\n\nand the table is stale\n") {
+		t.Fatalf("%q", rig.payload(rig.lastPost()).Body)
+	}
+}
+
+func TestReplyIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U07GHI", "Acceptance: someone else's") // not the author
+	rig.reply("U02DEF", "   ")                        // nothing to apply
+	rig.reply("U0BOT", "Acceptance: the bot's own")
+	rig.event(`{"type":"message","subtype":"message_changed","channel":"C03","user":"U02DEF","thread_ts":"1729.0001","ts":"1729.9","text":"Acceptance: x"}`)
+	rig.event(`{"type":"message","channel":"C03","user":"U02DEF","ts":"1729.7","text":"Acceptance: top level"}`)
+	rig.event(`{"type":"message","channel":"C99","user":"U02DEF","thread_ts":"1729.0001","ts":"1729.8","text":"Acceptance: other channel"}`)
+	rig.reply("U02DEF", "<@U0BOT> a mention in a reply is the mention flow's")
+	if n := len(rig.posts()); n != 1 { // the draft alone: no reply, no note
+		t.Fatalf("%d posts: %+v", n, rig.posts())
+	}
+}
+
+func TestReplyAfterFilingIsIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	draft := rig.lastPost()
+	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 1 || rig.lastPost().meta == nil || rig.lastPost().meta.EventType != "factory_filed" {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+	before := len(rig.posts())
+	rig.reply("U02DEF", "Acceptance: too late")
+	if len(rig.posts()) != before {
+		t.Fatal("a filed draft was edited")
+	}
+	rig.react("C03", draft.ts, "U07GHI", "white_check_mark") // a second ✅ on the filed draft is still a duplicate
+	if !strings.Contains(rig.lastPost().text, "Already filed") {
+		t.Fatalf("%q", rig.lastPost().text)
+	}
+}
+
+func TestReactionOnASupersededDraftIsIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	old := rig.lastPost()
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	latest := rig.lastPost()
+	rig.react("C03", old.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "latest draft") {
+		t.Fatalf("a superseded draft was filed or the note is missing: %q", rig.lastPost().text)
+	}
+	rig.react("C03", latest.ts, "U02DEF", "white_check_mark")
+	calls := rig.broker.runCreates()
+	if len(calls) != 1 || !strings.Contains(calls[0].Body, "a see also line") {
+		t.Fatalf("%+v", calls)
+	}
+}
+
+func TestReplyRevisionCap(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	for i := range maxRevisions + 3 {
+		rig.reply("U02DEF", fmt.Sprintf("more %d", i))
+	}
+	drafts := 0
+	for _, p := range rig.posts() {
+		if p.meta != nil {
+			drafts++
+		}
+	}
+	if drafts != maxRevisions {
+		t.Fatalf("%d drafts", drafts)
+	}
+	if !strings.Contains(rig.lastPost().text, "most it can be") {
+		t.Fatalf("%q", rig.lastPost().text)
+	}
+}
+
+func TestReplyIsInertAndRefusalsAreSaid(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U02DEF", "Acceptance: ping <!channel> and <@U07GHI> ```x```")
+	txt := rig.lastPost().text
+	if strings.Contains(txt, "<!channel>") || strings.Contains(txt, "<@U07GHI>") || !strings.Contains(txt, "&lt;!channel&gt;") {
+		t.Fatalf("%q", txt)
+	}
+	rig.broker.draftErr = Refused("rejected: bad")
+	n := len(rig.posts())
+	rig.reply("U02DEF", "Should: x")
+	if len(rig.posts()) != n+1 || !strings.HasPrefix(rig.lastPost().text, "Change refused: rejected: bad") || rig.lastPost().meta != nil {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+}
+
+func TestSlackDraftIsMrkdwn(t *testing.T) {
+	d := Draft{Repo: "Smana/ai-native-ref", Title: "docs: fix", Body: composeBody("docs: fix", "wrong *thing*\nShould: right\nAcceptance: done")}
+	got := slackDraft(d)
+	for _, want := range []string{
+		"Draft for Smana/ai-native-ref: *docs: fix*\n\n*What is wrong*\nwrong *thing*\n\n",
+		"*What it should be*\nright\n\n", "*Acceptance check*\ndone\n\n", "Reply in this thread", ":white_check_mark:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "##") {
+		t.Fatalf("a raw heading in Slack: %q", got)
 	}
 }

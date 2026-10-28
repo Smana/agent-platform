@@ -22,7 +22,11 @@ import (
 
 const (
 	draftEventType = "factory_draft"
-	handleTimeout  = 30 * time.Second
+	// filedEventType marks the App's "Filed" line: a draft whose thread has one is no longer edited.
+	filedEventType = "factory_filed"
+	// maxRevisions bounds the drafts one thread can hold (each edit posts a new one).
+	maxRevisions  = 20
+	handleTimeout = 30 * time.Second
 	// maxMetadata bounds the draft's metadata JSON, well under Slack's message-metadata cap.
 	maxMetadata    = 8 << 10
 	maxWebhookBody = 64 << 10
@@ -51,8 +55,9 @@ type Recorder interface {
 	Request(ctx context.Context, route, outcome string)
 }
 
-// App is the flows: a mention drafts, a maintainer's check mark files, the broker's webhooks tell
-// the thread. It reads no thread reply and answers no approval (invariant 8).
+// App is the flows: a mention drafts, the draft's author amends it with replies in its thread, a
+// maintainer's check mark files, the broker's webhooks tell the thread. A thread reply is read only
+// to amend an unfiled draft; none is ever a command and no approval is answered (invariant 8).
 type App struct {
 	Slack       Slack
 	Broker      BrokerAPI
@@ -68,7 +73,8 @@ type App struct {
 	Metrics     Recorder
 	Logger      *slog.Logger
 
-	events, deliveries seen // event_id and webhook-id
+	events, deliveries seen       // event_id and webhook-id
+	editMu             sync.Mutex // one draft edit at a time, so two quick replies do not branch the draft
 }
 
 // seen is a bounded set of ids: Slack's event_id and a delivery's webhook-id (R26).
@@ -156,6 +162,7 @@ type slackEnvelope struct {
 
 type slackEvent struct {
 	Type     string `json:"type"`
+	Subtype  string `json:"subtype"`
 	Channel  string `json:"channel"`
 	User     string `json:"user"`
 	BotID    string `json:"bot_id"`
@@ -223,8 +230,10 @@ func (a *App) handle(ctx context.Context, env slackEnvelope) string {
 		return a.mention(ctx, ev)
 	case ev.Type == "reaction_added" && ev.Reaction == "white_check_mark" && ev.Item.Type == "message":
 		return a.reaction(ctx, env.TeamID, ev)
+	case ev.Type == "message":
+		return a.reply(ctx, ev)
 	}
-	return "ignored" // a thread message is never read for a command (invariant 8)
+	return "ignored"
 }
 
 func (a *App) mention(ctx context.Context, ev slackEvent) string {
@@ -258,23 +267,117 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 		a.log().Warn("issue_draft failed", "err", err)
 		return refuse("the draft could not be checked, try again")
 	}
-	text := fmt.Sprintf("Draft for %s: *%s*; a maintainer reacts :white_check_mark: to file it and start the work.\n```%s```",
-		slackText(d.Repo), slackText(d.Title), slackText(d.Body))
+	return a.postDraft(ctx, ev.Channel, thread, d, ev.User, 1)
+}
+
+// postDraft posts the draft as Slack shows it, its checked text and hash in the message metadata.
+func (a *App) postDraft(ctx context.Context, channel, thread string, d Draft, author string, rev int) string {
 	meta := &Metadata{EventType: draftEventType, EventPayload: DraftPayload{Repo: d.Repo, Title: d.Title, Body: d.Body,
-		SHA256: draftHash(d.Repo, d.Title, d.Body)}}
+		SHA256: draftHash(d.Repo, d.Title, d.Body), Author: author, Rev: rev}}
 	if mj, err := json.Marshal(meta); err != nil || len(mj) > maxMetadata {
 		// Slack would refuse the metadata: say so, with none of the draft's text.
-		if _, err := a.Slack.Post(ctx, ev.Channel, thread, "Draft not posted: it is too long to file from Slack; file it from the web UI.", nil); err != nil {
-			a.log().Warn("slack post failed", "channel", ev.Channel, "err", err)
+		if _, err := a.Slack.Post(ctx, channel, thread, "Draft not posted: it is too long to file from Slack; file it from the web UI.", nil); err != nil {
+			a.log().Warn("slack post failed", "channel", channel, "err", err)
 			return "error"
 		}
 		return "too_large"
 	}
-	if _, err := a.Slack.Post(ctx, ev.Channel, thread, text, meta); err != nil {
-		a.log().Warn("slack post failed", "channel", ev.Channel, "err", err)
+	if _, err := a.Slack.Post(ctx, channel, thread, slackDraft(d), meta); err != nil {
+		a.log().Warn("slack post failed", "channel", channel, "err", err)
 		return "error"
 	}
+	if rev > 1 {
+		return "edited"
+	}
 	return "drafted"
+}
+
+// slackDraft is the draft in Slack's mrkdwn: an intro line, then each section's bold label on its
+// own line with its text below. Headings are not mrkdwn, so the issue body's `##` stays on GitHub.
+// A body that is not the template's is shown whole in a code block.
+func slackDraft(d Draft) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Draft for %s: *%s*\n\n", slackText(d.Repo), slackText(d.Title))
+	if secs, ok := parseBody(d.Body); ok {
+		for i, label := range [3]string{"What is wrong", "What it should be", "Acceptance check"} {
+			fmt.Fprintf(&b, "*%s*\n%s\n\n", label, slackText(secs[i]))
+		}
+	} else {
+		fmt.Fprintf(&b, "```%s```\n\n", slackText(d.Body))
+	}
+	b.WriteString("_Reply in this thread to change it (`Title:`, `Should:`, `Acceptance:`, or any text to add to what is wrong), " +
+		"then a maintainer reacts :white_check_mark: to file it and start the work._")
+	return b.String()
+}
+
+// threadDraft is the thread's latest draft the App posted (hash holding) and whether a "Filed" line
+// of its own is in the thread.
+func (a *App) threadDraft(msgs []Message) (latest *Message, filed bool) {
+	for i := range msgs {
+		m := &msgs[i]
+		if m.User == "" || m.User != a.BotUserID || m.Metadata == nil {
+			continue
+		}
+		p := m.Metadata.EventPayload
+		switch m.Metadata.EventType {
+		case filedEventType:
+			filed = true
+		case draftEventType:
+			if p.SHA256 == draftHash(p.Repo, p.Title, p.Body) {
+				latest = m
+			}
+		}
+	}
+	return latest, filed
+}
+
+// reply amends the thread's pending draft with a reply from the author of the mention. Anyone
+// else's reply, a reply on a filed draft or in a thread without a draft is ignored without a word.
+func (a *App) reply(ctx context.Context, ev slackEvent) string {
+	ch, ok := a.Channels[ev.Channel]
+	if !ok || ev.Subtype != "" || ev.ThreadTS == "" || ev.ThreadTS == ev.TS || ev.User == a.BotUserID ||
+		!channelRE.MatchString(ev.Channel) || !userRE.MatchString(ev.User) || !tsRE.MatchString(ev.ThreadTS) ||
+		strings.TrimSpace(ev.Text) == "" || strings.Contains(ev.Text, "<@"+a.BotUserID+">") {
+		return "ignored" // a mention in a reply is the mention flow's, through app_mention
+	}
+	a.editMu.Lock()
+	defer a.editMu.Unlock()
+	msgs, err := a.Slack.Thread(ctx, ev.Channel, ev.ThreadTS)
+	if err != nil {
+		a.log().Warn("slack thread fetch failed", "channel", ev.Channel, "err", err)
+		return "error"
+	}
+	latest, filed := a.threadDraft(msgs)
+	if latest == nil || filed {
+		return "ignored"
+	}
+	p := latest.Metadata.EventPayload
+	if p.Author == "" || p.Author != ev.User || !slices.Contains(ch.Repositories, p.Repo) {
+		return "ignored"
+	}
+	say := func(text string) string {
+		if _, err := a.Slack.Post(ctx, ev.Channel, ev.ThreadTS, text, nil); err != nil {
+			a.log().Warn("slack post failed", "channel", ev.Channel, "err", err)
+			return "error"
+		}
+		return "refused"
+	}
+	d, changed := ApplyReply(Draft{Repo: p.Repo, Title: p.Title, Body: p.Body}, ev.Text)
+	if !changed {
+		return "ignored"
+	}
+	if p.Rev >= maxRevisions {
+		return say("This draft was changed the most it can be here: react :white_check_mark: to file it, or start a new one with a mention.")
+	}
+	d, err = a.Broker.IssueDraft(ctx, d)
+	if err != nil {
+		if r, ok := err.(Refused); ok { //nolint:errorlint // Refused is returned bare, never wrapped
+			return say("Change refused: " + shown(string(r)))
+		}
+		a.log().Warn("issue_draft failed", "err", err)
+		return say("The change could not be checked, try again.")
+	}
+	return a.postDraft(ctx, ev.Channel, ev.ThreadTS, d, p.Author, p.Rev+1)
 }
 
 func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
@@ -303,11 +406,23 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	if !tsRE.MatchString(thread) {
 		return "ignored"
 	}
-	say := func(text string) { // the verdict goes to the thread; a failure to say it is logged, not retried
-		if _, err := a.Slack.Post(ctx, ev.Item.Channel, thread, text, nil); err != nil {
+	sayMeta := func(text string, meta *Metadata) { // the verdict goes to the thread; a failure to say it is logged, not retried
+		if _, err := a.Slack.Post(ctx, ev.Item.Channel, thread, text, meta); err != nil {
 			a.log().Warn("slack post failed", "channel", ev.Item.Channel, "err", err)
 		}
 	}
+	say := func(text string) { sayMeta(text, nil) }
+	// Only the thread's latest draft files: an earlier one was replaced by an edit.
+	msgs, err := a.Slack.Thread(ctx, ev.Item.Channel, thread)
+	if err != nil {
+		a.log().Warn("slack thread fetch failed", "channel", ev.Item.Channel, "err", err)
+		return "error"
+	}
+	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != ev.Item.TS {
+		say("This draft was replaced by a newer one: react on the latest draft.")
+		return "ignored"
+	}
+	filedMark := &Metadata{EventType: filedEventType, EventPayload: DraftPayload{Repo: p.Repo}}
 	res, err := a.Broker.RunCreate(ctx, RunCreate{
 		Draft:      Draft{Repo: p.Repo, Title: p.Title, Body: p.Body},
 		MaxCostUSD: ch.MaxCostUSD,
@@ -326,7 +441,7 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	}
 	if !roomRE.MatchString(res.Room) {
 		a.log().Warn("run_create answered an unusable room id")
-		say(fmt.Sprintf("The task is filed (#%d, for <@%s>), but its room cannot be followed here.", res.Issue, ev.User))
+		sayMeta(fmt.Sprintf("The task is filed (#%d, for <@%s>), but its room cannot be followed here.", res.Issue, ev.User), filedMark)
 		return "error"
 	}
 	url := strings.TrimSuffix(a.RoomsURL, "/") + "/r/" + res.Room
@@ -335,10 +450,10 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 		a.log().Warn("thread map put failed", "room", res.Room, "err", err)
 	}
 	if res.Duplicate {
-		say("Already filed: " + url)
+		sayMeta("Already filed: "+url, filedMark)
 		return "duplicate"
 	}
-	say(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, ev.User, url))
+	sayMeta(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, ev.User, url), filedMark)
 	return "filed"
 }
 
