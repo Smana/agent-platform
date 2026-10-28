@@ -19,7 +19,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Closed", "run": null, "budget": null,
+      "phase": "Closed", "task": "26zfnuxm", "run": null, "budget": null,
       "spend": {"usedMicroUSD":180000,"limitMicroUSD":1500000},
       "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},
       "issue": {"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},

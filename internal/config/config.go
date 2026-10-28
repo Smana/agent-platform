@@ -57,6 +57,9 @@ type HumanConfig struct {
 	// MCP serves /mcp, the MCP server roomctl mcp relays (factory interfaces F2). Off unless
 	// enabled: v3 ships each feature behind a switch (D4).
 	MCP MCPConfig `json:"mcp,omitzero"`
+	// Dashboards are the room page's links out, such as Grafana's, filled with the room's ids.
+	// None by default: the page then shows no group at all.
+	Dashboards []DashboardConfig `json:"dashboards,omitempty"`
 }
 
 // MCPConfig switches the human listener's MCP server.
@@ -378,6 +381,7 @@ func (h HumanConfig) validate(system []string) []error {
 		}
 		listed[key] = true
 	}
+	errs = append(errs, validateDashboards(h.Dashboards)...)
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {
 			errs = append(errs, errors.New("human.access.readerFile: is required"))

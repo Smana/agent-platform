@@ -222,7 +222,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Implementing",
+      "phase": "Implementing", "task": "26zfnuxm",
       "run": {
         "id": "c3",
         "role": "implementer",

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,5 +208,47 @@ func TestRoomctlSetup(t *testing.T) {
 	srv.RoomctlClient, srv.ProjectID = nil, nil
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" || out["projectID"] != "" {
 		t.Fatalf("none configured: %d %v", code, out)
+	}
+}
+
+// GET /api/roomctl carries the room page's dashboard templates (human.dashboards) to any member,
+// unfilled: the page fills each room's ids. Absent, the field is left out. The unauthenticated
+// /.well-known/roomctl never carries them: roomctl configure has no use for them.
+func TestRoomctlSetupDashboards(t *testing.T) {
+	links := []Dashboard{{Label: "Room metrics", URL: "https://grafana.example.com/d/agent-room/x?var-room={room}"},
+		{Label: "Run", URL: "https://grafana.example.com/d/agent-run/x?var-run={run}"}}
+	for name, c := range map[string]struct {
+		dashboards []Dashboard
+		path, user string
+		want       []Dashboard
+	}{
+		"present":            {links, "/api/roomctl", "alice", links},
+		"absent":             {nil, "/api/roomctl", "alice", nil},
+		"never to the world": {links, "/.well-known/roomctl", "", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Dashboards: c.dashboards}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, c.path, nil)
+			if c.user != "" {
+				req.Header.Set("X-Test-User", c.user)
+			}
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("%d %s", rec.Code, rec.Body)
+			}
+			raw, ok := out["dashboards"]
+			if c.want == nil {
+				if ok {
+					t.Fatalf("dashboards present: %s", raw)
+				}
+				return
+			}
+			var got []Dashboard
+			if err := json.Unmarshal(raw, &got); err != nil || !slices.Equal(got, c.want) {
+				t.Fatalf("dashboards %s, want %v", raw, c.want)
+			}
+		})
 	}
 }

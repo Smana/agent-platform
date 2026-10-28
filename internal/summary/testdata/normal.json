@@ -24,7 +24,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Implementing",
+      "phase": "Implementing", "task": "26zfnuxm",
       "run": {"id":"cf4ato2x","role":"implementer","trigger":"human","startedAt":"2026-10-07T19:11:42Z"},
       "budget": {"usedTokens":189093,"limitTokens":1500000},
       "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},

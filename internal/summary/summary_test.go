@@ -466,3 +466,24 @@ func TestFoldKeepsTheLastJudgeVerdict(t *testing.T) {
 		t.Fatalf("%+v %+v", j, s.Notes)
 	}
 }
+
+// status.task names the room's Task while the log carries its facts: the factory names a task's
+// room as the task (reconciler RoomRef), so it is the room's id. A room without facts has none.
+func TestViewTask(t *testing.T) {
+	facts := envelope.Event{Seq: 2, Type: envelope.StateChanged,
+		Payload: json.RawMessage(`{"kind":"task","phase":"Running","run":{"id":"r1","role":"implementer"}}`)}
+	for name, c := range map[string]struct {
+		evs  []envelope.Event
+		want string
+	}{
+		"facts":    {[]envelope.Event{facts}, "26zfnuxm"},
+		"no facts": {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := summary.View(summary.Fold(c.evs), "26zfnuxm", "https://rooms.example/r/26zfnuxm", policy.Subject{}, 0, time.Time{})
+			if got.Status.Task != c.want {
+				t.Fatalf("status.task = %q, want %q", got.Status.Task, c.want)
+			}
+		})
+	}
+}

@@ -136,6 +136,9 @@ type Summary struct {
 	URL        string `json:"url"`
 	Status     struct {
 		Phase string `json:"phase"`
+		// Task is the Task this room works on, while the log carries its facts: the factory names a
+		// task's room as the task, so it is the room's id. Empty in a room without a task.
+		Task string `json:"task,omitempty"`
 		// State is the coarse state (Coarse): set by the caller, which holds the Room's projected
 		// phase and its runs; the fold alone has neither.
 		State       string               `json:"state,omitempty"`
@@ -293,6 +296,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	s.Cursor = fmt.Sprintf("seq:%d", st.LastSeq)
 	s.Status.Phase = st.RoomPhase
 	if f := st.Facts; f != nil {
+		s.Status.Task = room
 		s.Status.Phase, s.Status.Run, s.Status.Budget, s.Status.PR, s.Status.Issue = f.Phase, f.Run, f.Budget, f.PR, f.Issue
 		s.Runs = slices.Clone(f.Runs) // a copy, not the fold state's slice
 		if f.Spend != nil {

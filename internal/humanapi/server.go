@@ -123,6 +123,9 @@ type Server struct {
 	Identity     *ghidentity.Resolver
 	Access       *repoaccess.Checker
 	Logger       *slog.Logger
+	// Dashboards are the room page's link templates (human.dashboards), served on GET
+	// /api/roomctl; none shows no group.
+	Dashboards []Dashboard
 	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
 

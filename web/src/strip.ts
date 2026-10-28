@@ -8,6 +8,7 @@
 
 import type { Snapshot } from "./conn";
 import { el, shortPrincipal } from "./controls";
+import { type Dashboard, expandDashboards } from "./dashboards";
 import type { Latest } from "./room-state";
 import { ago, safeLink, type Summary, when } from "./summary";
 
@@ -26,6 +27,7 @@ export interface StripInput {
   // Whether an agent is present now, and whether one ever was (RoomState.running, ran).
   // Undefined when nothing tracks it: the Now line then reads the latest activity as current.
   running?: boolean; ran?: boolean;
+  dashboards?: Dashboard[]; // the operator's link templates (GET /api/roomctl); none, no group
 }
 
 // fmtTokens reads a token count at a glance: 189093 → "189 k", 1500000 → "1.5 M". A count
@@ -79,6 +81,19 @@ function chip(cls: string, ...body: (string | Node)[]): HTMLElement {
   return c;
 }
 
+// dashboardsChip is the "Dashboards:" group, filled with the room's ids: the run is the
+// facts' current or last one, else the history's last, else the state frame's last. A chip
+// in the chip row, so a phone's strip keeps its one sideways line. Undefined when no link shows.
+function dashboardsChip(i: StripInput): HTMLElement | undefined {
+  const s = i.summary;
+  const run = s?.status.run?.id || s?.runs?.at(-1)?.id || i.snap?.runs?.at(-1)?.id;
+  const links = expandDashboards(i.dashboards, { room: i.roomId, run, task: s?.status.task });
+  if (links.length === 0) return undefined;
+  const body: (string | Node)[] = ["Dashboards: "];
+  links.forEach((l, n) => body.push(...(n ? [" · "] : []), safeLink(l.label, l.url)));
+  return chip("chip-dashboards", ...body);
+}
+
 function chips(i: StripInput, now: number): HTMLElement[] {
   const st = i.summary?.status;
   const out: HTMLElement[] = [];
@@ -106,6 +121,8 @@ function chips(i: StripInput, now: number): HTMLElement[] {
     out.push(d);
   }
   if (i.snap) out.push(chip("chip-you", `you: ${i.snap.you.role}${i.snap.you.approver ? " (approver)" : ""}`));
+  const dash = dashboardsChip(i);
+  if (dash) out.push(dash);
   return out;
 }
 
