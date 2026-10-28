@@ -158,6 +158,15 @@ func gateOf(rc *config.Repository, class string) config.Class {
 	return cl
 }
 
+// requiredFor is row 2's list (R21, F3-R8): merge.requiredChecks, and merge.contractCheck on a task whose
+// tester wrote a contract. Every reader of the required checks calls this, never the config's list.
+func requiredFor(rc *config.Repository, t *v1alpha1.Task) []string {
+	if t == nil || t.Status.Contract == nil || rc.Merge.ContractCheck == "" {
+		return rc.Merge.RequiredChecks
+	}
+	return append(slices.Clone(rc.Merge.RequiredChecks), rc.Merge.ContractCheck)
+}
+
 // baseChecks are the base's rows before any class is read: the secret scan, CI, the fence and
 // policy-bot. done is false when all of them hold.
 func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
@@ -167,7 +176,7 @@ func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
 		in.Checks.Runs[i].State == "FAILURE" {
 		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}, true
 	}
-	switch CIState(in.Checks, rc.Merge.RequiredChecks) {
+	switch CIState(in.Checks, requiredFor(rc, in.Task)) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}, true
 	case "CANCELLED":

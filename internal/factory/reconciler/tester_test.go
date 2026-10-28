@@ -388,9 +388,10 @@ func TestNoVerifierSetHoldsATester(t *testing.T) {
 		t.Fatalf("verifiers %+v", vs)
 	}
 	// A tester's approve of an older head is no reviewer's: it never makes a verdict stale.
+	tk.Status.Verdict = "approve"
 	in := ArmInputs{PR: forge.PR{HeadSHA: head2}, ReportedHead: head2, Cfg: g.r.Cfg, Task: tk,
 		Verifiers: []v1alpha1.RunRecord{{ID: "aaaaaaaa", Role: "tester", Verdict: "approve", HeadSHA: head1}}}
-	if got := agentEvidence(in); got == "verdict_stale" {
+	if got := agentEvidence(in); got != "foreign_trailer" { // past every verdict row: only the trailer is left
 		t.Fatalf("a tester's approve counted: %q", got)
 	}
 }
