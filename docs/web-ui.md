@@ -58,8 +58,9 @@ drive, then opens it.
 | Data class | `internal` or `public`, no default. It cannot change once the room exists: it sets the model route, the tools and the egress its runs get. It does not change who can read the room |
 | Repository | `owner/name`, required. Anyone who can read it on GitHub can read the room. You must be able to read it yourself |
 
-A `CLI setup` fold under the list prints the one block that installs roomctl and configures it
-for this broker ([roomctl](roomctl.md)).
+A `Use roomctl from your terminal` fold under the list sets up [roomctl](roomctl.md) for this
+broker in numbered steps (install, point it at this broker, sign in), each command in its own
+block with a Copy button that copies it exactly as shown.
 
 ## The room page
 

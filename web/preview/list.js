@@ -308,13 +308,104 @@ function installRoomctl(version) {
     `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`
   ].join("\n");
 }
+function continued(cmd, flags) {
+  const parts = flags.map(([f, v]) => `${f} ${v}`);
+  return parts.length > 1 ? [cmd, ...parts.map((p) => `  ${p}`)].join(" \\\n") : [cmd, ...parts].join(" ");
+}
+function setupSteps(c) {
+  const installStep = {
+    title: "Install",
+    code: installRoomctl(c.version),
+    before: ["linux and macOS \xB7 amd64 and arm64 \xB7 checked against the release's sha256"]
+  };
+  if (c.humanMode === "local") {
+    return [
+      installStep,
+      { title: "Point it at this broker", code: continued("roomctl configure", [["--url", `${c.url}`]]) },
+      { title: "Start a run", code: continued("roomctl run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }
+    ];
+  }
+  if (!c.clientID) return;
+  return [
+    installStep,
+    { title: "Point it at this broker", code: continued(
+      "roomctl configure",
+      [["--url", `${c.url}`], ["--issuer", `${c.issuer}`], ["--client-id", c.clientID], ["--project-id", `${c.projectID}`]]
+    ) },
+    {
+      title: "Sign in",
+      code: "roomctl login",
+      after: ["Then: ", { code: "roomctl status" }, " \xB7 ", { code: "roomctl mcp" }, " for your agent's tools"]
+    }
+  ];
+}
+var copiedFor = 1500;
+function note(parts) {
+  const p = document.createElement("p");
+  p.className = "cli-note";
+  p.append(...parts.map((x) => {
+    if (typeof x === "string") return x;
+    const c = document.createElement("code");
+    c.textContent = x.code;
+    return c;
+  }));
+  return p;
+}
+function stepItem(step, n, live) {
+  const li = document.createElement("li");
+  li.className = "cli-step";
+  const title = document.createElement("h3");
+  title.className = "cli-step-title";
+  title.id = `cli-step-${n}`;
+  title.textContent = step.title;
+  const pre = document.createElement("pre");
+  pre.textContent = step.code;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "cli-copy";
+  copy.textContent = "Copy";
+  copy.setAttribute("aria-describedby", title.id);
+  let revert;
+  copy.onclick = () => {
+    const write = navigator.clipboard?.writeText(step.code);
+    write?.then(() => {
+      clearTimeout(revert);
+      copy.textContent = "Copied \u2713";
+      live.textContent = `Copied: ${step.title}`;
+      revert = setTimeout(() => {
+        copy.textContent = "Copy";
+        if (live.textContent === `Copied: ${step.title}`) live.textContent = "";
+      }, copiedFor);
+    }, () => {
+    });
+  };
+  const block = document.createElement("div");
+  block.className = "cli-code";
+  block.append(copy, pre);
+  li.append(title);
+  if (step.before) li.append(note(step.before));
+  li.append(block);
+  if (step.after) li.append(note(step.after));
+  return li;
+}
 function cliSetup(get2 = fetch) {
   const d = document.createElement("details");
   d.className = "cli-setup";
   const summary = document.createElement("summary");
-  summary.textContent = "CLI setup";
-  const out = document.createElement("pre");
-  d.append(summary, out);
+  summary.textContent = "Use roomctl from your terminal";
+  const card = document.createElement("div");
+  card.className = "cli-card";
+  const live = document.createElement("span");
+  live.className = "cli-live";
+  live.setAttribute("role", "status");
+  live.setAttribute("aria-live", "polite");
+  d.append(summary, card, live);
+  const say = (msg) => {
+    const p = document.createElement("p");
+    p.className = "cli-message";
+    p.textContent = msg;
+    card.replaceChildren(p);
+  };
   let asked = false;
   d.addEventListener("toggle", async () => {
     if (!d.open || asked) return;
@@ -322,12 +413,15 @@ function cliSetup(get2 = fetch) {
     try {
       const r = await api("/api/roomctl", {}, get2);
       const c = await r.json();
-      out.textContent = r.ok && c.clientID ? `${installRoomctl(c.version)}
-roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}
-roomctl login` : "roomctl is not set up on this broker: it has no roomctl client.";
+      const steps = r.ok ? setupSteps(c) : void 0;
+      if (!steps) return say("roomctl is not set up on this broker: it has no roomctl client.");
+      const ol = document.createElement("ol");
+      ol.className = "cli-steps";
+      ol.append(...steps.map((s, i) => stepItem(s, i + 1, live)));
+      card.replaceChildren(ol);
     } catch (err) {
       asked = false;
-      if (!(err instanceof SignInRequired)) out.textContent = `CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`;
+      if (!(err instanceof SignInRequired)) say(`CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
   return d;
@@ -417,14 +511,26 @@ var rows = [
   { ...base, id: "m4tq2zxa", phase: "Idle", lastSeq: 33, issue: 131, title: "docs: name the trace router's allowlist", task: "Closed", lastEventAt: ago2(60 * 26) },
   { ...base, id: "p7wn5c3e", phase: "Idle", owner: "human:2", driver: "human:2", lastSeq: 12, lastEventAt: ago2(60 * 24 * 3) }
 ];
+var params = new URLSearchParams(location.search);
+var cli = params.get("cli");
+var roomctl = {
+  oidc: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "293847561029384756@agents", projectID: "293847560192837465", version: "v0.9.0" },
+  local: { url: "http://localhost:8080", humanMode: "local", version: "v0.9.0" },
+  none: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "" }
+};
 var get = (async (url) => {
-  if (url.startsWith("/api/roomctl")) return new Response(JSON.stringify({}), { status: 404 });
+  if (url.startsWith("/api/roomctl")) {
+    return cli && roomctl[cli] ? new Response(JSON.stringify(roomctl[cli])) : new Response(JSON.stringify({}), { status: 404 });
+  }
   const q = new URL(url, location.origin).searchParams;
   return new Response(JSON.stringify(rows.filter((r) => (!q.has("needs_me") || (r.needsYou ?? 0) > 0) && (!q.get("repo") || r.repository === q.get("repo")))));
 });
 var theme = initTheme();
-var override = new URLSearchParams(location.search).get("theme");
+var override = params.get("theme");
 if (override === "light" || override === "dark") applyTheme(override);
-listRooms(document.getElementById("app"), get, {}, theme).catch((e) => {
+listRooms(document.getElementById("app"), get, {}, theme).then(() => {
+  const fold = document.querySelector("details.cli-setup");
+  if (cli && fold) fold.open = true;
+}).catch((e) => {
   document.body.textContent = `preview failed: ${e instanceof Error ? e.message : e}`;
 });
