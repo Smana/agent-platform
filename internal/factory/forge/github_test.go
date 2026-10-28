@@ -571,6 +571,13 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		_, _ = io.WriteString(w, "["+strings.Join(fs, ",")+"]")
 	}))
+	mux.HandleFunc("GET /repos/Smana/demo/commits/{sha}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("sha") != "c1" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"sha":"c1","author":{"login":"ogenki-agents[bot]"},"commit":{"message":"test: pin it\n\nAgent-Run: r1"}}`)
+	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
 	}))
@@ -582,6 +589,16 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/big.png","status":"modified"}]}`)
 		case "main...behind": // a branch cut at "fork", before main moved on: three-dot lists its own change.
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"fork"},"files":[{"filename":"docs/b.md","status":"modified"}]}`)
+		case "c1...three": // the tester's commit against the head: ahead, three files and a rename.
+			_, _ = io.WriteString(w, `{"status":"ahead","files":[{"filename":"a.py"},{"filename":"b.py"},{"filename":"new.py","previous_filename":"old.py"}]}`)
+		case "c1...diverged":
+			_, _ = io.WriteString(w, `{"status":"diverged","files":[{"filename":"a.py"}]}`)
+		case "c1...big":
+			var fs []string
+			for i := range 300 {
+				fs = append(fs, fmt.Sprintf(`{"filename":"f%03d.py"}`, i))
+			}
+			_, _ = io.WriteString(w, `{"status":"ahead","files":[`+strings.Join(fs, ",")+`]}`)
 		case "anc...ahead", "anc...identical", "anc...behind", "anc...diverged": // IsAncestor reads only the status.
 			_, _ = io.WriteString(w, `{"status":"`+strings.TrimPrefix(r.PathValue("basehead"), "anc...")+`","files":[]}`)
 		case "anc...boom":
@@ -1753,5 +1770,40 @@ func TestIssuesLabelledSinceReadsEveryPage(t *testing.T) {
 	got, err := r.g.IssuesLabelledSince(t.Context(), "factory/proposed", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil || len(got) != 2 || got[1].Number != 77 {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestCommitReadsOneCommitsMessage(t *testing.T) {
+	r := newRig(t)
+	c, err := r.g.Commit(t.Context(), "c1")
+	if err != nil || c.SHA != "c1" || c.Author != "ogenki-agents[bot]" || c.Trailer("Agent-Run") != "r1" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if _, err := r.g.Commit(t.Context(), "nope"); err == nil {
+		t.Fatal("an unknown sha must be an error")
+	}
+}
+
+func TestTrailersReadsEveryValueOfTheLastParagraph(t *testing.T) {
+	c := Commit{Message: "test: pin it\n\nAgent-Contract-File: x\n\nbody\n\nAgent-Contract-File: tests/a.py\nAgent-Contract-Id: a::t1\nAgent-Contract-File: tests/b.py\n"}
+	if got := c.Trailers("Agent-Contract-File"); !slices.Equal(got, []string{"tests/a.py", "tests/b.py"}) {
+		t.Fatalf("%v", got)
+	}
+	if got := (Commit{Message: "subject only"}).Trailers("Agent-Contract-File"); got != nil {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestChangedFilesListsTheCompare(t *testing.T) {
+	r := newRig(t)
+	fs, err := r.g.ChangedFiles(t.Context(), "c1", "three")
+	if err != nil || !slices.Equal(fs, []string{"a.py", "b.py", "new.py", "old.py"}) {
+		t.Fatalf("%v %v", fs, err)
+	}
+	if _, err := r.g.ChangedFiles(t.Context(), "c1", "diverged"); !errors.Is(err, ErrNotDescendant) {
+		t.Fatalf("diverged: %v", err)
+	}
+	if _, err := r.g.ChangedFiles(t.Context(), "c1", "big"); !errors.Is(err, ErrDiffTooLarge) {
+		t.Fatalf("a full page must fail closed: %v", err)
 	}
 }

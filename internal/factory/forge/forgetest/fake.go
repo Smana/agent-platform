@@ -43,6 +43,8 @@ type Fake struct {
 	ancestors    map[string][]string
 	commits      map[int][]forge.Commit
 	commitsCut   map[int]bool
+	bySHA        map[string]forge.Commit
+	changed      map[string]changedFiles
 	activity     map[string][]forge.Push
 	activityErr  map[string]error
 	filesBase    map[string]string
@@ -86,6 +88,7 @@ func NewFake() *Fake {
 		prs: map[int]forge.PR{}, branches: map[string]int{}, comments: map[int][]forge.Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
 		checks: map[int]forge.Checks{}, commitChecks: map[string][]forge.Check{}, ancestors: map[string][]string{}, commits: map[int][]forge.Commit{}, commitsCut: map[int]bool{},
+		bySHA: map[string]forge.Commit{}, changed: map[string]changedFiles{},
 		activity: map[string][]forge.Push{}, activityErr: map[string]error{}}
 }
 
@@ -444,6 +447,46 @@ func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]forge.Commit, err
 		return slices.Clone(cs), forge.ErrCommitsTruncated
 	}
 	return slices.Clone(cs), nil
+}
+
+// SetCommit sets the commit Commit returns for sha, with message as its whole message.
+func (f *Fake) SetCommit(sha, message string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bySHA[sha] = forge.Commit{SHA: sha, Message: message}
+}
+
+// Commit implements the TaskForge's Commit: an unset sha is an error, as GitHub's 404.
+func (f *Fake) Commit(_ context.Context, sha string) (forge.Commit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Commit "+sha)
+	c, ok := f.bySHA[sha]
+	if !ok {
+		return forge.Commit{}, fmt.Errorf("commit %s not found", sha)
+	}
+	return c, nil
+}
+
+type changedFiles struct {
+	files []string
+	err   error
+}
+
+// SetChangedFiles sets what ChangedFiles returns for base..head.
+func (f *Fake) SetChangedFiles(base, head string, files []string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.changed[base+".."+head] = changedFiles{slices.Clone(files), err}
+}
+
+// ChangedFiles implements the Merger's ChangedFiles: unset, nothing changed.
+func (f *Fake) ChangedFiles(_ context.Context, base, head string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "ChangedFiles "+base+".."+head)
+	c := f.changed[base+".."+head]
+	return slices.Clone(c.files), c.err
 }
 
 // SetActivity sets branch's activity, newest first, as BranchActivity returns it.

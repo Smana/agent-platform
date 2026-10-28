@@ -1066,6 +1066,44 @@ func (g *GitHub) PullRequestCommits(ctx context.Context, number int) ([]Commit, 
 	}
 }
 
+// Commit is one commit by sha, with its message: the tester's contract commit (R14).
+func (g *GitHub) Commit(ctx context.Context, sha string) (Commit, error) {
+	c, _, err := g.rest.Repositories.GetCommit(ctx, g.owner, g.name, sha, &github.ListOptions{PerPage: 1})
+	g.mark(err)
+	if err != nil {
+		return Commit{}, wrap("get commit", err)
+	}
+	return Commit{SHA: c.GetSHA(), Author: c.GetAuthor().GetLogin(), Message: c.GetCommit().GetMessage()}, nil
+}
+
+// maxChangedFiles is the page ChangedFiles asks for: a compare listing this many may hold more.
+const maxChangedFiles = 300
+
+// ChangedFiles lists the paths changed from base to head, never their contents (row 2c reads only
+// the names). GitHub's compare is three-dot, so it names what changed since the merge base: only
+// a head ahead of base makes that "since base". Behind or diverged (a rebase) is ErrNotDescendant.
+func (g *GitHub) ChangedFiles(ctx context.Context, base, head string) ([]string, error) {
+	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: maxChangedFiles})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("compare commits", err)
+	}
+	if st := cmp.GetStatus(); st != "ahead" && st != "identical" {
+		return nil, fmt.Errorf("%w: %s is %q from %s", ErrNotDescendant, head, st, base)
+	}
+	if len(cmp.Files) >= maxChangedFiles {
+		return nil, fmt.Errorf("%w: %d files differ between %s and %s", ErrDiffTooLarge, len(cmp.Files), base, head)
+	}
+	out := make([]string, 0, len(cmp.Files))
+	for _, f := range cmp.Files {
+		out = append(out, f.GetFilename())
+		if p := f.GetPreviousFilename(); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 // maxActivityPages bounds BranchActivity: 300 moves of one branch since its creation.
 const maxActivityPages = 3
 

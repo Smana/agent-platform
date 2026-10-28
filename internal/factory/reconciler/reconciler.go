@@ -71,6 +71,8 @@ type TaskForge interface {
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
 	PullRequestCommits(ctx context.Context, number int) ([]forge.Commit, error)
 	BranchActivity(ctx context.Context, branch string) ([]forge.Push, error)
+	// Commit reads one commit by sha: the tester never opens a pull request (R14).
+	Commit(ctx context.Context, sha string) (forge.Commit, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
