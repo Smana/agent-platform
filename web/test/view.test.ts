@@ -210,7 +210,8 @@ describe("the room list's layout", () => {
     expect(td.querySelector(".chip-phase")).toBeNull();
   });
   it("falls back to the phase chip when the broker sends no status", async () => {
-    const td = (await mount()).querySelectorAll("tbody tr td")[3];
+    const td = (await mount()).querySelectorAll("tbody tr td")[3] as HTMLElement;
+    expect(td.title).toBe(""); // the chip already says the phase
     const chip = td.querySelector("span.chip.chip-phase")!;
     expect(chip.textContent).toBe("Reviewing");
     expect(td.textContent).toBe("Reviewing");

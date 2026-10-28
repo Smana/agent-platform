@@ -157,7 +157,6 @@ function cell(tag, ...kids) {
 function statusCell(st, phase) {
   const td = cell("td");
   td.className = "status";
-  td.title = phase;
   if (!st?.kind) {
     const chip = document.createElement("span");
     chip.className = "chip chip-phase";
@@ -176,6 +175,7 @@ function statusCell(st, phase) {
   words.className = "row-status-words";
   words.textContent = st.text;
   line.append(icon2, " ", words);
+  td.title = phase;
   td.append(line);
   return td;
 }

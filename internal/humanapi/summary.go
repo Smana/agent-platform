@@ -81,6 +81,11 @@ func (s *Server) summaryOf(ctx context.Context, id string, p authn.Principal, af
 		phase = "Closed"
 	}
 	view.Status.State = summary.Coarse(task, phase, s.nextRun(id))
+	if fold.Sealed == "" { // nothing in a sealed room can be decided
+		web := sub
+		web.WebUI = true // deciding happens in the web UI, as needsYou judges it
+		view.Status.Approvals = fold.CountApprovals(web, room.Spec.Approvals.FourEyes, s.now())
+	}
 	return view, nil
 }
 

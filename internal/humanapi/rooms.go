@@ -493,34 +493,40 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
 		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
-		row.Status = s.rowStatus(room, row, live, expired, facts)
+		row.Status = s.rowStatus(room, row, web, live, expired)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
 	return out, access, nil
 }
 
-// failed are the task phases whose status line says why they failed, from the last facts' reason.
-var failed = map[string]bool{"Rejected": true, "Reverted": true}
-
-// rowStatus is the row's status line, as the room's summary would say it to the caller: the same
-// StatusLine over the row's projected data. The run is runwatch's, in memory; the only store read
-// is the facts' reason, already read for a waiting row, and read for a failed one. nil when the
-// state is one this broker does not know.
-func (s *Server) rowStatus(room *v1alpha1.Room, row roomRow, live []store.Approval, expired int, facts factsFn) *rowStatus {
-	in := summary.StatusIn{State: row.State, Phase: cmp.Or(row.Task, row.Phase), Reason: row.Reason, PR: row.PR,
-		Issue: row.Issue, Mine: len(live), Step: row.Step, Now: s.now()}
+// rowStatus is the row's status line, as the room's summary says it to the caller: the same
+// StatusLine over the row's projected data, with no store read of its own. approvals are the live
+// ones a decider's row read (nil for a viewer who cannot decide, whose every pending one is
+// others'); an unswept expired approval a non-decider's row cannot tell from a live one reads as
+// waiting on another approver until the sweep decides it. nil when the state is one this broker
+// does not know.
+func (s *Server) rowStatus(room *v1alpha1.Room, row roomRow, web policy.Subject, live []store.Approval, expired int) *rowStatus {
+	in := summary.StatusIn{State: row.State, Phase: cmp.Or(row.Task, row.Phase), PR: row.PR, Issue: row.Issue,
+		Step: row.Step, Now: s.now()}
 	if row.Phase == "Closed" || row.Phase == "Sealed" {
 		in.Phase = row.Phase // as the summary of a sealed log says its seal, not the task it stopped
 	}
-	in.Others = max(0, int(room.Status.PendingApprovals)-expired-in.Mine)
-	if failed[row.Task] {
-		in.Reason = waitReason(facts)
+	for _, a := range live {
+		if summary.Decidable(web, room.Spec.Approvals.FourEyes, a.Prompters) {
+			in.Mine++
+		}
 	}
-	for _, r := range s.Runs.InRoom(room.Name) {
-		if r.Live() && r.Phase == "Running" {
-			in.RunRole, in.RunStart, in.RunPresent = r.Role, r.StartedAt, true
-			break
+	in.Others = max(0, int(room.Status.PendingApprovals)-expired-in.Mine)
+	// The page's run is the factory's facts' run while an agent is in the room, so a room without a
+	// task has none. runwatch's live Running claim stands in for both: its start can differ from the
+	// facts' by the seconds the factory takes to record it.
+	if room.Status.Task != nil {
+		for _, r := range s.Runs.InRoom(room.Name) {
+			if r.Live() && r.Phase == "Running" {
+				in.RunRole, in.RunStart, in.RunPresent = r.Role, r.StartedAt, true
+				break
+			}
 		}
 	}
 	st := summary.StatusLine(in)

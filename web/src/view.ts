@@ -93,11 +93,10 @@ function cell(tag: "td" | "th", ...kids: (Node | string)[]): HTMLElement {
 
 // statusCell is the room page's status line, compact: the kind's accent, the icon and the words, as
 // plain text with no live region (a list of them would chatter). The raw phase is the tooltip. A row
-// without a status shows the phase as the room page's phase chip, as before.
+// without a status shows the phase as the room page's phase chip, as before, with no tooltip to repeat it.
 function statusCell(st: RowStatus | undefined, phase: string): HTMLElement {
   const td = cell("td");
   td.className = "status";
-  td.title = phase;
   if (!st?.kind) {
     const chip = document.createElement("span");
     chip.className = "chip chip-phase";
@@ -116,6 +115,7 @@ function statusCell(st: RowStatus | undefined, phase: string): HTMLElement {
   words.className = "row-status-words";
   words.textContent = st.text;
   line.append(icon, " ", words);
+  td.title = phase;
   td.append(line);
   return td;
 }

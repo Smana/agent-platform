@@ -38,7 +38,7 @@ func TestStatusLineCases(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
-			in := StatusIn{State: c.In.State, Phase: c.In.Phase, Reason: c.In.Reason, RunRole: c.In.RunRole,
+			in := StatusIn{State: c.In.State, Phase: c.In.Phase, RunRole: c.In.RunRole,
 				RunPresent: c.In.RunPresent, PR: c.In.PR, Issue: c.In.Issue, Mine: c.In.Mine, Others: c.In.Others, Step: c.In.Step}
 			in.RunStart, _ = time.Parse(time.RFC3339, c.In.RunStartedAt)
 			in.Now, _ = time.Parse(time.RFC3339, c.In.Now)
