@@ -84,7 +84,14 @@ Scrolling a finished factory room, from the strip down through its turns and too
 
 <img alt="Scrolling down a factory room's conversation: the triager's scope, folded tool calls with their status, state changes folded into turns" src="assets/web-ui/room-scroll.gif" width="800">
 
-On a phone the strip stacks above the conversation:
+A factory brief folded under `Show more`, with the `Dashboards` chip at the end of the strip:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/room-fold-dark.png">
+  <img alt="A factory room whose task brief shows its first lines under a fade and a Show more link; the strip ends with a Dashboards chip linking Room metrics and Run" src="assets/web-ui/room-fold-light.png" width="800">
+</picture>
+
+On a phone the strip stays compact above the conversation:
 
 <img alt="The same room on a phone, light theme" src="assets/web-ui/room-phone-light.png" width="260"> <img alt="The same room on a phone, dark theme" src="assets/web-ui/room-phone-dark.png" width="260">
 
