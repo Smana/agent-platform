@@ -948,7 +948,8 @@ def contract_rules(env: dict, contract: dict | None, tests: dict | None) -> str:
     if test_first(env) and tests:
         return ("\nTest contract:\n- Write tests only under %s, matching %s. Commit them on your branch; never push: "
                 "the platform checks that they fail on the base and pushes them.\n- `test-contract red` runs the same "
-                "check on your last commit.\n- Never change the code under test.\n" % (", ".join(tests["paths"]), ", ".join(tests["select"])))
+                "check on your last commit.\n- Never change the code under test.\n- A change with no behaviour (docs, comments, "
+                "README prose, formatting) is not testable: commit nothing. Never write a test that greps documentation text.\n" % (", ".join(tests["paths"]), ", ".join(tests["select"])))
     if contract:
         return ("\nTest contract:\n- The tester's commit %s holds failing tests, the task's contract: %s. You may not "
                 "change these files; a commit hook refuses it and the merge gate hands a change to a human.\n- Ids: %s.\n"
