@@ -18,7 +18,7 @@ func TestSplitFor(t *testing.T) {
 	cfg, err := Parse([]byte(priced + `loops:
   default: {scope: scoper, split: {maxChildren: 2}}
   docs: {scope: scoper, split: {maxChildren: 4}}
-  tests: {scope: scoper, split: {maxChildren: 3, familyUSD: 12, childTier: light}}
+  tests: {scope: scoper, split: {maxChildren: 3, familyUSD: 12, childTier: light, anyTier: true}}
   dashboards: {scope: scoper}
 `))
 	if err != nil {
@@ -34,6 +34,9 @@ func TestSplitFor(t *testing.T) {
 		"revert":     nil,
 	} {
 		got := cfg.SplitFor(repo, class)
+		if class == "tests" && (got == nil || !got.AnyTier) || class == "docs" && got.AnyTier {
+			t.Errorf("SplitFor(%s).AnyTier = wrong", class)
+		}
 		if (got == nil) != (want == nil) || (got != nil && (got.MaxChildren != want.MaxChildren || got.ChildTier != want.ChildTier ||
 			MicroUSD(got.FamilyUSD) != MicroUSD(want.FamilyUSD))) {
 			t.Errorf("SplitFor(%s) = %+v, want %+v", class, got, want)
