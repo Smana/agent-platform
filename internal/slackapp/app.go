@@ -49,6 +49,8 @@ var (
 type BrokerAPI interface {
 	IssueDraft(ctx context.Context, d Draft) (Draft, error)
 	RunCreate(ctx context.Context, c RunCreate) (RunResult, error)
+	SlackLinkCode(ctx context.Context, team, user, name string) (string, error)
+	SlackUnlink(ctx context.Context, team, user string) (bool, error)
 }
 
 // Recorder counts requests for factory_slack_requests_total{route, outcome}.
@@ -75,6 +77,7 @@ type App struct {
 	Logger      *slog.Logger
 
 	events, deliveries seen       // event_id and webhook-id
+	answered           seen       // the ✅ refusals said, by draft, user and reason: each is said once
 	editMu             sync.Mutex // one draft edit at a time, so two quick replies do not branch the draft
 }
 
@@ -253,6 +256,12 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 		}
 		return "refused"
 	}
+	switch command(ev.Text, a.BotUserID) {
+	case "link":
+		return a.link(ctx, ev, thread)
+	case "unlink":
+		return a.unlink(ctx, ev, thread)
+	}
 	d, err := ParseMention(ev.Text, a.BotUserID, ch.Repositories)
 	if err != nil {
 		return refuse(err.Error())
@@ -269,6 +278,71 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 		return refuse("the draft could not be checked, try again")
 	}
 	return a.postDraft(ctx, ev.Channel, thread, d, ev.User, 1)
+}
+
+// command is the mention's one-word command, "link" or "unlink", or "" for a draft.
+func command(text, bot string) string {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(text), "<@"+bot+">")
+	if !ok {
+		return ""
+	}
+	switch c := strings.ToLower(strings.TrimSpace(rest)); c {
+	case "link", "unlink":
+		return c
+	}
+	return ""
+}
+
+// whisper is an ephemeral answer, seen by the user alone: a link code never reaches the channel.
+func (a *App) whisper(ctx context.Context, ev slackEvent, thread, text, outcome string) string {
+	if err := a.Slack.PostEphemeral(ctx, ev.Channel, ev.User, thread, text); err != nil {
+		a.log().Warn("slack ephemeral post failed", "channel", ev.Channel, "err", err)
+		return "error"
+	}
+	return outcome
+}
+
+const linkOff = "Self-serve linking is not turned on here: ask an operator to add you to the factory's `onBehalfOf.slack`."
+
+// link answers `@factory link` with a one-time link to the rooms page, for this Slack user only.
+// The name is the page's, display only; without users:read it is empty and the page shows the id.
+func (a *App) link(ctx context.Context, ev slackEvent, thread string) string {
+	name, err := a.Slack.UserName(ctx, ev.User)
+	if err != nil {
+		a.log().Info("slack user name unread", "err", err)
+	}
+	u, err := a.Broker.SlackLinkCode(ctx, a.TeamID, ev.User, name)
+	var r Refused
+	switch {
+	case errors.Is(err, ErrUnknownTool):
+		return a.whisper(ctx, ev, thread, linkOff, "refused")
+	case errors.As(err, &r):
+		return a.whisper(ctx, ev, thread, "Link refused: "+shown(string(r)), "refused")
+	case err != nil:
+		a.log().Warn("slack_link_code failed", "err", err)
+		return a.whisper(ctx, ev, thread, "The link could not be made, mention me with `link` again.", "error")
+	}
+	return a.whisper(ctx, ev, thread, "<"+u+"|Link your Slack user to your rooms account>: it works once, within 10 minutes, "+
+		"after you sign in. Keep it to yourself: whoever confirms it is who your :white_check_mark: files as.", "link")
+}
+
+// unlink answers `@factory unlink`: this Slack user's self-serve link goes.
+func (a *App) unlink(ctx context.Context, ev slackEvent, thread string) string {
+	gone, err := a.Broker.SlackUnlink(ctx, a.TeamID, ev.User)
+	var r Refused
+	switch {
+	case errors.Is(err, ErrUnknownTool):
+		return a.whisper(ctx, ev, thread, linkOff, "refused")
+	case errors.As(err, &r):
+		return a.whisper(ctx, ev, thread, "Unlink refused: "+shown(string(r)), "refused")
+	case err != nil:
+		a.log().Warn("slack_unlink failed", "err", err)
+		return a.whisper(ctx, ev, thread, "The unlink could not be made, mention me with `unlink` again.", "error")
+	case !gone:
+		return a.whisper(ctx, ev, thread, "Nothing to unlink: your Slack user has no self-serve link. "+
+			"A link in the factory's config stays until an operator removes it.", "ignored")
+	}
+	return a.whisper(ctx, ev, thread, "Unlinked: your :white_check_mark: no longer files through your rooms account.", "unlinked")
 }
 
 // postDraft posts the draft as Slack shows it, its checked text and hash in the message metadata.
@@ -342,11 +416,15 @@ func isCheckMark(text string) bool {
 }
 
 // checkMarkReply files the thread's latest draft for the replier, like a ✅ reaction on it. Who may
-// file is the broker's call (the linked maintainer check), as for the reaction.
+// file is the broker's call (the linked maintainer check), as for the reaction. A thread with no
+// draft is silent: the reply is about nothing the App posted.
 func (a *App) checkMarkReply(ctx context.Context, ev slackEvent) string {
 	msgs, err := a.Slack.Thread(ctx, ev.Channel, ev.ThreadTS)
 	if err != nil {
 		a.log().Warn("slack thread fetch failed", "channel", ev.Channel, "err", err)
+		if _, perr := a.Slack.Post(ctx, ev.Channel, ev.ThreadTS, "Not filed: Slack could not be read just now; reply :white_check_mark: again to retry.", nil); perr != nil {
+			a.log().Warn("slack post failed", "channel", ev.Channel, "err", perr)
+		}
 		return "error"
 	}
 	latest, _ := a.threadDraft(msgs)
@@ -414,6 +492,10 @@ func (a *App) reply(ctx context.Context, ev slackEvent) string {
 	return a.postDraft(ctx, ev.Channel, ev.ThreadTS, d, p.Author, p.Rev+1)
 }
 
+// reaction files the draft a ✅ is on. Every refusal is one thread line naming the reason and the
+// fix, said once per draft, user and reason (answered). Silent, on purpose: malformed ids, the App's
+// own user, a message that cannot be read (no thread is known to answer in), and a ✅ on a message
+// that is not the App's draft. handle already dropped another workspace and a bot's event.
 func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	return a.file(ctx, team, ev.Item.Channel, ev.Item.TS, ev.User, false)
 }
@@ -421,8 +503,7 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 // file files the draft at itemTS for user, as a ✅ reaction on it does or, with viaReply, as a ✅
 // reply in its thread does: the same checks, the same thread key, the same lines.
 func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaReply bool) string {
-	ch, ok := a.Channels[channel]
-	if !ok || !channelRE.MatchString(channel) || !userRE.MatchString(user) || !tsRE.MatchString(itemTS) {
+	if !channelRE.MatchString(channel) || !userRE.MatchString(user) || !tsRE.MatchString(itemTS) || user == a.BotUserID {
 		return "ignored"
 	}
 	msg, err := a.Slack.Message(ctx, channel, itemTS)
@@ -430,13 +511,9 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 		a.log().Warn("slack message fetch failed", "channel", channel, "err", err)
 		return "error"
 	}
-	// Only the App's own draft counts: posted by its bot user, carrying a draft whose hash holds (R23).
+	// Only the App's own draft counts: posted by its bot user, carrying a draft (R23).
 	m := msg.Metadata
 	if msg.User == "" || msg.User != a.BotUserID || m == nil || m.EventType != draftEventType {
-		return "ignored"
-	}
-	p := m.EventPayload
-	if p.SHA256 != draftHash(p.Repo, p.Title, p.Body) || !slices.Contains(ch.Repositories, p.Repo) {
 		return "ignored"
 	}
 	thread := msg.ThreadTS
@@ -451,7 +528,26 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 			a.log().Warn("slack post failed", "channel", channel, "err", err)
 		}
 	}
-	say := func(text string) { sayMeta(text, nil) }
+	// refuse says a refusal once per draft, user and reason: a re-added ✅ does not repeat it.
+	refuse := func(reason, text string) string {
+		if a.answered.add(itemTS + "/" + user + "/" + reason) {
+			sayMeta(text, nil)
+		}
+		return "refused"
+	}
+	// retry says a passing failure each time: the fix is to react again.
+	retry := func(text string) string { sayMeta(text, nil); return "error" }
+	p := m.EventPayload
+	ch, served := a.Channels[channel]
+	switch {
+	case p.SHA256 != draftHash(p.Repo, p.Title, p.Body):
+		return refuse("hash", "Not filed: this draft no longer matches its check; start a new one with a mention.")
+	case !served:
+		return refuse("channel", "Not filed: this channel is no longer served; ask an operator to add it to the Slack App's channels.")
+	case !slices.Contains(ch.Repositories, p.Repo):
+		return refuse("repository", fmt.Sprintf("Not filed: %s isn't served in this channel; ask an operator to add it to the channel's repositories.",
+			slackText(p.Repo)))
+	}
 	a.editMu.Lock() // an edit in flight finishes first, so the latest draft is the one filed
 	defer a.editMu.Unlock()
 	// Only the thread's latest draft files: an earlier one was replaced by an edit.
@@ -459,13 +555,12 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 	if err != nil {
 		a.log().Warn("slack thread fetch failed", "channel", channel, "err", err)
 		if errors.Is(err, ErrThreadTooLong) {
-			say("This thread is too long to find its latest draft: start a new one with a mention.")
-			return "refused"
+			return refuse("too_long", "Not filed: this thread is too long to find its latest draft; start a new one with a mention.")
 		}
-		return "error"
+		return retry("Not filed: Slack could not be read just now; react again to retry.")
 	}
 	if latest, _ := a.threadDraft(msgs); latest == nil || latest.TS != itemTS {
-		say("This draft was replaced by a newer one: react on the latest draft.")
+		refuse("replaced", "This draft was replaced by a newer one: react on the latest draft.")
 		return "ignored"
 	}
 	filedMark := &Metadata{EventType: filedEventType, EventPayload: DraftPayload{Repo: p.Repo}}
@@ -476,18 +571,20 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 		Ref:        "slack/" + team + "/" + channel + "/" + thread,
 		Key:        team + "/" + channel + "/" + thread, // one issue per thread, whatever the revision
 	})
-	if err != nil {
-		if r, ok := err.(Refused); ok { //nolint:errorlint // Refused is returned bare, never wrapped
-			if viaReply {
-				say("Not filed: " + shown(string(r)) + ". A maintainer reacts :white_check_mark: to file it.")
-			} else {
-				say("Not filed: " + shown(string(r)))
-			}
-			return "refused"
+	var r Refused
+	if errors.As(err, &r) {
+		code, text, passing := notFiled(string(r), user, p.Repo)
+		if viaReply && !passing && code != "not_a_maintainer" {
+			text += " A maintainer reacts :white_check_mark: to file it."
 		}
+		if passing {
+			return retry(text)
+		}
+		return refuse(code, text)
+	}
+	if err != nil {
 		a.log().Warn("run_create failed", "err", err)
-		say("Not filed: the factory could not be reached, react again to retry.")
-		return "error"
+		return retry("Not filed: the factory could not be reached, react again to retry.")
 	}
 	if !roomRE.MatchString(res.Room) {
 		a.log().Warn("run_create answered an unusable room id")
@@ -503,8 +600,42 @@ func (a *App) file(ctx context.Context, team, channel, itemTS, user string, viaR
 		sayMeta("Already filed: "+url, filedMark)
 		return "duplicate"
 	}
-	sayMeta(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, user, url), filedMark)
+	by := ""
+	if githubLoginRE.MatchString(res.Sponsor) { // named so a wrong link is seen at its first use
+		by = ", sponsored by GitHub @" + res.Sponsor
+	}
+	sayMeta(fmt.Sprintf("Filed #%d for <@%s>%s; the factory starts it. Room: %s", res.Issue, user, by, url), filedMark)
 	return "filed"
+}
+
+// githubLoginRE is a GitHub login, the only sponsor the Filed line names.
+var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// notFiled is a run_create refusal as the thread says it: the reason and its fix in one line. A
+// passing one (the factory could not check just now) is said on every ✅, since reacting again is
+// its fix; any other is said once. Codes outside the list are shown as the broker gave them.
+func notFiled(refusal, user, repo string) (code, text string, passing bool) {
+	code, coded := strings.CutPrefix(refusal, "rejected: ")
+	who := "<@" + user + ">"
+	switch {
+	case !coded:
+		return "refused", "Not filed: " + shown(refusal), false
+	case code == "not_linked":
+		return code, "Not filed: " + who + " is not linked to a GitHub account here; mention me with `link` to link it, then react again.", false
+	case code == "not_a_maintainer":
+		return code, "Not filed: " + who + "'s GitHub account is not a maintainer of " + slackText(repo) + "; a maintainer must react.", false
+	case code == "repository_not_allowed" || code == "repository_not_owned":
+		return code, "Not filed: the factory does not take tasks on " + slackText(repo) + " from Slack; ask an operator to add it to the Slack App's repositories.", false
+	case code == "kill_switch":
+		return code, "Not filed: the factory is paused (kill switch); react again once an operator resumes it.", true
+	case code == "principal_budget_exhausted":
+		return code, "Not filed: the Slack App's budget for today is spent; react again tomorrow.", false
+	case code == "principal_task_cap":
+		return code, "Not filed: the Slack App has the most tasks open it may; react again once one ends.", true
+	case slices.Contains([]string{"link_unverified", "ledger_unavailable", "tasks_unavailable", "intake_failed", "meter_unpriced"}, code):
+		return code, "Not filed: the factory could not check this just now; react again to retry.", true
+	}
+	return code, "Not filed: " + shown(refusal), false
 }
 
 // Webhooks is the webhooks listener's handler: the delivery is verified with the broker's keys

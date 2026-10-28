@@ -119,3 +119,37 @@ func TestSlackThreadPastTheLastPageFailsClosed(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// The link's two Slack calls: chat.postEphemeral to the one user, and users.info's display name,
+// else its real name; missing_scope is an error the App shrugs off.
+func TestSlackEphemeralAndUserName(t *testing.T) {
+	var got map[string]any
+	answer := `{"ok":true,"user":{"name":"dana.h","profile":{"display_name":"","real_name":"Dana H"}}}`
+	c := slackServer(t, func(path string, r *http.Request, body []byte) string {
+		switch path {
+		case "/api/chat.postEphemeral":
+			_ = json.Unmarshal(body, &got)
+			return `{"ok":true,"message_ts":"1729.0003"}`
+		case "/api/users.info":
+			if r.URL.Query().Get("user") != "U02DEF" {
+				t.Errorf("users.info %s", r.URL.RawQuery)
+			}
+			return answer
+		}
+		t.Errorf("path %s", path)
+		return `{"ok":false}`
+	})
+	if err := c.PostEphemeral(context.Background(), "C03", "U02DEF", "1729.0001", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got["channel"] != "C03" || got["user"] != "U02DEF" || got["thread_ts"] != "1729.0001" || got["text"] != "hi" {
+		t.Fatalf("%+v", got)
+	}
+	if n, err := c.UserName(context.Background(), "U02DEF"); err != nil || n != "Dana H" {
+		t.Fatalf("%q %v", n, err)
+	}
+	answer = `{"ok":false,"error":"missing_scope"}`
+	if n, err := c.UserName(context.Background(), "U02DEF"); err == nil || n != "" {
+		t.Fatalf("missing_scope: %q %v", n, err)
+	}
+}

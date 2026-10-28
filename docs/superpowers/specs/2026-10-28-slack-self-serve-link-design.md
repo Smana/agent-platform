@@ -87,5 +87,5 @@ reason and the fix. Silent: a ✅ on a message that is not the App's draft, a bo
 malformed ids, another workspace, an event already seen. Answered: a draft in a channel no longer
 served, a repository the channel does not list, a draft whose hash fails, a replaced draft, a
 Slack read that failed, every factory refusal (mapped to a sentence with its fix: `not_linked`,
-`not_a_maintainer`, budget, kill switch…), and a ✅ typed as a reply ("react on the draft"). A
+`not_a_maintainer`, budget, kill switch…); a ✅ typed as a reply files as the reaction does and gets the same lines. A
 refusal is said once per (draft, user, reason): a re-added ✅ does not repeat it.

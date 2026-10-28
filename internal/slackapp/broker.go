@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -76,12 +78,17 @@ type RunCreate struct {
 	Key        string // the idempotency key
 }
 
-// RunResult is what run_create answered.
+// RunResult is what run_create answered: Sponsor is the GitHub login the factory filed as, "" when
+// it did not say.
 type RunResult struct {
 	Room      string
 	Issue     int
 	Duplicate bool
+	Sponsor   string
 }
+
+// ErrUnknownTool is the broker without the tool asked: the self-serve link is off there.
+var ErrUnknownTool = errors.New("slackapp: the broker does not offer this tool")
 
 // IssueDraft asks the broker to judge a draft against the issue template.
 func (b Broker) IssueDraft(ctx context.Context, d Draft) (Draft, error) {
@@ -109,11 +116,53 @@ func (b Broker) RunCreate(ctx context.Context, c RunCreate) (RunResult, error) {
 		Room      string `json:"room"`
 		Issue     int    `json:"issue"`
 		Duplicate bool   `json:"duplicate"`
+		Sponsor   string `json:"sponsor"`
 	}
 	if err := json.Unmarshal(sc, &out); err != nil {
 		return RunResult{}, fmt.Errorf("slackapp: run_create result: %w", err)
 	}
 	return RunResult(out), nil
+}
+
+// linkPath is the page a link code opens on the broker's public URL.
+const linkPath = "/link/slack"
+
+// SlackLinkCode asks the broker for a one-time link for the Slack user, name shown on the page.
+// The answer must be the link page with one code, or it is not passed on to the user.
+func (b Broker) SlackLinkCode(ctx context.Context, team, user, name string) (string, error) {
+	sc, err := b.call(ctx, "slack_link_code", map[string]any{"team": team, "user": user, "name": name})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(sc, &out); err != nil {
+		return "", fmt.Errorf("slackapp: slack_link_code result: %w", err)
+	}
+	u, err := url.Parse(out.URL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Path != linkPath || u.User != nil ||
+		u.Fragment != "" || len(u.Query()) != 1 || !linkCodeRE.MatchString(u.Query().Get("code")) {
+		return "", errors.New("slackapp: slack_link_code answered no link page")
+	}
+	return u.String(), nil
+}
+
+var linkCodeRE = regexp.MustCompile(`^[a-z2-7]{26}$`)
+
+// SlackUnlink asks the broker to remove the Slack user's link; unlinked is false when none was.
+func (b Broker) SlackUnlink(ctx context.Context, team, user string) (bool, error) {
+	sc, err := b.call(ctx, "slack_unlink", map[string]any{"team": team, "user": user})
+	if err != nil {
+		return false, err
+	}
+	var out struct {
+		Unlinked bool `json:"unlinked"`
+	}
+	if err := json.Unmarshal(sc, &out); err != nil {
+		return false, fmt.Errorf("slackapp: slack_unlink result: %w", err)
+	}
+	return out.Unlinked, nil
 }
 
 // call is one stateless tools/call. A 401 drops the token and retries once with a new one.
@@ -183,6 +232,8 @@ func decodeResult(raw []byte) (json.RawMessage, error) {
 		return nil, fmt.Errorf("slackapp: broker reply: %w", err)
 	}
 	switch {
+	case msg.Error != nil && strings.HasPrefix(msg.Error.Message, "unknown tool"):
+		return nil, ErrUnknownTool
 	case msg.Error != nil:
 		return nil, fmt.Errorf("slackapp: broker: %s", msg.Error.Message)
 	case msg.Result == nil:
