@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -480,6 +481,45 @@ func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
 		body += " The new review run uses no review round."
 	}
 	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
+}
+
+// safePath is a contract file the narration may name: the tester wrote the trailer, so anything
+// but a plain path is withheld (a narration carries the factory's own words and ids only).
+var safePath = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+// ContractReady says the tester left a contract (test-first tester F3-R5): how many tests, and the
+// files that hold them, at most five, each a plain path.
+func ContractReady(t *v1alpha1.Task, c *v1alpha1.ContractStatus) Event {
+	var files []string
+	for _, f := range c.Files {
+		switch {
+		case len(files) == 5:
+		case safePath.MatchString(f):
+			files = append(files, "`"+f+"`")
+		default:
+			files = append(files, "⟦a path withheld⟧")
+		}
+	}
+	more := ""
+	if len(c.Files) > len(files) {
+		more = fmt.Sprintf(" and %d more", len(c.Files)-len(files))
+	}
+	return Event{Key: "contract", Body: fmt.Sprintf("Agent factory task `%s`. The tester wrote a contract of %d tests: %s%s. "+
+		"The implementer works to it, and the pull request may not change it.", t.Name, len(c.IDs), strings.Join(files, ", "), more)}
+}
+
+// NoContract says the tester left none, by its end's category only, and that the implementer
+// works without one (TO3).
+func NoContract(t *v1alpha1.Task, end string) Event {
+	return Event{Key: "contract", Body: fmt.Sprintf("Agent factory task `%s`. The tester left no contract (%s): the implementer works without one.", t.Name, oneWord(end))}
+}
+
+// oneWord is an end's category when it is the word it should be, "unreported" otherwise.
+func oneWord(s string) string {
+	if regexp.MustCompile(`^[a-z_]{1,40}$`).MatchString(s) {
+		return s
+	}
+	return "unreported"
 }
 
 // PROpened announces the task's pull request.

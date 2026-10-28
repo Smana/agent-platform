@@ -483,6 +483,9 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 			reason = why
 		}
 	}
+	if testerRun(t) {
+		return r.testerEnded(ctx, t, reason)
+	}
 	if t.Spec.Loop != nil && current(t).Role == "implementer" {
 		end := "other"
 		switch {
