@@ -103,6 +103,7 @@ type metrics interface {
 	MergeDecision(ctx context.Context, class, verdict, reason string)
 	Resumed(ctx context.Context, reason string)
 	LoopRun(ctx context.Context, class, end string)
+	ContractEnd(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 	SteeringRead(ctx context.Context, class, read string)
 	ScoperRun(ctx context.Context, class, outcome string)

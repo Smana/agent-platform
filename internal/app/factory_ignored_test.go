@@ -30,3 +30,16 @@ func TestEachIgnoredConfigKeyIsWarnedAbout(t *testing.T) {
 		t.Fatalf("a file without them warns nothing: %s", buf.String())
 	}
 }
+
+// TO1, TO5: each sentence the config loaded with is one warning at start.
+func TestEachConfigWarningIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	warnConfig(slog.New(slog.NewTextHandler(&buf, nil)), &config.Config{Warnings: []string{
+		"template trio: tester is the test writer", "class docs-links of o/r is live without holdoutChecks",
+	}}, nil)
+	out := buf.String()
+	if strings.Count(out, "level=WARN") != 2 || !strings.Contains(out, "template trio: tester is the test writer") ||
+		!strings.Contains(out, "class docs-links of o/r is live without holdoutChecks") {
+		t.Fatalf("want one warning per sentence:\n%s", out)
+	}
+}
