@@ -96,7 +96,7 @@ demo alike:
 |---|---|
 | `svg/maku-mark-{light,dark}.svg` | the header mark, byte-identical to `docs/assets/brand/svg/` |
 | `favicon/` | `favicon.svg`, `favicon-16.png`, `favicon-32.png`, `apple-touch-icon.png`, byte-identical to `docs/assets/brand/favicon/` |
-| `fonts/` | Space Grotesk latin 500 and 700 as WOFF2, self-hosted under the SIL OFL 1.1 in `fonts/LICENSE` |
+| `fonts/` | Space Grotesk latin 400, 500 and 700 as WOFF2, self-hosted under the SIL OFL 1.1 in `fonts/LICENSE` |
 
 The fonts load with `font-display: swap` over a system-sans fallback, from this origin only: the
 CSP allows `font-src 'self'` and nothing reaches a font CDN. `web/test/assets.test.ts` pins the

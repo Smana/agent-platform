@@ -302,6 +302,54 @@ describe("the broker's golden summaries in the strip", () => {
   });
 });
 
+describe("the strip on a phone", () => {
+  const css = readFileSync(join(__dirname, "../src/app.css"), "utf8");
+  // Every @media (max-width: 640px) block, and the stylesheet without them: the desktop's.
+  const phoneRe = /@media \(max-width: 640px\)\s*{([\s\S]*?)\n}\n/g;
+  const phone = [...css.matchAll(phoneRe)].map((m) => m[1]).join("\n");
+  const desktop = css.replace(phoneRe, "");
+  const decl = (src: string, sel: string) => {
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = src.match(new RegExp(`(?:^|\\n)\\s*${esc}\\s*{([^}]*)}`));
+    expect(m, `rule ${sel}`).not.toBeNull();
+    return m![1];
+  };
+  const clamp2 = /display:\s*-webkit-box;[^}]*-webkit-line-clamp:\s*2;[^}]*-webkit-box-orient:\s*vertical;[^}]*overflow:\s*hidden/;
+
+  it("keeps the full title in title=, for the line a phone clamps", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    expect(h.querySelector(".strip-title")?.getAttribute("title")).toBe("#74 Chat view: pair tool calls");
+    strip.update(input({ summary: undefined }));
+    expect(h.querySelector(".strip-title")?.getAttribute("title")).toBe("Room 3kq7x2ma");
+  });
+  it("keeps the chips on one line that scrolls sideways, its scrollbar hidden", () => {
+    const chips = decl(phone, ".page-header .strip-chips");
+    expect(chips).toMatch(/flex-wrap:\s*nowrap/);
+    expect(chips).toMatch(/overflow-x:\s*auto/);
+    expect(chips).toMatch(/scrollbar-width:\s*none/);
+    expect(phone).toMatch(/\.page-header \.strip-chips::-webkit-scrollbar\s*{[^}]*display:\s*none/);
+  });
+  it("leaves room in the scrolling row for the Needs-you pill's focus ring", () => {
+    const chips = decl(phone, ".page-header .strip-chips");
+    const pad = chips.match(/padding-block:\s*(\d+)px/);
+    expect(pad, "padding-block").not.toBeNull();
+    expect(Number(pad![1])).toBeGreaterThanOrEqual(3); // a 2 px ring 1 px off the pill
+    expect(chips).toMatch(new RegExp(`margin-block:\\s*-${pad![1]}px`));
+  });
+  it("puts Needs you first in the row, so it never scrolls out of sight", () => {
+    expect(decl(phone, ".page-header .needs-pill")).toMatch(/order:\s*-1/);
+    expect(decl(phone, ".page-header .strip-chips > *")).toMatch(/flex:\s*none/);
+  });
+  it("clamps the title, the waiting lines and the Now line to two lines each", () => {
+    for (const sel of [".strip-title", ".page-header .waiting", ".page-header .now-link"]) expect(decl(phone, sel), sel).toMatch(clamp2);
+  });
+  it("leaves the desktop strip as it was", () => {
+    expect(desktop).not.toMatch(/line-clamp|scrollbar-width/);
+    expect(decl(desktop, ".strip-chips")).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
 describe("formatting", () => {
   // The same boundaries as roomctl's tokens() (internal/roomctl TestBudgetTextBoundaries).
   it.each([[0, "0"], [999, "999"], [1000, "1 k"], [189093, "189 k"], [999_499, "999 k"], [999_500, "1 M"], [1_000_000, "1 M"],

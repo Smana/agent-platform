@@ -15,10 +15,10 @@ function rule(sel: string): string {
 }
 
 describe("Maku typography", () => {
-  it("loads only local Space Grotesk 500 and 700 with swap", () => {
+  it("loads only local Space Grotesk 400, 500 and 700 with swap", () => {
     const faces = [...css.matchAll(/@font-face\s*{([^}]*)}/g)].map((m) => m[1]);
-    expect(faces).toHaveLength(2);
-    for (const w of [500, 700]) {
+    expect(faces).toHaveLength(3);
+    for (const w of [400, 500, 700]) {
       const f = faces.find((x) => new RegExp(`font-weight:\\s*${w}\\b`).test(x))!;
       expect(f, `weight ${w}`).toBeDefined();
       expect(f).toMatch(/font-family:\s*"Space Grotesk"/);
@@ -35,6 +35,13 @@ describe("Maku typography", () => {
       expect(src).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
       expect(src).not.toMatch(/url\(\s*["']?https?:/);
     }
+  });
+
+  it("sets message prose at 400, the chrome at 500 and bold at 700", () => {
+    expect(rule(".bubble .md, .handoff > .md, .notes")).toMatch(/font-weight:\s*400/);
+    expect(rule("body")).toMatch(/font:\s*500 /);
+    expect(rule("strong, b")).toMatch(/font-weight:\s*700/);
+    expect(rule(".md :is(h1, h2, h3, h4, h5, h6)")).toMatch(/font-weight:\s*700/);
   });
 
   it("uses the readable Maku type scale", () => {
@@ -109,13 +116,13 @@ describe("Maku brand header", () => {
     expect(css).not.toMatch(/font-weight:\s*600/);
   });
 
-  it("links favicons and preloads both fonts, same origin", () => {
+  it("links favicons and preloads the three fonts, same origin", () => {
     expect(html).toContain("<title>Maku rooms</title>");
     expect(html).toContain('href="/assets/favicon/favicon.svg"');
     expect(html).toContain('href="/assets/favicon/favicon-16.png"');
     expect(html).toContain('href="/assets/favicon/favicon-32.png"');
     expect(html).toContain('rel="apple-touch-icon" href="/assets/favicon/apple-touch-icon.png"');
-    for (const w of [500, 700]) {
+    for (const w of [400, 500, 700]) {
       expect(html).toMatch(new RegExp(`rel="preload"[^>]*href="/assets/fonts/space-grotesk-latin-${w}-normal\\.woff2"[^>]*as="font"[^>]*type="font/woff2"[^>]*crossorigin`));
     }
   });
