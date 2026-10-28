@@ -364,3 +364,52 @@ describe("formatting", () => {
     expect(shortPrincipal("system:factory")).toBe("system:factory");
   });
 });
+
+// Operator-configured dashboards (human.dashboards): one chip in the chip row, so a phone's
+// strip keeps its one sideways line; none configured, no element at all.
+describe("the strip's dashboards", () => {
+  const templates = [
+    { label: "Room metrics", url: "https://grafana.example.com/d/agent-room/x?var-room={room}" },
+    { label: "Run", url: "https://grafana.example.com/d/agent-run/x?var-run={run}" },
+    { label: "Task", url: "https://grafana.example.com/d/agent-factory/x?var-task={task}" },
+  ];
+  const links = (h: HTMLElement) => [...h.querySelectorAll<HTMLAnchorElement>(".chip-dashboards a")];
+
+  it("shows nothing without templates", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    strip.update(input({ dashboards: [] }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+  it("fills the room's ids, and opens each in a new tab with no referrer", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates, summary: summary({ task: "3kq7x2ma" }) }));
+    const chip = h.querySelector(".strip-chips > .chip-dashboards")!;
+    expect(chip.textContent).toBe("Dashboards: Room metrics · Run · Task");
+    expect(links(h).map((a) => a.href)).toEqual([
+      "https://grafana.example.com/d/agent-room/x?var-room=3kq7x2ma",
+      "https://grafana.example.com/d/agent-run/x?var-run=ikely2yk",
+      "https://grafana.example.com/d/agent-factory/x?var-task=3kq7x2ma"]);
+    for (const a of links(h)) expect([a.rel, a.target]).toEqual(["noopener noreferrer", "_blank"]);
+  });
+  it("hides a {run} link with no run and a {task} link with no task", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates, summary: summary({ run: null }) }));
+    expect(links(h).map((a) => a.textContent)).toEqual(["Room metrics"]);
+    strip.update(input({ dashboards: templates.slice(1), summary: undefined }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+  it("takes the last run from the run history, else the state frame", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates.slice(1, 2), summary: { ...summary({ run: null }), runs: [{ id: "aaaaaaaa", role: "implementer" }, { id: "bbbbbbbb", role: "reviewer" }] } }));
+    expect(links(h)[0].href).toBe("https://grafana.example.com/d/agent-run/x?var-run=bbbbbbbb");
+    strip.update(input({ dashboards: templates.slice(1, 2), summary: undefined,
+      snap: { ...snap, runs: [{ id: "cccccccc", role: "implementer", phase: "Running" }] } }));
+    expect(links(h)[0].href).toBe("https://grafana.example.com/d/agent-run/x?var-run=cccccccc");
+  });
+  it("drops a link that does not come out https", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: [{ label: "Plain", url: "http://grafana.example.com/?r={room}" }] }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+});

@@ -134,20 +134,29 @@ func createStatus(err error) int {
 // version, whose roomctl release the UI's CLI setup view installs. clientID is "" while the broker has no roomctl client.
 // roomctl asks for the project's audience with projectID: ZITADEL adds the
 // project to aud only then, and the broker refuses a token without it (ruling AS).
+// It also carries the room page's dashboard templates, unfilled: not secrets, but of no use to
+// roomctl configure, so the unauthenticated route leaves them out.
 func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.principal(w, r); !ok {
 		return
 	}
-	s.writeSetup(w)
+	s.writeSetup(w, s.Dashboards)
 }
 
 // publicSetup is GET /.well-known/roomctl: the same values with no sign-in, so `roomctl
 // configure --url` needs nothing else (#48). The issuer, the client id and the project id are
 // public by design (a native app has no secret) and the CLI setup view shows them to any member.
 // The proxy in front must let this path through unauthenticated.
-func (s *Server) publicSetup(w http.ResponseWriter, _ *http.Request) { s.writeSetup(w) }
+func (s *Server) publicSetup(w http.ResponseWriter, _ *http.Request) { s.writeSetup(w, nil) }
 
-func (s *Server) writeSetup(w http.ResponseWriter) {
+// Dashboard is one link template the room page fills with a room's ids (human.dashboards):
+// {room}, {run} and {task}, each URL-encoded, and a link whose value is missing hidden.
+type Dashboard struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+func (s *Server) writeSetup(w http.ResponseWriter, dashboards []Dashboard) {
 	read := func(f func() string) string {
 		if f == nil {
 			return ""
@@ -160,7 +169,9 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 		ClientID  string `json:"clientID"`
 		ProjectID string `json:"projectID"`
 		Version   string `json:"version"`
-	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version})
+		// Dashboards are the templates, absent when none is configured.
+		Dashboards []Dashboard `json:"dashboards,omitempty"`
+	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version, dashboards})
 }
 
 // roomRow is one row of GET /api/rooms.

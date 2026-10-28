@@ -7,6 +7,7 @@
 import { mountBrand } from "../src/brand";
 import type { RoomEvent, Snapshot } from "../src/conn";
 import { mountComposer, mountControls } from "../src/controls";
+import type { Dashboard } from "../src/dashboards";
 import { mountFork } from "../src/fork";
 import { mountNeeds } from "../src/needs";
 import { RoomState } from "../src/room-state";
@@ -35,6 +36,7 @@ export interface PreviewOptions {
   homeHref?: string; // the brand link target; "/" unless the demo keeps it on its own page
   assetBase?: string; // where the brand marks are served; "/assets" unless the demo serves them relative
   theme: ThemeController; // initialised by the caller, so a ?theme override can follow it
+  dashboards?: Dashboard[]; // the strip's link templates; none by default
 }
 
 export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPage {
@@ -102,7 +104,8 @@ export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPa
       composer.refresh();
       renderNotes(blocks, summary);
       strip.update({ roomId: summary.room, snap, phase: state.phase, driver: state.driver, sealedBy: state.closed, sealed: state.sealed,
-        summary, needs: needs.count(), connection: "live", now: state.latest(), running: state.running(), ran: state.ran() });
+        summary, needs: needs.count(), connection: "live", now: state.latest(), running: state.running(), ran: state.ran(),
+        dashboards: o.dashboards });
     },
     setSummary(s) { summary = s; },
     say,

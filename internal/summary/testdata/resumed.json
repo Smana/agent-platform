@@ -24,7 +24,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Implementing",
+      "phase": "Implementing", "task": "26zfnuxm",
       "run": {"id":"bbbbbbbb","role":"implementer","trigger":"human","startedAt":"2026-10-07T19:00:00Z"},
       "budget": null,
       "pr": null,

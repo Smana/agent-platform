@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -479,7 +480,8 @@ func TestHumanServer(t *testing.T) {
 	projectFile := filepath.Join(t.TempDir(), "project-id")
 	writeID(t, projectFile, "proj-1")
 	cfg := config.Config{PublicURL: "https://rooms.example.test", Human: config.HumanConfig{Issuer: humanIssuer,
-		ClientIDFile: clientFile, RoomctlClientIDFile: roomctlFile, ProjectIDFile: projectFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
+		ClientIDFile: clientFile, RoomctlClientIDFile: roomctlFile, ProjectIDFile: projectFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"},
+		Dashboards: []config.DashboardConfig{{Label: "Room", URL: "https://grafana.example.com/d/r?var-room={room}"}}}}
 	humans := authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), "https://rooms.example.test")
 	m, err := metrics.New(nil)
 	if err != nil {
@@ -491,6 +493,9 @@ func TestHumanServer(t *testing.T) {
 	if s.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || s.Namespace != "agent-system" || s.Metrics != m ||
 		s.Actor != actor {
 		t.Fatalf("groups %+v, namespace %q, metrics %p, actor %p", s.Groups, s.Namespace, s.Metrics, s.Actor)
+	}
+	if want := []humanapi.Dashboard{{Label: "Room", URL: "https://grafana.example.com/d/r?var-room={room}"}}; !slices.Equal(s.Dashboards, want) {
+		t.Fatalf("dashboards %+v, want the config's", s.Dashboards)
 	}
 	writeID(t, clientFile, "web-2")
 	if got := s.WebClient(); got != "web-2" {

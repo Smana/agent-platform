@@ -16,6 +16,7 @@ export interface Summary {
   url: string;
   status: {
     phase: string; // a task phase, or Closed/Sealed
+    task?: string; // the room's Task, named as the room; absent without one
     run: { id: string; role: string; trigger?: string; startedAt?: string } | null;
     budget: { usedTokens: number; limitTokens: number } | null;
     pr: { number: number; url: string; author?: string; reviewers?: string[] } | null;
@@ -25,6 +26,7 @@ export interface Summary {
     next?: string; // what happens or who acts next
   };
   // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
+  runs?: { id: string; role: string }[]; // the task's run history, oldest first
   needsYou: { kind: "approval" | "hold" | "merge"; id: string; what: string; deadline?: string; url: string }[];
   // The one thing to do for the room and where: "pr" and "answer" are on GitHub, "approve" on this page.
   step?: { kind: "approve" | "pr" | "answer"; label: string; url?: string };
