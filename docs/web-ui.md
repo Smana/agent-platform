@@ -22,7 +22,8 @@ Sources: `docs/api.md` (the `:8080` checks), `internal/policy/policy.go` (`Group
 ## The room list
 
 A table, one row per room you can read. Rooms that need you come first, then the most recently
-active, then by id. The task cell links to the room page.
+active, then by id. The whole row opens the room page: the task cell's link covers the row, so it
+stays one link for the keyboard and a screen reader. The phase shows as the room page's phase chip.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/rooms-dark.png">
@@ -49,7 +50,7 @@ repositories of the rooms the page first listed. They are the API's `mine`, `nee
 
 ### New room
 
-**New room**, beside the filters, opens a form above the list that creates a room you own and
+**New room**, the primary button at the right end of the filters row, opens a form above the list that creates a room you own and
 drive, then opens it.
 
 | Field | Rule |

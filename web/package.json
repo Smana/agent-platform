@@ -9,7 +9,7 @@
     "build": "rm -rf ../internal/humanapi/ui/dist && mkdir -p ../internal/humanapi/ui/dist/assets && esbuild src/main.ts --bundle --minify --format=esm --target=es2022 --outfile=../internal/humanapi/ui/dist/assets/app.js && cp src/app.css ../internal/humanapi/ui/dist/assets/app.css && cp src/index.html ../internal/humanapi/ui/dist/ && cp -R src/assets/. ../internal/humanapi/ui/dist/assets/",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "preview:build": "esbuild preview/preview.ts preview/full.ts preview/demo.ts --bundle --format=esm --target=es2022 --outdir=preview",
+    "preview:build": "esbuild preview/preview.ts preview/full.ts preview/demo.ts preview/list.ts --bundle --format=esm --target=es2022 --outdir=preview",
     "preview": "npm run preview:build && node preview/serve.mjs",
     "demo": "bash scripts/demo-site.sh .demo-site && SERVE_ROOT=.demo-site node preview/serve.mjs"
   },

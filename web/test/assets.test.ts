@@ -48,6 +48,7 @@ describe("static assets", () => {
     { file: "src/index.html", base: "/assets/", title: "Maku rooms", css: "/assets/app.css" },
     { file: "preview/preview.html", base: "/assets/", title: "Maku: room log preview (offline fixture)", css: "/src/app.css" },
     { file: "preview/full.html", base: "/assets/", title: "Maku: room page preview (offline fixture)", css: "/src/app.css" },
+    { file: "preview/list.html", base: "/assets/", title: "Maku: room list preview (offline fixture)", css: "/src/app.css" },
     { file: "preview/demo.html", base: "assets/", title: "Maku: live demo", css: "app.css" },
   ];
 

@@ -49,7 +49,6 @@ describe("Maku typography", () => {
     expect(rule(".strip-title")).toMatch(/font-size:\s*20px/);
     expect(rule(".strip-title")).toMatch(/line-height:\s*1\.3/);
     expect(rule(".strip-title")).toMatch(/font-weight:\s*700/);
-    expect(rule(".page-header h1")).toMatch(/font-size:\s*20px/);
     expect(rule(".msg-head")).toMatch(/font-size:\s*13px/);
     expect(rule(".chip, .pol")).toMatch(/font-size:\s*13px/);
     expect(rule(".t-cmd, .t-command, .approval-command, pre, code")).toMatch(/font:\s*14px\/1\.5\s+ui-monospace/);
@@ -129,7 +128,7 @@ describe("Maku brand header", () => {
 
   it("titles the preview pages and links their icons", () => {
     const read = (f: string) => readFileSync(join(__dirname, "../preview", f), "utf8");
-    for (const f of ["preview.html", "full.html"]) {
+    for (const f of ["preview.html", "full.html", "list.html"]) {
       const h = read(f);
       expect(h).toMatch(/<title>Maku: /);
       expect(h).toContain('href="/assets/favicon/favicon.svg"');
@@ -140,6 +139,62 @@ describe("Maku brand header", () => {
     expect(d).toContain('href="assets/favicon/favicon.svg"');
     expect(d).toContain('href="assets/fonts/space-grotesk-latin-500-normal.woff2"');
     expect(d).not.toMatch(/href="\//);
+  });
+});
+
+describe("The room list", () => {
+  it("sets the page title apart from the wordmark: a divider, lighter and smaller, centred", () => {
+    const t = rule(".page-header .page-title");
+    expect(t).toMatch(/font:\s*500 18px\/24px/);
+    expect(t).toMatch(/color:\s*var\(--muted-foreground\)/);
+    expect(t).toMatch(/border-left:\s*1px solid var\(--border\)/);
+    expect(t).toMatch(/padding-left:\s*16px/);
+    expect(t).toMatch(/align-self:\s*center/);
+    expect(t).toMatch(/margin:\s*0/);
+  });
+  it("underlines a task link on hover and focus only, with a visible ring", () => {
+    expect(rule(".rooms .task-link")).toMatch(/text-decoration:\s*none/);
+    expect(rule(".rooms .task-link:hover, .rooms .task-link:focus-visible")).toMatch(/text-decoration:\s*underline/);
+    expect(css).toMatch(/\.rooms \.task-link:focus-visible\s*{[^}]*outline:\s*2px solid var\(--ring\)/);
+  });
+  it("stretches the task link over its row, other links above it", () => {
+    expect(rule(".rooms tr.room-row")).toMatch(/position:\s*relative/);
+    const after = rule(".rooms .task-link::after");
+    expect(after).toMatch(/content:\s*""/);
+    expect(after).toMatch(/position:\s*absolute/);
+    expect(after).toMatch(/inset:\s*0/);
+    const above = rule(".rooms .room-row a:not(.task-link), .rooms .room-row button");
+    expect(above).toMatch(/position:\s*relative/);
+    expect(above).toMatch(/z-index:\s*1/);
+    expect(rule(".rooms tr.room-row:hover, .rooms tr.room-row:focus-within")).toMatch(/background:\s*color-mix\(in srgb, var\(--primary\) 6%, var\(--card\)\)/);
+  });
+  it("lifts the room id above the stretched link, so it can be selected and copied", () => {
+    const id = rule(".rooms td.room-id");
+    expect(id).toMatch(/position:\s*relative/);
+    expect(id).toMatch(/z-index:\s*1/);
+    expect(id).toMatch(/cursor:\s*text/);
+  });
+  it("draws the phase as the strip's chip, on the card's tokens", () => {
+    const c = rule(".rooms .chip-phase");
+    expect(c).toMatch(/color:\s*var\(--card-foreground\)/);
+    expect(c).toMatch(/border-color:\s*color-mix\(in srgb, var\(--card-foreground\) 50%, var\(--card\)\)/);
+  });
+  it("mutes the repository and the room id", () => {
+    expect(rule(".rooms .repo, .rooms .room-id")).toMatch(/color:\s*var\(--muted-foreground\)/);
+  });
+  it("sizes the Needs you column to its content", () => {
+    const n = rule(".rooms th:first-child, .rooms .room-row td:first-child");
+    expect(n).toMatch(/width:\s*1%/);
+    expect(n).toMatch(/white-space:\s*nowrap/);
+  });
+  it("pushes New room to the end of the filters row", () => {
+    expect(rule(".list-tools [data-act=\"new-room\"]")).toMatch(/margin-left:\s*auto/);
+  });
+  it("spaces the CLI setup fold and sets its summary like the room page's folds", () => {
+    expect(rule(".cli-setup")).toMatch(/margin-top:\s*16px/);
+    const s = rule(".cli-setup > summary");
+    expect(s).toMatch(/font-size:\s*13px/);
+    expect(s).toMatch(/color:\s*var\(--muted-foreground\)/);
   });
 });
 
