@@ -1,6 +1,7 @@
 """The test-first tester in agent-run (v3 feature 4, F1): the tester's red check, signed push and ends,
 the implementer's contract, hook and hold. Offline proofs 2 and 3 on real repositories and a local bare
 remote; the conversation is scripted as in test_loop_run.DriveTest."""
+import contextlib
 import io
 import json
 import os
@@ -581,3 +582,84 @@ class ContractLoopTest(unittest.TestCase):
 
     def test_a_failed_conversation_exits_as_it_did(self):
         self.assertEqual(self.loop([], polls=[1]), 1)
+
+
+class MainContractTest(unittest.TestCase):
+    """main()'s wiring, MainLoopTest's patching: the tester's mode, the implementer's contract."""
+    DECL = {"tools": [], "minutes": 5, "pin": ("b", "blob")}
+    CONTRACT = {"commit": "c0ffee", "files": ["t/a.sh"], "ids": ["t/a.sh"], "base": "b"}
+
+    def main(self, env_extra, poll=0, resumed=False, decl=DECL, contract=None, tester_end=None):
+        mocks = {}
+        with tempfile.TemporaryDirectory() as d, contextlib.ExitStack() as stack:
+            task = os.path.join(d, "task.md")
+            with open(task, "w") as f:
+                f.write("task")
+            env = {"TASK_FILE": task, "RULES_FILE": task, "ROLE": "tester", **env_extra}
+            stack.enter_context(mock.patch.dict(os.environ, env, clear=True))
+            stack.enter_context(mock.patch("agent_run.LOOP_STATE", os.path.join(d, "loop.json")))
+            for name, kw in {"subprocess.Popen": {}, "wait_ready": {}, "persisted": {"return_value": resumed},
+                             "clone": {"return_value": False}, "declared": {"return_value": decl},
+                             "prefetch": {"return_value": "proc"}, "start_base": {"return_value": "b"},
+                             "load_contract": {"return_value": contract}, "build_request": {"return_value": {}},
+                             "head": {"return_value": "h0"}, "http": {"return_value": {"id": "c1"}},
+                             "poll": {"return_value": poll}, "drive": {"return_value": (0, None, "")},
+                             "contract_loop": {"return_value": 0}, "make_hold": {"return_value": "hold"},
+                             "disable_push": {}, "tester_end": tester_end or {"return_value": "contract_not_red"},
+                             "contract_env": {"return_value": {}}, "final_checks": {}, "checks_ledger": {"return_value": ""},
+                             "StepLog": {}, "ProgressNotes": {}, "final_read": {}, "stop": {"return_value": "stopped"},
+                             "revoke": {}}.items():
+                mocks[name] = stack.enter_context(mock.patch("agent_run." + name, **kw))
+            stack.enter_context(mock.patch("sys.stdout", new=io.StringIO()))
+            stack.enter_context(mock.patch("sys.stderr", new=io.StringIO()))
+            code = agent_run.main()
+        return types.SimpleNamespace(code=code, **{k.replace(".", "_"): v for k, v in mocks.items()})
+
+    def test_a_tester_without_a_task_url_commits_only_and_always_exits_0(self):
+        r = self.main({})
+        self.assertEqual(r.code, 0)
+        r.disable_push.assert_called_once()
+        r.tester_end.assert_called_once()
+        self.assertEqual(r.tester_end.call_args.args[:3], (mock.ANY, "c1", "b"))
+        r.prefetch.assert_called_once()
+
+    def test_a_tester_with_a_task_url_is_todays_verifier(self):
+        r = self.main({"TASK_URL": "https://github.com/o/r/pull/1"})
+        self.assertEqual(r.code, 0)
+        r.tester_end.assert_not_called()
+        r.contract_env.assert_not_called()
+
+    def test_a_failed_tester_conversation_is_not_checked(self):
+        r = self.main({}, poll=1)
+        self.assertEqual(r.code, 1)
+        r.tester_end.assert_not_called()
+
+    def test_a_tester_end_that_raises_still_exits_0(self):
+        r = self.main({}, tester_end={"side_effect": RuntimeError("boom")})
+        self.assertEqual(r.code, 0)
+
+    def test_a_resumed_implementer_with_a_contract_holds_it_without_a_loop(self):
+        r = self.main({"ROLE": "implementer"}, resumed=True, contract=self.CONTRACT)
+        r.make_hold.assert_called_once()
+        r.contract_loop.assert_called_once()
+        r.poll.assert_not_called()
+        r.drive.assert_not_called()
+        r.tester_end.assert_not_called()
+
+    def test_with_a_loop_drive_gets_the_hold(self):
+        r = self.main({"ROLE": "implementer", "AGENT_LOOP": "{}"}, resumed=True, contract=self.CONTRACT)
+        r.drive.assert_called_once()
+        self.assertEqual(r.drive.call_args.kwargs["hold"], "hold")
+        r.contract_loop.assert_not_called()
+
+    def test_without_a_contract_it_is_todays_run(self):
+        r = self.main({"ROLE": "implementer"}, resumed=True)
+        r.make_hold.assert_not_called()
+        r.contract_loop.assert_not_called()
+        r.drive.assert_not_called()
+        r.poll.assert_called_once()
+        r.tester_end.assert_not_called()
+
+    def test_a_loop_without_a_contract_gets_no_hold(self):
+        r = self.main({"ROLE": "implementer", "AGENT_LOOP": "{}"})
+        self.assertIsNone(r.drive.call_args.kwargs["hold"])
