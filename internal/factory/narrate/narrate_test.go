@@ -136,6 +136,10 @@ func TestTokensAndReasons(t *testing.T) {
 			t.Errorf("Tokens(%d) = %q, want %q", n, got, want)
 		}
 	}
+	if got := Reason("class_unarmed"); got != "the factory does not merge this class: a maintainer reviews and merges it" ||
+		strings.Contains(got, "predicted") {
+		t.Fatalf("class_unarmed is not a mismatch: %q", got)
+	}
 	if Reason("kill_switch") != "the factory's kill switch is engaged" || Reason("something_new") != "something_new" {
 		t.Fatal("known reasons read as prose; an unknown one is shown as it is")
 	}
@@ -519,5 +523,30 @@ func TestAMonitorRegressionSaysWhatItCosts(t *testing.T) {
 	}
 	if got := Reason("class_paused"); !strings.Contains(got, "follow-up") || !strings.Contains(got, "revert") {
 		t.Fatalf("class_paused names every cause: %q", got)
+	}
+}
+
+// RA9: the proposal comment names factory/publish; the answers to it say what was filed or why not.
+func TestPublishNarration(t *testing.T) {
+	tk := task()
+	tk.Status.RoomRef = "3kq7x2ma"
+	if b := ProposalReady(tk, "https://rooms.example").Body; !strings.Contains(b, "label this issue `factory/publish`") || !strings.Contains(b, "`factory/ready`") {
+		t.Fatalf("%s", b)
+	}
+	if e := Published(7, 42, "smana"); e.Key != "published-42" || e.Body != "Published as #42 by @smana. Read it, then label it `factory/ready` to start the fix." {
+		t.Fatalf("%+v", e)
+	}
+	at := time.Unix(1_700_000_000, 0)
+	if e := PublishRefused(7, "unauthorised_labeller", at); e.Key != "publish-refused-unauthorised_labeller-1700000000" ||
+		e.Body != "The agent factory did not publish #7's proposal: only a maintainer's factory/publish files a proposal." {
+		t.Fatalf("%+v", e)
+	}
+	for _, r := range []string{"no_proposal", "task_not_ended", "invalid_draft", "redacted"} {
+		if got := Reason(r); got == r || got == "" {
+			t.Errorf("%s has no narration", r)
+		}
+		if b := PublishRefused(7, r, at).Body; !strings.Contains(b, Reason(r)) {
+			t.Errorf("%s: %s", r, b)
+		}
 	}
 }

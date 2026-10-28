@@ -49,7 +49,7 @@ describe("listRooms", () => {
     const el = app();
     const rows = [{ id: "3kq7x2ma", phase: "", owner: "human:1", driver: "", dataClass: "internal", lastSeq: 4 }];
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
-    expect(el.querySelector("a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
+    expect(el.querySelector("tbody a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
   });
   // #50: a row says which task it is, not only a random id; the title is text, never markup.
   it("names the issue, title, task phase, PR and what needs you", async () => {
@@ -62,7 +62,7 @@ describe("listRooms", () => {
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
     const [first, second] = [...el.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
     expect(first).toEqual(["2", "#2266 <img src=x onerror=alert(1)>", "Smana/a", "Reviewing", "#2267", "—", "yacoriey"]);
-    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("tbody img")).toBeNull();
     expect(second).toEqual(["", "Room d66mo4b4", "", "Idle", "", "—", "d66mo4b4"]);
     expect(el.querySelectorAll("th[scope=col]").length).toBe(7);
   });
@@ -83,6 +83,14 @@ describe("the room table", () => {
   ];
   it("sorts needs-you first, then the most recent activity", () => {
     expect(sortRooms(rows).map((r) => r.id)).toEqual(["3kq7x2ma", "k2p9rt4v", "d66mo4b4"]);
+  });
+  it("mounts one Maku brand in the list header and titles the tab", async () => {
+    const root = app();
+    await listRooms(root, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);
+    expect(root.querySelectorAll(".brand")).toHaveLength(1);
+    expect(root.querySelector("header.page-header")?.firstElementChild?.classList.contains("brand")).toBe(true);
+    expect(root.querySelector("h1")?.textContent).toBe("Rooms");
+    expect(document.title).toBe("Maku rooms");
   });
   it("renders one row per room with the task first and a needs pill", async () => {
     const get = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("needs_me=1") ? [rows[1]] : rows), { status: 200 }));
@@ -158,6 +166,50 @@ describe("the room table", () => {
     (root.querySelector('button[data-act="new-room"]') as HTMLButtonElement).click();
     expect((root.querySelector("form.new-room") as HTMLElement).hidden).toBe(false);
     expect(root.lastElementChild?.className).toBe("cli-setup");
+  });
+});
+
+describe("the room list's layout", () => {
+  const rows = [
+    { id: "3kq7x2ma", phase: "Active", owner: "", driver: "", dataClass: "internal", lastSeq: 1, repository: "o/b", issue: 74, title: "Chat view", task: "Reviewing", pr: 77, needsYou: 2 },
+  ];
+  const mount = async () => {
+    const root = document.createElement("div");
+    await listRooms(root, (async () => new Response(JSON.stringify(rows), { status: 200 })) as unknown as typeof fetch);
+    return root;
+  };
+  it("sets the page title apart from the brand, as its own element", async () => {
+    const h1 = (await mount()).querySelector("header.page-header h1")!;
+    expect(h1.className).toBe("page-title");
+    expect(h1.previousElementSibling?.classList.contains("brand")).toBe(true);
+  });
+  it("makes the whole row a link to the room through the task anchor, not a row handler", async () => {
+    const tr = (await mount()).querySelector("tbody tr") as HTMLTableRowElement;
+    expect(tr.className).toBe("room-row");
+    expect(tr.onclick).toBeNull();
+    const links = tr.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0].className).toBe("task-link");
+    expect(links[0].getAttribute("href")).toBe("/r/3kq7x2ma");
+    expect(links[0].textContent).toBe("#74 Chat view");
+  });
+  it("shows the phase as a chip, the room page's class, still text", async () => {
+    const td = (await mount()).querySelectorAll("tbody tr td")[3];
+    const chip = td.querySelector("span.chip.chip-phase")!;
+    expect(chip.textContent).toBe("Reviewing");
+    expect(td.textContent).toBe("Reviewing");
+    expect(chip.children).toHaveLength(0);
+  });
+  it("marks the repository and the room id as secondary", async () => {
+    const tds = (await mount()).querySelectorAll("tbody tr td");
+    expect(tds[2].className).toBe("repo");
+    expect(tds[6].className).toBe("room-id");
+  });
+  it("puts New room, the primary action, after the filters", async () => {
+    const tools = (await mount()).querySelector(".list-tools")!;
+    const add = tools.lastElementChild as HTMLButtonElement;
+    expect(add.dataset.act).toBe("new-room");
+    expect(add.classList.contains("primary")).toBe(true);
   });
 });
 

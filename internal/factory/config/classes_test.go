@@ -109,6 +109,8 @@ func TestBadMonitorFails(t *testing.T) {
 		"a bad source":           {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, flux: {source: flux-system, within: 1h}}}", `class x: monitor.flux.source "flux-system" is not namespace/name`},
 		"no within":              {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, flux: {source: a/b}}}", "class x: monitor.flux.within must be 5m..6h"},
 		"an unknown key":         {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUps: 1}}", `unknown field "followUps"`},
+		"verification within 0":  {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, verification: {within: 0s}}}", "class x: monitor.verification.within must be 1m..followUpWindow"},
+		"verification too long":  {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, verification: {within: 169h}}}", "class x: monitor.verification.within must be 1m..followUpWindow"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse([]byte(withClasses(t, c.classes))); err == nil || !strings.Contains(err.Error(), c.err) {
@@ -182,5 +184,16 @@ func TestBadAdoptionFails(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, c.err)
 			}
 		})
+	}
+}
+
+// RA11: a class declares the verification window; it parses within followUpWindow.
+func TestMonitorVerificationParses(t *testing.T) {
+	c, err := Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, verification: {within: 2h}}}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := c.RepositoryFor("Smana/cloud-native-ref").Classes["x"].Monitor.Verification; v == nil || v.Within.Duration != 2*time.Hour {
+		t.Fatalf("%+v", v)
 	}
 }

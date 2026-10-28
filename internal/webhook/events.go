@@ -72,11 +72,20 @@ type Tracker struct {
 	pr     int    // the last pull request number seen, for merged, reverted and verdict_posted
 	prSent bool
 	ended  bool
+	origin string // the last origin the task facts named: every event after it repeats it (RA10)
 }
 
 // Events is what ev means to a subscriber of room, whose repository is repo: none, one or a few
 // events, each carrying ids, states and codes only. A message is never decoded (M3).
 func (t *Tracker) Events(room, repo string, ev envelope.Event) []Event {
+	out := t.events(room, repo, ev)
+	for i := range out {
+		out[i].Origin = t.origin
+	}
+	return out
+}
+
+func (t *Tracker) events(room, repo string, ev envelope.Event) []Event {
 	if ev.Seq <= t.seq {
 		return nil
 	}
@@ -113,6 +122,9 @@ func (t *Tracker) Events(room, repo string, ev envelope.Event) []Event {
 // task is a task_state entry's events: the first pull request, then the phase's own event on a
 // change of phase, the budget its reason names, and the first coarse end.
 func (t *Tracker) task(room, repo string, f envelope.TaskFacts) []Event {
+	if f.Origin != "" {
+		t.origin = f.Origin
+	}
 	var out []Event
 	if f.PR != nil && f.PR.Number > 0 {
 		t.pr = f.PR.Number

@@ -38,6 +38,10 @@ type Event struct {
 	Reason string `json:"reason,omitempty"`
 	Limit  string `json:"limit,omitempty"`
 	State  string `json:"state,omitempty"`
+	// Origin is the room of the task this room's task was started from (RunLore agent-to-agent
+	// RA10), on every event of the room once its facts name one, so a subscriber correlates an
+	// event it missed the start of.
+	Origin string `json:"origin,omitempty"`
 }
 
 // ID is a delivery's webhook-id: the same for every retry and every leader, distinct per

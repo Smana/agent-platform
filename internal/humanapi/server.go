@@ -86,7 +86,7 @@ type Runs interface {
 
 // T10: markdown is rendered with HTML off, and nothing but this origin may run or load.
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; " +
-	"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	"font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 // Server is the :8080 API. Humans, Groups, WebClient, Rooms, Namespace, Log, Hub
 // and Runs are required; the rest is optional.
@@ -133,6 +133,9 @@ type Server struct {
 	Identity     *ghidentity.Resolver
 	Access       *repoaccess.Checker
 	Logger       *slog.Logger
+	// Dashboards are the room page's link templates (human.dashboards), served on GET
+	// /api/roomctl; none shows no group.
+	Dashboards []Dashboard
 	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
 
@@ -175,11 +178,14 @@ func (s *Server) Routes() http.Handler {
 	if s.UI != nil {
 		ui := s.UI
 		index = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.ServeFileFS(w, r, ui, "index.html") })
-		assets = http.StripPrefix("/assets", http.FileServerFS(ui))
+		if sub, err := fs.Sub(ui, "assets"); err == nil {
+			assets = filesOnly(sub, http.StripPrefix("/assets/", http.FileServerFS(sub)))
+		}
 	}
 	mux.Handle("GET /{$}", withCSP(index))
 	mux.Handle("GET /r/{id}", withCSP(index))
-	mux.Handle("GET /assets/{file}", withCSP(assets))
+	mux.Handle("GET /assets/{file...}", withCSP(assets))
+	mux.Handle("GET /assets", withCSP(http.NotFoundHandler())) // not the mux's redirect to /assets/
 	mux.HandleFunc("GET /api/rooms", s.listRooms)
 	mux.HandleFunc("POST /api/rooms", s.createRoom)
 	mux.HandleFunc("GET /api/rooms/{id}/summary", s.roomSummary)
@@ -219,6 +225,20 @@ func sameOrigin(origins []string, next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// filesOnly passes a request to h only when the {file...} wildcard names a file of
+// fsys: an empty name, a trailing slash, a .. element or a directory is a 404, never a
+// listing or a redirect to one. fs.ValidPath refuses the first three.
+func filesOnly(fsys fs.FS, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("file")
+		if fi, err := fs.Stat(fsys, name); !fs.ValidPath(name) || err != nil || fi.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
 	})
 }
 

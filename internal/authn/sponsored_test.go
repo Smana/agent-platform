@@ -94,3 +94,24 @@ func TestSponsoredAudience(t *testing.T) {
 		t.Fatal("no audience func admitted a token")
 	}
 }
+
+// RA2: a client declared Internal yields an internal principal; the same token through a client
+// that is not, never does.
+func TestSponsoredInternalFlag(t *testing.T) {
+	sg := newSigner(t)
+	id := "345@platform"
+	tok := sg.accessToken(t, "345", []string{"proj"}, id, nil, time.Hour)
+	for name, c := range map[string]struct{ internal, want bool }{
+		"an internal client": {true, true},
+		"a plain client":     {false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &Sponsored{V: sg.verifier(), Audience: func() string { return "proj" },
+				Clients: []SponsoredClient{{Name: "runlore", ClientID: func() string { return id }, Internal: c.internal}}}
+			p, err := s.Authenticate(t.Context(), tok)
+			if err != nil || !p.Sponsored || p.Internal != c.want {
+				t.Fatalf("%+v %v", p, err)
+			}
+		})
+	}
+}

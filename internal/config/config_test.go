@@ -396,6 +396,18 @@ func TestHumanLocalMode(t *testing.T) {
 	}
 }
 
+// human.dashboards is optional in either mode, and local mode checks it as OIDC mode does.
+func TestHumanLocalModeDashboards(t *testing.T) {
+	c, err := Load(write(t, localConfig+"  dashboards:\n"+dashboard("Room", "'https://grafana.example.com/?r={room}'")))
+	if err != nil || len(c.Human.Dashboards) != 1 {
+		t.Fatalf("local mode takes dashboards: %+v, %v", c.Human.Dashboards, err)
+	}
+	if _, err := Load(write(t, localConfig+"  dashboards:\n"+dashboard("Room", "'http://grafana.example.com/'"))); err == nil ||
+		!strings.Contains(err.Error(), "human.dashboards[0]") {
+		t.Fatalf("local mode must check dashboards: %v", err)
+	}
+}
+
 // Local mode has one fixed loopback user and no IdP to name a sponsored principal or a repository's
 // GitHub identity, so every human.mcp feature is refused by name: the rollout fails rather than
 // carrying a switch the broker can never honour.

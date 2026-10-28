@@ -21,6 +21,10 @@ const (
 	KindProgress      MessageKind = "progress"
 	KindReviewVerdict MessageKind = "review_verdict" // SP3's reserved kind
 	KindTaskState     MessageKind = "task_state"     // SP3's reserved kind
+	// KindJudgeVerdict is the harness's completion judge's answer on a finished conversation: Verdict
+	// is met, not_yet or impossible, Text its reason, Evidence the ids it cited. The judge read the
+	// agent's work, so the text is data, never an instruction.
+	KindJudgeVerdict MessageKind = "judge_verdict"
 )
 
 // Delivery is how a message reaches a running agent.
@@ -39,7 +43,8 @@ type MessagePayload struct {
 	Text     string      `json:"text"`
 	To       []string    `json:"to,omitempty"`
 	Delivery Delivery    `json:"delivery"`
-	Verdict  string      `json:"verdict,omitempty"` // approve | changes (review_verdict only)
+	Verdict  string      `json:"verdict,omitempty"`  // approve | changes (review_verdict); met | not_yet | impossible (judge_verdict)
+	Evidence []string    `json:"evidence,omitempty"` // the ids a judge_verdict cited
 	Commit   string      `json:"commit,omitempty"`
 	// PullRequest is the pull request a review_verdict is about (SP2 design §3).
 	// Additive: C4 v1's envelope is unchanged, and SP3 reads it (ruling P29).
@@ -134,6 +139,9 @@ type TaskFacts struct {
 	Runs  []RunFact  `json:"runs,omitempty"`
 	Issue *IssueFact `json:"issue,omitempty"`
 	PR    *PRFact    `json:"pr,omitempty"`
+	// Origin is the room of the investigate task this task's issue was published from (RunLore
+	// agent-to-agent RA10), a C2 id; the webhook tracker repeats it on every event of the room.
+	Origin string `json:"origin,omitempty"`
 }
 
 // MaxRuns bounds TaskFacts.Runs.
@@ -268,6 +276,8 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
+	case f.Origin != "" && !ValidID(f.Origin):
+		return errors.New("task facts: the origin is a room id")
 	}
 	if f.Run != nil {
 		if err := f.Run.validate(); err != nil {

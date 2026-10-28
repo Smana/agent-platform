@@ -334,12 +334,16 @@ func humanServer(cfg config.Config, humans humanapi.Authenticator, rooms client.
 	if mode == config.HumanModeLocal {
 		origins = authn.LoopbackOrigins(cfg.PublicURL)
 	}
+	dashboards := make([]humanapi.Dashboard, 0, len(h.Dashboards))
+	for _, d := range h.Dashboards {
+		dashboards = append(dashboards, humanapi.Dashboard{Label: d.Label, URL: d.URL})
+	}
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: groups.Admin, Member: groups.Member},
 		HumanMode: mode, Origins: origins,
 		WebClient: webClient, PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: roomctlClient,
 		ProjectID: projectID,
 		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log,
-		MCP: h.MCP.Enabled, SessionStart: start}
+		MCP: h.MCP.Enabled, SessionStart: start, Dashboards: dashboards}
 }
 
 // roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.

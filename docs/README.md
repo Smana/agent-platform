@@ -1,5 +1,14 @@
 # agent-platform documentation
 
+<a href="naming.md">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/png/maku-lockup-horizontal-dark.png">
+    <img src="assets/brand/png/maku-lockup-horizontal-light.png" alt="Maku, a controlled stage for delegated agent work" width="480">
+  </picture>
+</a>
+
+Maku is the product name; `agent-platform` stays the name of the repository, module, binaries, images and APIs ([naming](naming.md)).
+
 The reference for the broker, the bridge, the factory, the CLI and the web UI; the platform's docs site holds the overview and the status.
 
 ## Pages
@@ -21,6 +30,7 @@ The reference for the broker, the bridge, the factory, the CLI and the web UI; t
 | [Operations](operations.md) | Metrics, alerts, SQL on the log, retention, backups, failures; the factory's signals |
 | [Development](development.md) | The store test harness, migrations, the web build and preview |
 | [Roadmap](roadmap.md) | What shipped, what is open |
+| [Naming](naming.md) | Maku the product name, the unchanged technical names, the visual identity |
 
 ## Reading paths
 

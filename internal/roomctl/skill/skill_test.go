@@ -214,3 +214,40 @@ func TestVersionFrontMatterShapes(t *testing.T) {
 		}
 	}
 }
+
+// O11: after issue_file returns started: true the skill starts the background room_wait at once,
+// so the developer never types "wait for it". The /factory command says it too.
+func TestSkillWaitsAfterStarted(t *testing.T) {
+	b, err := files.ReadFile("factory-handoff/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "When `issue_file` returns `started: true`, start a background `room_wait` on the room at once"
+	if !strings.Contains(string(b), want) {
+		t.Errorf("SKILL.md lost %q", want)
+	}
+	if !strings.Contains(string(command), "started: true") || !strings.Contains(string(command), "room_wait") {
+		t.Errorf("the /factory command does not wait after started: true:\n%s", command)
+	}
+}
+
+// O13: live, OpenCode's generic brainstorming skill ran a design detour before filing. The
+// description claims the phrases and says the skill files first and plans inside the issue.
+func TestSkillDescriptionClaimsTheHandoff(t *testing.T) {
+	b, err := files.ReadFile("factory-handoff/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := frontMatter(t, b)["description"].(string)
+	for _, want := range []string{"hand this to the factory", "file this for the factory", "what's the factory doing on #N", "files first", "plans inside the issue", "brainstorming"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("description lost %q: %q", want, d)
+		}
+	}
+	if len(d) > 1024 {
+		t.Errorf("description is %d bytes, the spec allows 1024", len(d))
+	}
+	if !strings.Contains(string(b), "No design detour\nbefore filing") {
+		t.Error("the body does not tell the agent to skip a planning skill before filing")
+	}
+}

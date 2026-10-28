@@ -22,7 +22,13 @@ Sources: `docs/api.md` (the `:8080` checks), `internal/policy/policy.go` (`Group
 ## The room list
 
 A table, one row per room you can read. Rooms that need you come first, then the most recently
-active, then by id. The task cell links to the room page.
+active, then by id. The whole row opens the room page: the task cell's link covers the row, so it
+stays one link for the keyboard and a screen reader. The phase shows as the room page's phase chip.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/rooms-dark.png">
+  <img alt="The room list: six factory rooms, the first with one item that needs you, with their repository, phase, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
+</picture>
 
 | Column | Shows |
 |---|---|
@@ -44,7 +50,7 @@ repositories of the rooms the page first listed. They are the API's `mine`, `nee
 
 ### New room
 
-**New room**, beside the filters, opens a form above the list that creates a room you own and
+**New room**, the primary button at the right end of the filters row, opens a form above the list that creates a room you own and
 drive, then opens it.
 
 | Field | Rule |
@@ -58,17 +64,30 @@ for this broker ([roomctl](roomctl.md)); on a local broker it configures by URL 
 
 ## The room page
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/room-dark.png">
+  <img alt="A room page: the title strip with its chips and waiting line, the agent's latest claim, the conversation with a message and folded tool calls, the dock" src="assets/room-light.png" width="800">
+</picture>
+
 From the top:
 
 | Part | Shows |
 |---|---|
-| Title strip | The task's issue number and title (`Room <id>` without a task), then chips: the phase, the run (role, id and age, while an agent is in the room), the budget (`189 k / 1.5 M · 13 %` with a bar), the PR and issue links, the last verdict, the data class, the driver (`you` when it is you) and your role (with `approver` when you hold the flag). A `Needs you · N` button jumps to the panel below. Then a `Waiting: <why> → <next>` line while the task waits, or, in a sealed room, `Closed <when> by <who>` (or `Sealed`) instead. Last, the **Now line**: what the agent is doing (the latest call, its status, how long ago), a link that opens and focuses that row; `No run yet` before any run, `No run` once the agent left, with `Start one under Run` for an owner or the driver |
+| Title strip | The task's issue number and title (`Room <id>` without a task), then chips: the phase, the run (role, id and age, while an agent is in the room), the budget (`189 k / 1.5 M · 13 %` with a bar), the PR and issue links, the last verdict, the data class, the driver (`you` when it is you) and your role (with `approver` when you hold the flag). When the operator configures [`human.dashboards`](integration.md#the-brokers-configuration), a last `Dashboards: Room · Run · Task` chip links them, filled with the room's ids, each opening in a new tab; none configured, no chip. A `Needs you · N` button jumps to the panel below. Then a `Waiting: <why> → <next>` line while the task waits, followed by `Your move: <step>`: `review and merge or close PR #N` (a link to the PR, which is decided on GitHub, not in the room) or `approve here` (the Needs you panel below), or, in a sealed room, `Closed <when> by <who>` (or `Sealed`) instead. Last, the **Now line**: what the agent is doing (the latest call, its status, how long ago), a link that opens and focuses that row; `No run yet` before any run, `No run` once the agent left, with `Start one under Run` for an owner or the driver. On a phone the chips keep one line that scrolls sideways, `Needs you` first, and the title, the waiting lines and the Now line stop at two lines each, the full title kept as its tooltip |
 | Needs you | Shown only when something waits. One card per pending approval, decided right there (below); then the PRs waiting for your merge and the tasks held on your room. A viewer who may not decide reads the cards under `Waiting for an approver` |
 | Notes | The latest note from the agents, labelled as the agent's claim; the earlier ones, newest first, behind a `Notes (N)` toggle. No notes, no block |
-| Conversation | Messages as bubbles, each actor named by room role and short id (`you` for you); a tool call and its result as one collapsed row; the policy's decisions as badges on that row, only when not a plain allow or when a person decided. Runs of plumbing (state changes, turns, membership lines) fold into one `· turn <id> · N changes` line, open on click; a harness error, a seal and a driver change to or from you stay out of the fold. Each message and handoff can open a fork |
+| Conversation | Messages as bubbles, each actor named by room role and short id (`you` for you); a tool call and its result as one collapsed row; the policy's decisions as badges on that row, only when not a plain allow or when a person decided. Runs of plumbing (state changes, turns, membership lines) fold into one `· turn <id> · N changes` line, open on click; a harness error, a seal and a driver change to or from you stay out of the fold. A message longer than about twelve lines shows its start under a fade with `Show more`, and stays open once you open it, whatever arrives after. Each message and handoff can open a fork |
 | Raw events | A fold, closed by default, with every event as the broker wrote it. It is always as current as the conversation |
 | Controls | Named groups, each shown only to the standings that use it: **Run** (start a run as a role; a PR URL for a reviewer, egress profiles under `advanced`), **Driver** (who holds the token; give, interrupt, request, take with a reason), **Queued for the next run** (remove; `steer now` for the driver), and **Room**, a fold for owners (members, invite, how to stop the task with `factory/stop` on its issue, close) |
 | Dock | Pinned at the foot: the composer (the text, `Deliver to` — post to the room, queue for the next run's brief, or steer the running agent — and Send), the page's notices, the theme button and the connection |
+
+Scrolling a finished factory room, from the strip down through its turns and tool calls:
+
+<img alt="Scrolling down a factory room's conversation: the triager's scope, folded tool calls with their status, state changes folded into turns" src="assets/web-ui/room-scroll.gif" width="800">
+
+On a phone the strip stacks above the conversation:
+
+<img alt="The same room on a phone, light theme" src="assets/web-ui/room-phone-light.png" width="260"> <img alt="The same room on a phone, dark theme" src="assets/web-ui/room-phone-dark.png" width="260">
 
 Destructive acts ask first: **interrupt**, **take**, **steer now** and **close room** turn into
 `confirm: …` beside a cancel, and go back after 10 s, on cancel, or when the control is hidden.

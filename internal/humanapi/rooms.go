@@ -136,20 +136,29 @@ func createStatus(err error) int {
 // version, whose roomctl release the UI's CLI setup view installs. clientID is "" while the broker has no roomctl client.
 // roomctl asks for the project's audience with projectID: ZITADEL adds the
 // project to aud only then, and the broker refuses a token without it (ruling AS).
+// It also carries the room page's dashboard templates, unfilled: not secrets, but of no use to
+// roomctl configure, so the unauthenticated route leaves them out.
 func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.principal(w, r); !ok {
 		return
 	}
-	s.writeSetup(w)
+	s.writeSetup(w, s.Dashboards)
 }
 
 // publicSetup is GET /.well-known/roomctl: the same values with no sign-in, so `roomctl
 // configure --url` needs nothing else (#48). The issuer, the client id and the project id are
 // public by design (a native app has no secret) and the CLI setup view shows them to any member.
 // The proxy in front must let this path through unauthenticated.
-func (s *Server) publicSetup(w http.ResponseWriter, _ *http.Request) { s.writeSetup(w) }
+func (s *Server) publicSetup(w http.ResponseWriter, _ *http.Request) { s.writeSetup(w, nil) }
 
-func (s *Server) writeSetup(w http.ResponseWriter) {
+// Dashboard is one link template the room page fills with a room's ids (human.dashboards):
+// {room}, {run} and {task}, each URL-encoded, and a link whose value is missing hidden.
+type Dashboard struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+func (s *Server) writeSetup(w http.ResponseWriter, dashboards []Dashboard) {
 	read := func(f func() string) string {
 		if f == nil {
 			return ""
@@ -165,7 +174,9 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 		// HumanMode says whether roomctl needs an IdP and a token. Additive: a broker without the
 		// field, and a roomctl that ignores it, read each other as before (OIDC).
 		HumanMode string `json:"humanMode"`
-	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version, cmp.Or(s.HumanMode, config.HumanModeOIDC)})
+		// Dashboards are the templates, absent when none is configured.
+		Dashboards []Dashboard `json:"dashboards,omitempty"`
+	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version, cmp.Or(s.HumanMode, config.HumanModeOIDC), dashboards})
 }
 
 // roomRow is one row of GET /api/rooms.
@@ -193,6 +204,9 @@ type roomRow struct {
 	NeedsYou int    `json:"needsYou"` // how many things wait for this caller
 	// Need is the first of them, in the summary's order: absent when none waits.
 	Need *summary.Need `json:"need,omitempty"`
+	// Step is the one thing to do for the room and where: approve on its page, or merge or close
+	// the PR on GitHub. Absent when nothing waits for a human.
+	Step *summary.Step `json:"step,omitempty"`
 	You  wire.You      `json:"you"`
 }
 
@@ -275,6 +289,26 @@ func answer(room *v1alpha1.Room, sub policy.Subject, facts factsFn) (summary.Nee
 	return summary.Answer(facts(), sub)
 }
 
+// rowStep is the row's step for the caller: a merge or an answer needs the right to close, as
+// the summary's needs do; a sealed room has none.
+func rowStep(room *v1alpha1.Room, sub policy.Subject, row roomRow, repo string, approvals bool) *summary.Step {
+	in := summary.StepIn{Phase: row.Task, Reason: row.Reason, PR: row.PR, PRURL: prURLOf(repo, row.PR), Issue: row.Issue,
+		Approvals: approvals, CanClose: policy.Allowed(sub, policy.Close), RoomURL: row.URL,
+		Sealed: room.Status.Phase == "Closed" || room.Status.Phase == "Sealed"}
+	if repo != "" && row.Issue > 0 {
+		in.IssueURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, row.Issue)
+	}
+	return summary.StepFor(in)
+}
+
+// prURLOf is the pull request's URL in repo, "" when either is unknown.
+func prURLOf(repo string, n int) string {
+	if repo == "" || n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", repo, n)
+}
+
 // prNeed is the summary's merge need for sub, from the projected task: the Room status holds the
 // PR's number, not its facts, so the URL is built from the room's repository.
 func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
@@ -282,10 +316,7 @@ func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
 	if t == nil || t.PR <= 0 {
 		return summary.Need{}, false
 	}
-	pr := &envelope.PRFact{Number: int(t.PR)}
-	if repo := room.Spec.Repository; repo != "" {
-		pr.URL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, t.PR)
-	}
+	pr := &envelope.PRFact{Number: int(t.PR), URL: prURLOf(room.Spec.Repository, int(t.PR))}
 	return summary.Merge(&envelope.TaskFacts{Phase: t.Phase, PR: pr}, sub)
 }
 
@@ -451,6 +482,7 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			row.Reason = waitReason(facts)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
+		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)

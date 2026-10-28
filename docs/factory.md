@@ -172,7 +172,8 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
 | `not_agent_authored` | The pull request is not from `agentsLogin` |
-| `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or its `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
+| `class_unarmed` | The predicted class is neither live nor shadow (such as `docs` or `review`): the factory does not merge it, a maintainer reviews and merges it. Not counted in `agent_factory_class_mismatch_total` |
+| `class_mismatch` | The predicted class's `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
 | `file_not_allowed` | It changes a file outside its class's allowed files |
 | `file_protected` | It changes a file its class protects |
 | `file_added_or_deleted` | Any change but a content modification: an add, delete, rename, copy or mode-only change, which its class does not allow |
@@ -242,7 +243,7 @@ A task ends with one of these:
 
 | Phase | Reasons |
 |---|---|
-| `Done` | `children_merged` (a split's last part merged), `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: open a new issue with the text you approve and label it) |
+| `Done` | `children_merged` (a split's last part merged), `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: label its issue `factory/publish`, read the new issue the factory files, then label that one `factory/ready`) |
 | `NoOp` | `no_pr` (the run opened no pull request), `no_action` (the triager found nothing to change). Add detail and re-apply `factory/ready` |
 | `Rejected` | `text_too_long` (over `caps.maxTextBytes`), `daily_task_cap` (`caps.tasksPerDay`). Fix it and re-apply `factory/ready` |
 | `Closed` | `pr_closed`, `stale`, `child_dropped` (a part's issue closed unmerged, or a part reverted) |
@@ -283,7 +284,7 @@ another on one branch, and only the implementer writes. `templates.<name>.roles`
 
 | Template | Picked when |
 |---|---|
-| `investigate` | The task came from RunLore; its data class is forced to `internal` |
+| `investigate` | The task came from RunLore, by `/intake/runlore` or as an [internal principal](#internal-principals); its data class is forced to `internal` |
 | `solo` | A class with an `oracle` (such as `dead-links`), always at `light`, without the classifier; otherwise class `docs-links`, tier below `frontier` |
 | `pair` | Class `docs-links` at `frontier`, or any other class below `frontier` |
 | `trio` | Any other class at `frontier` |
@@ -527,6 +528,69 @@ Task exists already), the body ending with a footer naming the sponsor and the p
 none. Text from a machine goes through the hidden-character strip, the draft rules (with a title)
 and the redactor, and the Task's `spec.text` is `untrusted`.
 
+
+### Internal principals
+
+Off by default: `api.internalPrincipals` is empty. An internal principal is a sponsored principal
+that may carry **internal** data: RunLore, one known caller, declared beside the others in its own
+list, so a sponsored principal never loosens to `internal`. It reuses the sponsored path end to end
+(the ZITADEL authenticator, the `api` source kind, the ceilings, `maxOpenTasks`, the day); what
+differs is decided in one place each. Source: `internal/factory/api/internal.go`.
+
+An entry holds a sponsored principal's keys (`name`, `clientIDFile`, `sponsor`, `repositories`,
+`dailyUSD`, `maxCostUSD`, `maxOpenTasks`; `onBehalfOf` is **refused**) and:
+
+| Key | Holds |
+|---|---|
+| `minConfidence` | In (0, 1]: a finding below it is `202 below_threshold` |
+| `dailyTasks` | At least 1: tasks of the principal created this UTC day, any kind, so the retiring `/intake/runlore`'s count while both run |
+| `verification` | Reserved for the verdict endpoint; no effect yet |
+
+The name `runlore` is allowed on an internal principal only. Names and client id files are unique
+across `api.sponsored`, `api.internalPrincipals` and `api.systemPrincipals`.
+
+Its task is `source.kind: api`, `requestedBy: system:<name>`, `dataClass: internal`, with the
+request's `maxCostUSD`. Triage forces `investigate` for any task whose `requestedBy` is an internal
+principal, never from the body. The gates run in this order: the request's own checks, the verdict
+and `minConfidence` (`202`), the dedup (`200`; a duplicate is answered before the caps, so a replay
+never reads as a refusal), `dailyTasks`, `maxOpenTasks`, the day. The dedup key is
+`api:<name>:<Idempotency-Key>`; the task name carries a generation, so a key whose task ended starts
+a new one. The public issue is the same stub `/intake/runlore` files, from the same code
+(`internal/factory/finding`).
+
+```mermaid
+sequenceDiagram
+  participant R as RunLore
+  participant F as factory
+  participant M as maintainer
+  R->>F: POST /v1/tasks (incident, internal)
+  F-->>R: 201 task, stub issue (factory/proposed)
+  Note over F: investigate: the triager's proposal stays in the room
+  M->>F: label the stub factory/publish
+  F->>F: sanitise as public text, redact, CheckDraft
+  F->>M: new issue (no label), status.published recorded
+  M->>F: label the new issue factory/ready
+  F->>F: fix task with spec.origin = the investigate task
+```
+
+**`factory/publish`.** The issue poller (leader only) reads it on the stub issue of an `investigate`
+task. Only the last label event's actor counts, through the same maintainer and write checks as
+`factory/ready`; anyone else's is answered `unauthorised_labeller` and removed. The proposal is the
+last handoff to `implementer` that the task's triager run recorded itself. Its first line is the
+title and the rest the body, held to the issue template, then made inert (every link, bare URL,
+address, @mention and issue reference becomes a code span, no HTML survives, no hidden character), then scanned by the redactor.
+A refusal (`task_not_ended`, `no_proposal`, `invalid_draft`, `redacted`) is a comment on the stub and
+the label removed; nothing is created. The factory files the issue **once per task**, with no trigger label (only a marker,
+`factory/published-from:<task>`, which grants nothing and lets a retry after a crash find the issue
+instead of filing a second): the maintainer reads it on GitHub and starts it with `factory/ready`, which is the second, money
+spending decision.
+
+**`spec.origin`.** The poller sets it on a new `factory/ready` task only when a task of the same
+repository carries the label `agents.ogenki.io/published-issue: <n>` **and** its
+`status.published.issue` is that issue. It is fixed at creation and never read from issue text, so
+nothing a person or an agent writes can forge one. Every webhook event of the fix's room repeats it
+(`origin`, [API](api.md#webhooks)); it rides the task facts, so the broker needs no new state.
+
 ## The merge gate
 
 Once a task is ready, the gate reads the pull request in `AwaitingCI` and checks, in order;
@@ -541,7 +605,7 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 2 | Every `merge.requiredChecks` is green | Red: a fix run, up to `merge.fixRuns`, then `ci_red`. Cancelled: re-run, up to `merge.checkReruns`. Pending: wait |
 | 3 | `policy-bot: main` is green, posted by `merge.policyBotLogin` | `policy_absent`, `policy_pending`, `gate_path` |
 | 4 | The author is `agentsLogin`, and no maintainer approved it | `not_agent_authored`, `maintainer_approved` |
-| 5 | The class is `live` or `shadow` | `class_mismatch` |
+| 5 | The class is `live` or `shadow` | `class_unarmed` |
 | 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
 | 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
 | 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), or `semver-patch` and `semver-minor` for an [adopted class](#adopted-classes) (computed from the diff), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and every finding was a link target on the base and none is on the head, and no target moved but to the exact snapshot its finding gave) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
@@ -691,7 +755,7 @@ GitHub refuses it if Renovate pushed since. A read error of the commit authors o
 | `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded`, `policy_pending`, `policy_absent`, `ci_cancelled`, `ci_wait_expired` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is decided again whole, up to 3 times (`maxGateReentries`, counted) |
 | `auto_merge_cap`, `class_paused` | Same: re-enters on a new head, counted. A `shadow` class meets them too (the cap and the pause bound its would-arm decisions as a live class's merges) and re-enters the same way |
 | `shadow_would_arm` | The shadow decision: returns to `AwaitingCI` on Renovate's next head (`adopted_head_moved`), not counted, since it is no hand-off |
-| Every other reason: `class_mismatch`, `fork_pull_request`, `changes_requested`, `not_adopted_author`, `branch_not_allowed`, `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `not_mergeable`, a class that no longer adopts, and the like | Terminal: the Task stays handed off. A new head does not revive them. A closed or merged pull request ends the Task |
+| Every other reason: `class_unarmed`, `class_mismatch`, `fork_pull_request`, `changes_requested`, `not_adopted_author`, `branch_not_allowed`, `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `not_mergeable`, a class that no longer adopts, and the like | Terminal: the Task stays handed off. A new head does not revive them. A closed or merged pull request ends the Task |
 
 `push_unrecorded` is GitHub not having recorded the push of the head yet (its events lag a push):
 the Task waits for it at most 10 minutes, then hands off. A push made during a long CI wait gets no
@@ -729,6 +793,7 @@ classes:
     monitor:
       oracleRuns: 2          # scheduled detector runs that must not report the merged targets; needs an oracle
       flux: {source: flux-system/flux-system, within: 15m}   # a Flux GitRepository (an OCIRepository is not read), and how long after it first shows the merge
+      verification: {within: 6h}   # optional: wait for an internal principal's verdict on the fix (see below)
       followUpWindow: 72h    # how long later merges are read for a fix of this one; the verdict is final after it
 merge:
   awaitingCIFor: 6h          # bound AwaitingCI on a wait verdict; 0, the default, is no bound
@@ -749,7 +814,16 @@ Without it every read is refused and the signal ends `inconclusive`. `merge.brea
 | Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
 | Detector (oracle) | Each scheduled run of the class's oracle workflow after the merge, oldest first, through the probe's readers | A run reports gone a target this merge wrote | `oracleRuns` clean runs. A run that failed or whose findings are refused: `inconclusive` |
 | Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready from the blame start (the source's fetch of the merge commit, or the merge's own time when the source was first seen already at a later commit) until `within` after the source was first seen holding it | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
+| RunLore's verification | `status.monitor.verification`, recorded by [`POST /v1/tasks/{task}/verification`](api.md#post-v1taskstaskverification). Only for a merge whose `spec.origin` names a task of an internal principal with `verification: true` | `persisting` | `resolved`. No verdict `within` after the merge: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
+
+The verification signal is `monitor.verified`. `within` (1 minute up to `followUpWindow`) counts from the
+merge. `persisting` is a `regression` at once: the factory labels the pull request, comments, counts it
+for the breaker, and files one follow-up issue, labelled `factory/proposed`, titled
+`RunLore: the fix in #<pr> did not hold (<alert>)` (recorded in `status.monitor.followUpIssue`, never
+twice). It names the pull request, the alert and the origin room; the evidence stays on the origin
+task. `agent_factory_monitor_verifications_total{class, verdict}` counts the verdicts read
+(`resolved`, `persisting`, `none`).
 
 The detector signal reads each scheduled run after the merge (or a maintainer's `workflow_dispatch`),
 oldest first: one that reports gone a target this merge wrote (same file, and the snapshot it wrote
@@ -1161,8 +1235,8 @@ system's run request. Source: `internal/factory/api/server.go`.
 | `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget`, `person_budget_exhausted` (the caller's own day, [per-person caps](#per-person-caps)) |
 | `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed`, `identity_unavailable` (per-person caps on, and the caller's GitHub link could not be read) |
 
-**`POST /v1/tasks`**, on `api.listen`, registered only while `api.sponsored` is non-empty (otherwise
-`404`): a sponsored principal's task. [Sponsored principals](#sponsored-principals) is the model;
+**`POST /v1/tasks`**, on `api.listen`, registered only while `api.sponsored` or
+`api.internalPrincipals` is non-empty (otherwise `404`): a sponsored or internal principal's task. [Sponsored principals](#sponsored-principals) is the model;
 the broker's `run_create` is its client ([API](api.md#post-v1tasks)).
 
 **`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore

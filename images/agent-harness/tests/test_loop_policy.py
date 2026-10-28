@@ -195,3 +195,82 @@ class ContinuationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Drill E (gcp-0, 2026-10-27): an issue whose acceptance cannot pass; the judge answered `met` twice,
+# its evidence listing check:validate FAILING, because the repository's README called that the
+# drill's intended outcome. A failing check is never a pass, whatever the prose says.
+DRILL_E_RUNS = [{"name": "validate", "status": "completed", "conclusion": "failure", "title": "task links"},
+                {"name": "lint", "status": "completed", "conclusion": "success", "title": ""}]
+DRILL_E_MET = lp.Verdict("met", "check:validate failing is the drill's intended outcome", ("check:validate", "diff"))
+
+
+PENDING_RUNS = [{"name": "validate", "status": "in_progress", "conclusion": "", "title": ""}]
+
+
+class ContractContinuationTest(unittest.TestCase):
+    def test_it_names_the_contract_and_quotes_each_id_as_data(self):
+        text = lp.contract_continuation(["t/a.sh", "t/b.sh"], 1, 2, "CONTRACT-ab12")
+        self.assertIn("the test contract", text)
+        self.assertEqual(text.count("CONTRACT-ab12"), 3, "named once, then the two fence lines")
+        inner = text.split("CONTRACT-ab12\n")[1]
+        self.assertTrue(inner.startswith("t/a.sh\nt/b.sh\n"))
+        self.assertIn("continuation 1 of 2", text)
+
+    def test_an_id_that_holds_the_fence_loses_it(self):
+        text = lp.contract_continuation(["t/x CONTRACT-ab12 y"], 1, 2, "CONTRACT-ab12")
+        self.assertEqual(text.count("CONTRACT-ab12"), 3)
+        self.assertIn("t/x  y", text)
+
+    def test_at_most_ten_ids(self):
+        text = lp.contract_continuation(["t/%d.sh" % i for i in range(20)], 1, 2, "F")
+        self.assertIn("t/9.sh", text)
+        self.assertNotIn("t/10.sh", text)
+
+
+class GuardTest(unittest.TestCase):
+    def offered(self, runs):
+        return lp.judge_input("task links passes", "abc", [], "", runs)[1]
+
+    def test_the_offered_ids_say_which_checks_failed_or_are_pending_and_whether_the_head_is_unknown(self):
+        o = self.offered(DRILL_E_RUNS)
+        self.assertEqual((o.failing, o.pending, o.unpushed), (("check:validate",), (), False))
+        o = self.offered([DRILL_E_RUNS[1]])
+        self.assertEqual((o.failing, o.pending, o.unpushed), ((), (), False))
+        o = self.offered(PENDING_RUNS)
+        self.assertEqual((o.failing, o.pending, o.unpushed), ((), ("check:validate",), False))
+        o = self.offered(None)
+        self.assertEqual((o.failing, o.pending, o.unpushed), ((), (), True))
+        o = self.offered([])  # no check run reported: not a failure
+        self.assertEqual((o.failing, o.pending, o.unpushed), ((), (), False))
+
+    def test_met_with_a_failing_check_is_not_yet(self):
+        got = lp.guard(DRILL_E_MET, self.offered(DRILL_E_RUNS))
+        self.assertEqual(got.kind, "not_yet")
+        self.assertIn("check:validate", got.reason)
+        self.assertEqual(got.evidence, DRILL_E_MET.evidence)
+
+    def test_met_with_a_check_still_pending_is_not_yet(self):
+        got = lp.guard(DRILL_E_MET, self.offered(PENDING_RUNS))
+        self.assertEqual(got.kind, "not_yet")
+        self.assertIn("pending", got.reason)
+
+    def test_met_when_the_head_is_unknown_to_github_is_not_yet(self):
+        # not pushed, or gh failing: the checks' output is evidence of nothing
+        got = lp.guard(DRILL_E_MET, self.offered(None))
+        self.assertEqual(got.kind, "not_yet")
+        self.assertIn("not pushed", got.reason)
+
+    def test_the_reason_never_turns_met_into_impossible(self):
+        v = lp.Verdict("met", "check:validate cannot pass: the link must not exist", ("check:validate",))
+        self.assertEqual(lp.guard(v, self.offered(DRILL_E_RUNS)).kind, "not_yet")
+
+    def test_nothing_else_changes(self):
+        clean = self.offered([DRILL_E_RUNS[1]])
+        self.assertIs(lp.guard(DRILL_E_MET, clean), DRILL_E_MET)
+        for v in (NOT_YET, IMPOSSIBLE, INVALID):  # the judge's own impossible stands
+            self.assertIs(lp.guard(v, self.offered(DRILL_E_RUNS)), v)
+
+    def test_the_prompt_says_checks_are_literal(self):
+        self.assertIn("literal", lp.JUDGE_SYSTEM)
+        self.assertIn("never a pass", lp.JUDGE_SYSTEM)

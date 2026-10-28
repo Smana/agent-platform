@@ -1006,61 +1006,146 @@ func TestRoomList(t *testing.T) {
 }
 
 // T10: the UI is served under the strict CSP; without one (Task 2.5) it is 404.
+// index.html sits at the root; /assets/ serves dist/assets, nested directories included.
 func TestUI(t *testing.T) {
-	ui := fstest.MapFS{"index.html": {Data: []byte("<html>")}, "app.js": {Data: []byte("js")}}
-	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = ui })
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = assetsFS() })
 	bare := setup(t)
-	get := func(ts *httptest.Server, path string) (int, string, string) {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r, err := ts.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = r.Body.Close() }()
-		b, _ := io.ReadAll(r.Body)
-		return r.StatusCode, string(b), r.Header.Get("Content-Security-Policy")
-	}
 	for _, tc := range []struct {
 		path string
 		code int
 		body string
-	}{{"/", 200, "<html>"}, {"/r/" + roomID, 200, "<html>"}, {"/assets/app.js", 200, "js"}, {"/assets/nope.js", 404, ""}} {
-		code, body, policy := get(e.ts, tc.path)
-		if code != tc.code || (code == 200 && (body != tc.body || policy != csp)) {
-			t.Fatalf("%s: %d %q csp %q", tc.path, code, body, policy)
+	}{
+		{"/", 200, "<html>"}, {"/r/" + roomID, 200, "<html>"},
+		{"/assets/app.js", 200, "js"},
+		{"/assets/svg/mark.svg", 200, "<svg/>"},
+		{"/assets/fonts/face.woff2", 200, "wOF2"},
+		{"/assets/nope.js", 404, ""},
+		{"/assets/svg/nope.svg", 404, ""},
+		{"/assets/index.html", 404, ""}, // the root's files are not under /assets/
+		{"/assets/secret.txt", 404, ""},
+	} {
+		code, _, body := getUI(t, e.ts, tc.path)
+		if code != tc.code || (code == 200 && body != tc.body) {
+			t.Fatalf("%s: %d %q", tc.path, code, body)
 		}
 	}
-	if code, _, _ := get(bare.ts, "/"); code != http.StatusNotFound {
+	if code, h, _ := getUI(t, e.ts, "/assets/app.js"); code != 200 || h.Get("Content-Security-Policy") != csp {
+		t.Fatalf("csp %q", h.Get("Content-Security-Policy"))
+	}
+	if code, _, _ := getUI(t, bare.ts, "/"); code != http.StatusNotFound {
 		t.Fatalf("no UI: %d", code)
 	}
+	if code, _, _ := getUI(t, bare.ts, "/assets/app.js"); code != http.StatusNotFound {
+		t.Fatalf("no UI, an asset: %d", code)
+	}
+}
+
+// No asset directory is listed or redirected: each is a 404 with no listing.
+func TestUIAssetDirectoriesNotListed(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = assetsFS() })
+	for _, path := range []string{"/assets", "/assets/", "/assets/svg/", "/assets/fonts/", "/assets/svg", "/assets/fonts"} {
+		code, _, body := getUI(t, e.ts, path)
+		if code != http.StatusNotFound || strings.Contains(body, "<a href") || strings.Contains(body, "mark.svg") ||
+			strings.Contains(body, "face.woff2") || strings.Contains(body, "app.js") {
+			t.Fatalf("%s: %d %q", path, code, body)
+		}
+	}
+}
+
+// An encoded .. never reaches past dist/assets: not index.html, not a file beside it.
+func TestUIAssetsDoNotEscapeRoot(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = assetsFS() })
+	for _, tc := range []struct {
+		path, location string // location: the only redirect allowed, the mux's own clean of a literal ".."
+		want           int
+	}{
+		{path: "/assets/../index.html", want: http.StatusTemporaryRedirect, location: "/index.html"},
+		{path: "/assets/%2e%2e/index.html", want: http.StatusNotFound},
+		{path: "/assets/%2E%2E/secret.txt", want: http.StatusNotFound},
+		{path: "/assets/..%2findex.html", want: http.StatusNotFound},
+		{path: "/assets/%2e%2e%2fsecret.txt", want: http.StatusNotFound},
+		{path: "/assets/svg/..%2f..%2fsecret.txt", want: http.StatusNotFound},
+		{path: "/assets/svg/%2e%2e/%2e%2e/secret.txt", want: http.StatusNotFound},
+		{path: "/assets/..%5csecret.txt", want: http.StatusNotFound},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.URL.Opaque = tc.path           // sent as written: the client must not clean the dots
+		r, err := noRedirect(e.ts).Do(req) // a followed redirect would test another route
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if r.StatusCode != tc.want || r.Header.Get("Location") != tc.location ||
+			strings.Contains(string(b), "<html>") || strings.Contains(string(b), "sentinel") {
+			t.Fatalf("%s: %d %q %q, want %d %q", tc.path, r.StatusCode, r.Header.Get("Location"), b, tc.want, tc.location)
+		}
+	}
+}
+
+// assetsFS is the dist layout: index.html and a sentinel at the root, the rest under assets/.
+func assetsFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":              {Data: []byte("<html>")},
+		"secret.txt":              {Data: []byte("sentinel")},
+		"assets/app.js":           {Data: []byte("js")},
+		"assets/svg/mark.svg":     {Data: []byte("<svg/>")},
+		"assets/fonts/face.woff2": {Data: []byte("wOF2")},
+	}
+}
+
+// noRedirect is ts's client returning a redirect as the answer instead of following it.
+func noRedirect(ts *httptest.Server) *http.Client {
+	c := *ts.Client()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
+}
+
+// getUI GETs path from ts: status, headers and body.
+func getUI(t *testing.T, ts *httptest.Server, path string) (int, http.Header, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := noRedirect(ts).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Body.Close() }()
+	b, _ := io.ReadAll(r.Body)
+	return r.StatusCode, r.Header, string(b)
 }
 
 // The committed bundle is served from the broker alone, under the strict CSP, with
 // no inline script and every response's hardening headers (T10).
 func TestTheBuiltUI(t *testing.T) {
 	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = ui.FS })
-	get := func(path string) (int, http.Header, string) {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r, err := e.ts.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = r.Body.Close() }()
-		b, _ := io.ReadAll(r.Body)
-		return r.StatusCode, r.Header, string(b)
-	}
-	for _, tc := range []struct{ path, ctype string }{
-		{"/", "text/html"}, {"/r/" + roomID, "text/html"},
-		{"/assets/app.js", "text/javascript"}, {"/assets/app.css", "text/css"},
+	get := func(path string) (int, http.Header, string) { return getUI(t, e.ts, path) }
+	for _, tc := range []struct {
+		path   string
+		ctypes []string
+		prefix string // the body starts with it; empty: any non-empty body
+	}{
+		{"/", []string{"text/html"}, ""}, {"/r/" + roomID, []string{"text/html"}, ""},
+		{"/assets/app.js", []string{"text/javascript"}, ""}, {"/assets/app.css", []string{"text/css"}, ""},
+		{"/assets/svg/maku-mark-light.svg", []string{"image/svg+xml"}, "<svg"},
+		{"/assets/svg/maku-mark-dark.svg", []string{"image/svg+xml"}, "<svg"},
+		{"/assets/favicon/favicon.svg", []string{"image/svg+xml"}, "<svg"},
+		{"/assets/favicon/favicon-32.png", []string{"image/png"}, "\x89PNG"},
+		// Go's own MIME table lacks WOFF2, and the host's /etc/mime.types varies.
+		{"/assets/fonts/space-grotesk-latin-500-normal.woff2", []string{"font/woff2", "application/octet-stream"}, "wOF2"},
+		{"/assets/fonts/space-grotesk-latin-700-normal.woff2", []string{"font/woff2", "application/octet-stream"}, "wOF2"},
 	} {
 		code, h, body := get(tc.path)
-		if code != http.StatusOK || !strings.HasPrefix(h.Get("Content-Type"), tc.ctype) || body == "" {
+		typed := false
+		for _, c := range tc.ctypes {
+			typed = typed || strings.HasPrefix(h.Get("Content-Type"), c)
+		}
+		if code != http.StatusOK || !typed || body == "" || !strings.HasPrefix(body, tc.prefix) {
 			t.Fatalf("%s: %d %q", tc.path, code, h.Get("Content-Type"))
 		}
 		if h.Get("Content-Security-Policy") != csp || h.Get("X-Content-Type-Options") != "nosniff" ||
@@ -1068,7 +1153,7 @@ func TestTheBuiltUI(t *testing.T) {
 			t.Fatalf("%s: headers %v", tc.path, h)
 		}
 	}
-	for _, d := range []string{"script-src 'self'", "connect-src 'self'", "frame-ancestors 'none'", "default-src 'none'"} {
+	for _, d := range []string{"script-src 'self'", "connect-src 'self'", "font-src 'self'", "frame-ancestors 'none'", "default-src 'none'"} {
 		if !strings.Contains(csp, d) {
 			t.Fatalf("csp lacks %q", d)
 		}
@@ -1077,11 +1162,16 @@ func TestTheBuiltUI(t *testing.T) {
 	if strings.Count(index, "<script") != 1 || !strings.Contains(index, `<script type="module" src="/assets/app.js"></script>`) {
 		t.Fatalf("index.html must load only /assets/app.js, no inline script:\n%s", index)
 	}
+	if !strings.Contains(index, `href="/assets/favicon/favicon.svg"`) {
+		t.Fatalf("index.html lacks the favicon:\n%s", index)
+	}
 	// Nothing is fetched from anywhere but the broker.
 	for _, f := range []string{"/", "/assets/app.js", "/assets/app.css"} {
-		if _, _, body := get(f); strings.Contains(body, "src=\"http") || strings.Contains(body, "href=\"http") ||
-			strings.Contains(body, "@import") {
-			t.Fatalf("%s references another origin", f)
+		_, _, body := get(f)
+		for _, ext := range []string{`src="http`, `href="http`, `src="//`, `href="//`, "@import", `url("http`, `url(http`, `url("//`, "fonts.googleapis", "fonts.gstatic"} {
+			if strings.Contains(body, ext) {
+				t.Fatalf("%s references another origin: %q", f, ext)
+			}
 		}
 	}
 }

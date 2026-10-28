@@ -18,6 +18,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/summary"
 )
 
@@ -331,5 +332,27 @@ func TestWarnNoRepository(t *testing.T) {
 				t.Fatalf("warned %v, want %v: %q", got, c.warn, buf.String())
 			}
 		})
+	}
+}
+
+// O12: the summary carries the room's still-queued notes, as the queue holds them.
+func TestSummaryCarriesTheQueue(t *testing.T) {
+	e := setup(t, abc(t), func(s *Server, _ *fanout.Hub, _ *hubView) { s.PublicURL = "https://rooms.example" })
+	factsLog(e.log)
+	e.log.mu.Lock()
+	e.log.queue = []store.Queued{{Ref: 7, Author: "human:dev1", Text: "use the v2 flag", State: "queued"}}
+	e.log.mu.Unlock()
+	code, body := get(t, e, "/api/rooms/"+roomID+"/summary", admin("boss"))
+	var s struct {
+		Queued struct {
+			Untrusted bool `json:"untrusted"`
+			Items     []struct {
+				Ref          int64
+				Author, Text string
+			} `json:"items"`
+		} `json:"queued"`
+	}
+	if code != 200 || json.Unmarshal([]byte(body), &s) != nil || !s.Queued.Untrusted || len(s.Queued.Items) != 1 || s.Queued.Items[0].Text != "use the v2 flag" {
+		t.Fatalf("%d %s", code, body)
 	}
 }

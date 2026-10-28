@@ -151,3 +151,34 @@ func TestEventsEndings(t *testing.T) {
 		})
 	}
 }
+
+// RA10: once a room's facts name an origin, every event of the room carries it.
+func TestEveryEventOfAnOriginRoomCarriesIt(t *testing.T) {
+	var tr Tracker
+	var got []Event
+	for _, ev := range []envelope.Event{
+		fact(1, envelope.TaskFacts{Phase: "Received", Origin: "abcdefgh"}),
+		runPhase(2, "r1", "Running", ""),
+		fact(3, envelope.TaskFacts{Phase: "Reviewing", Origin: "abcdefgh", PR: &envelope.PRFact{Number: 42}}),
+		approval(4),
+		verdictPosted(5),
+		fact(6, envelope.TaskFacts{Phase: "Merged", Origin: "abcdefgh", PR: &envelope.PRFact{Number: 42}}),
+		fact(7, envelope.TaskFacts{Phase: "Done", Origin: "abcdefgh", PR: &envelope.PRFact{Number: 42}}),
+	} {
+		got = append(got, tr.Events("room0001", "Smana/cloud-native-ref", ev)...)
+	}
+	if len(got) < 7 {
+		t.Fatalf("%d events: %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.Origin != "abcdefgh" {
+			t.Fatalf("%s has origin %q", e.Type, e.Origin)
+		}
+	}
+	var plain Tracker
+	for _, e := range plain.Events("room0002", "Smana/cloud-native-ref", fact(1, envelope.TaskFacts{Phase: "Received"})) {
+		if e.Origin != "" {
+			t.Fatal("a room without an origin carries none")
+		}
+	}
+}

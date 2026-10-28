@@ -76,9 +76,17 @@ type Monitor struct {
 	OracleRuns int `json:"oracleRuns,omitempty"`
 	// Flux watches the factory's cluster once its source holds the merge commit.
 	Flux *FluxWatch `json:"flux,omitempty"`
+	// Verification reads an internal principal's verdict on the fix (RA11, R12): the merge is
+	// watched for it, for at most Within after the merge. Unset by default.
+	Verification *VerificationWatch `json:"verification,omitempty"`
 	// FollowUpWindow is how long later merges are read for a fix of this one (MC8), and when the
 	// monitor's verdict is final.
 	FollowUpWindow Duration `json:"followUpWindow"`
+}
+
+// VerificationWatch is how long after the merge RunLore's verdict is waited for, and accepted.
+type VerificationWatch struct {
+	Within Duration `json:"within"`
 }
 
 // FluxWatch names the GitRepository that delivers the repository to the factory's cluster, and
@@ -147,6 +155,9 @@ func validateClass(name string, cl Class, bad func(string, ...any)) {
 			bad("class %s: monitor.oracleRuns must be 0..5", name)
 		case m.OracleRuns > 0 && cl.Oracle == nil:
 			bad("class %s: monitor.oracleRuns needs an oracle", name)
+		}
+		if v := m.Verification; v != nil && (v.Within.Duration < time.Minute || v.Within.Duration > m.FollowUpWindow.Duration) {
+			bad("class %s: monitor.verification.within must be 1m..followUpWindow", name)
 		}
 		if f := m.Flux; f != nil {
 			if !sourceRE.MatchString(f.Source) {

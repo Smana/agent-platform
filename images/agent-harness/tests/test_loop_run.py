@@ -323,7 +323,7 @@ class LoopForTest(unittest.TestCase):
 class DriveTest(unittest.TestCase):
     """drive() over a scripted conversation: each poll is one finish, each judge call one answer."""
 
-    def drive(self, polls, answers, policy=POLICY, commits=1):
+    def drive(self, polls, answers, policy=POLICY, commits=1, offered=None, notes=None):
         self.sent, self.interrupted, state = [], [], lp.State(start="s")
         path = os.path.join(tempfile.mkdtemp(), "loop.json")
 
@@ -341,12 +341,12 @@ class DriveTest(unittest.TestCase):
             return p
 
         with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http), \
-                mock.patch("agent_run.evidence", return_value=("e", {"diff"})), \
+                mock.patch("agent_run.evidence", return_value=("e", offered or {"diff"})), \
                 mock.patch("agent_run.ask_judge", side_effect=answers), \
                 mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
                 mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
                 mock.patch("sys.stdout", new=io.StringIO()) as out:
-            result = agent_run.drive({}, "cid", Steps(0), policy, state, "task", path)
+            result = agent_run.drive({}, "cid", Steps(0), policy, state, "task", path, notes)
         self.out = out.getvalue()
         return result, state
 
@@ -384,6 +384,48 @@ class DriveTest(unittest.TestCase):
     def test_met_at_the_first_finish_is_todays_finish(self):
         self.assertEqual(self.drive([0], [self.answer("met")])[0], (0, None, ""))
         self.assertIn("agent-run judge 1: met by glm-5.3-flash, evidence diff: r", self.out)
+
+    def test_drill_e_met_on_a_failing_check_is_overridden_and_logged(self):
+        # gcp-0, 2026-10-27: the judge said met with check:validate failing ("the drill's intended outcome").
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        met = json.dumps({"verdict": "met", "reason": "check:validate failing is the drill's intended outcome",
+                          "evidence": ["check:validate"]}), "glm-5.3"
+        result, state = self.drive([0, 0], [met, met], offered=offered, policy=lp.Policy(80, 1, "tier-light"))
+        self.assertEqual(result[:2], (1, "not_met"))
+        self.assertEqual(state.sent, 1)
+        self.assertIn("override met -> not_yet, failing check:validate", self.out)
+        self.assertIn("check:validate", self.sent[0])
+
+    def test_every_judge_verdict_reaches_the_room_after_the_override(self):
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        met = json.dumps({"verdict": "met", "reason": "intended", "evidence": ["check:validate"]}), "glm-5.3"
+        posted = []
+
+        class Notes:
+            def judge(self, kind, reason, evidence):
+                posted.append((kind, evidence))
+
+        self.drive([0, 0], [met, self.answer("met")], offered=offered, notes=Notes(), policy=lp.Policy(80, 1, "tier-light"))
+        self.assertEqual(posted, [("not_yet", ("check:validate",)), ("not_yet", ("diff",))])
+        posted.clear()
+        self.drive([0], [self.answer("met")], notes=Notes())  # no failing check: met stands, and is posted
+        self.assertEqual(posted, [("met", ("diff",))])
+
+    def test_no_verdict_with_a_known_failing_check_is_not_met(self):
+        # The run must not end 0 on a failing check just because the judge gave no answer or its round failed.
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        for name, answers in (("no answer", [None]), ("the judge call raised", TypeError("boom"))):
+            with self.subTest(name), mock.patch("sys.stderr", new=io.StringIO()):
+                result, _ = self.drive([0], answers, offered=offered)
+                self.assertEqual(result[:2], (1, "not_met"))
+                self.assertIn("check:validate", result[2])
+        # evidence read nothing failing: today's end
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(self.drive([0], [None])[0], (0, None, ""))
+            self.assertEqual(self.drive([0], TypeError("boom"))[0], (0, None, ""))
 
     def test_not_yet_continues_in_the_same_conversation_then_met(self):
         result, state = self.drive([0, 0], [self.answer("not_yet", "lint fails"), self.answer("met")])
@@ -553,3 +595,12 @@ class MainLoopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerEnvDeadlineTest(unittest.TestCase):
+    def test_the_deadline_is_passed_to_agent_server_as_wall_clock_time(self):
+        with mock.patch("time.time", return_value=1000.0):
+            out = agent_run.server_env({"AGENT_RUN_SECONDS": "600", "OH_SECRET_KEY": "k"})
+        self.assertEqual(out["AGENT_RUN_DEADLINE"], "1600.0")
+        self.assertNotIn("AGENT_RUN_DEADLINE", agent_run.server_env({"OH_SECRET_KEY": "k"}))
+        self.assertNotIn("AGENT_RUN_DEADLINE", agent_run.server_env({"AGENT_RUN_SECONDS": "soon", "OH_SECRET_KEY": "k"}))

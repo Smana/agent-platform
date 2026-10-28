@@ -118,6 +118,7 @@ func reasons() map[string]string {
 		"maintainer_approved":       "a maintainer approved it",
 		"not_mergeable":             "GitHub does not allow merging it as it stands",
 		"gate_path":                 "it touches a gate path, so an agent can never merge it",
+		"class_unarmed":             "the factory does not merge this class: a maintainer reviews and merges it",
 		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"verdict_stale":             "the reviewer's approval was not for the pull request's current head",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported",
@@ -237,7 +238,7 @@ func waiting(f *envelope.TaskFacts) (reason, next string) {
 			why = "the pull request is ready for a maintainer"
 		}
 		if next == "" {
-			next = "a maintainer reviews and merges the pull request"
+			next = "a maintainer reviews and merges or closes the pull request on GitHub"
 			if f.PR == nil {
 				next = "a maintainer looks at the task's issue"
 			}

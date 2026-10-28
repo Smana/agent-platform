@@ -87,6 +87,8 @@ func testServer(runs Runs, c *clock) (*Server, *[]string) {
 				Call: func(context.Context, Caller, json.RawMessage) (any, error) {
 					return nil, argError("text: 1 to 16384 bytes")
 				}},
+			{Name: "room_judge", Action: policy.Chat, Roles: []string{"implementer"}, HarnessOnly: true, InputSchema: objSchema,
+				Call: func(context.Context, Caller, json.RawMessage) (any, error) { return map[string]int{"seq": 6}, nil }},
 			{Name: "room_noaction", Roles: []string{"reviewer"}, InputSchema: objSchema,
 				Call: func(context.Context, Caller, json.RawMessage) (any, error) { return map[string]int{"seq": 5}, nil }},
 		}}, rejected
@@ -522,5 +524,40 @@ func TestTheLogCarriesIdsAndSQLStateOnly(t *testing.T) {
 	}
 	if strings.Contains(got, "ghp_") || strings.Contains(got, "unsupported") {
 		t.Fatalf("the log quotes the database: %s", got)
+	}
+}
+
+// O15: the judge's verdict is the harness's. The model that reads the card's reader must not be able
+// to post one: a HarnessOnly tool is neither listed nor callable without the harness's header, which
+// only the harness's own client sets (the model's MCP client is configured without it).
+func TestAHarnessOnlyToolIsNeverTheModels(t *testing.T) {
+	s, rejected := testServer(watcher(t, "implementer"), newClock())
+	withHeader := func(method string, params any) response {
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", bytes.NewReader(body))
+		r.Header.Set(KeyHeader, "k")
+		r.Header.Set(IdentityHeader, sub)
+		r.Header.Set(HarnessHeader, "1")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, r)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return response{status: rec.Code, body: rec.Body.Bytes(), out: out}
+	}
+	if l := rpc(t, s, "k", sub, "tools/list", nil); strings.Contains(string(l.body), "room_judge") || !strings.Contains(string(l.body), "room_read") {
+		t.Fatalf("the model's tool list: %s", l.body)
+	}
+	if res, text := call(t, s, sub, "room_judge"); res["isError"] != true || !strings.HasPrefix(text, "not_permitted") {
+		t.Fatalf("the model called room_judge: %v", res)
+	}
+	if strings.Join(*rejected, ",") != "tool_not_permitted" {
+		t.Fatalf("rejected = %v", *rejected)
+	}
+	if l := withHeader("tools/list", nil); !strings.Contains(string(l.body), "room_judge") {
+		t.Fatalf("the harness does not list it: %s", l.body)
+	}
+	res, _ := withHeader("tools/call", map[string]any{"name": "room_judge", "arguments": map[string]any{}}).out["result"].(map[string]any)
+	if res["isError"] == true {
+		t.Fatalf("the harness was refused: %v", res)
 	}
 }

@@ -185,6 +185,17 @@ spec:
                 x-kubernetes-validations:
                 - message: maxMicroUSD never changes
                   rule: self == oldSelf
+              origin:
+                description: |-
+                  Origin is the investigate task whose published issue this task was started from (RunLore
+                  agent-to-agent RA9): set by the issue poller from that task's status.published, never from
+                  issue text, so nothing a person or an agent writes can forge one.
+                maxLength: 8
+                pattern: ^[a-z2-7]{8}$
+                type: string
+                x-kubernetes-validations:
+                - message: origin never changes
+                  rule: self == oldSelf
               parent:
                 description: The parent this task is a part of (SL5), fixed at creation;
                   unset for any other task.
@@ -446,6 +457,8 @@ spec:
             - message: spec.parent is fixed at creation
               rule: has(self.parent) == has(oldSelf.parent) && (!has(self.parent)
                 || self.parent == oldSelf.parent)
+            - message: spec.origin is fixed at creation
+              rule: has(self.origin) == has(oldSelf.origin)
             - message: spec.scope never changes once set
               rule: '!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)'
             - message: an api task carries maxMicroUSD
@@ -605,6 +618,10 @@ spec:
                       type: string
                     maxItems: 5
                     type: array
+                  followUpIssue:
+                    description: The follow-up issue filed when RunLore's verdict
+                      was persisting (RA12), filed once.
+                    type: integer
                   followUps:
                     description: Later pull requests that fixed this merge (MC8).
                     items:
@@ -644,6 +661,60 @@ spec:
                     format: date-time
                     type: string
                   verdict:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                  verification:
+                    description: RunLore's verdict on this fix (RA11), recorded by
+                      POST /v1/tasks/{task}/verification.
+                    properties:
+                      alert:
+                        description: VerifiedAlert is the alert a verdict is about.
+                        properties:
+                          firingAtMerge:
+                            type: boolean
+                          firingNow:
+                            type: boolean
+                          name:
+                            maxLength: 256
+                            type: string
+                        required:
+                        - firingAtMerge
+                        - firingNow
+                        - name
+                        type: object
+                      by:
+                        description: The principal that sent it, system:<name>.
+                        maxLength: 64
+                        type: string
+                      checkedAt:
+                        description: When the principal checked.
+                        format: date-time
+                        type: string
+                      recordedAt:
+                        description: When the factory recorded it.
+                        format: date-time
+                        type: string
+                      verdict:
+                        enum:
+                        - resolved
+                        - persisting
+                        type: string
+                    required:
+                    - alert
+                    - by
+                    - checkedAt
+                    - recordedAt
+                    - verdict
+                    type: object
+                  verified:
+                    description: |-
+                      The verification signal: healthy for resolved, regression for persisting, inconclusive when
+                      the window closed with no verdict. Set only for a merge whose origin is an internal
+                      principal that verifies (R12).
                     enum:
                     - ""
                     - healthy
@@ -734,6 +805,37 @@ spec:
               phaseSince:
                 format: date-time
                 type: string
+              published:
+                description: The issue the factory filed from this investigate task's
+                  proposal (RA9), once.
+                properties:
+                  at:
+                    description: When the issue was filed.
+                    format: date-time
+                    type: string
+                  by:
+                    description: The maintainer login whose label asked for it, lowercased.
+                    maxLength: 64
+                    type: string
+                  evidence:
+                    description: The verdict evidence of the fix task named by EvidenceFor,
+                      internal like this task (R11).
+                    maxLength: 16384
+                    type: string
+                  evidenceFor:
+                    description: The fix task the evidence is for.
+                    maxLength: 8
+                    pattern: ^[a-z2-7]{8}$
+                    type: string
+                  issue:
+                    description: The number of the issue the factory created.
+                    minimum: 1
+                    type: integer
+                required:
+                - at
+                - by
+                - issue
+                type: object
               pullRequest:
                 description: PullRequestRef is the task's pull request and what happened
                   to it.

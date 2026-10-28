@@ -452,3 +452,38 @@ func TestABouncedTaskNeedsAnAnswer(t *testing.T) {
 		t.Fatal("only the room's owner is asked to answer")
 	}
 }
+
+// O15: the harness's completion judge verdicts fold into the summary, the last one kept.
+func TestFoldKeepsTheLastJudgeVerdict(t *testing.T) {
+	judge := func(seq int64, verdict, reason string) envelope.Event {
+		return ev(seq, envelope.Message, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:cf4ato2x", Role: "implementer"},
+			envelope.MessagePayload{Kind: envelope.KindJudgeVerdict, Verdict: verdict, Text: reason, Evidence: []string{"check:validate"}, Delivery: envelope.DeliveryNone})
+	}
+	st := summary.Fold([]envelope.Event{judge(1, "not_yet", "validate fails"), note(2, "n"), judge(3, "impossible", "cannot pass")})
+	s := summary.View(st, "r", "https://x/r/r", policy.Subject{Kind: envelope.ActorHuman, Role: policy.ParseRole("owner")}, 0, time.Unix(1_760_000_100, 0))
+	j := s.Status.LastJudge
+	if j == nil || j.Verdict != "impossible" || j.Reason != "cannot pass" || len(j.Evidence) != 1 || len(s.Notes.Items) != 1 {
+		t.Fatalf("%+v %+v", j, s.Notes)
+	}
+}
+
+// status.task names the room's Task while the log carries its facts: the factory names a task's
+// room as the task (reconciler RoomRef), so it is the room's id. A room without facts has none.
+func TestViewTask(t *testing.T) {
+	facts := envelope.Event{Seq: 2, Type: envelope.StateChanged,
+		Payload: json.RawMessage(`{"kind":"task","phase":"Running","run":{"id":"r1","role":"implementer"}}`)}
+	for name, c := range map[string]struct {
+		evs  []envelope.Event
+		want string
+	}{
+		"facts":    {[]envelope.Event{facts}, "26zfnuxm"},
+		"no facts": {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := summary.View(summary.Fold(c.evs), "26zfnuxm", "https://rooms.example/r/26zfnuxm", policy.Subject{}, 0, time.Time{})
+			if got.Status.Task != c.want {
+				t.Fatalf("status.task = %q, want %q", got.Status.Task, c.want)
+			}
+		})
+	}
+}

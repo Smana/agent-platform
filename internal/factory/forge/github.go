@@ -334,6 +334,36 @@ func (g *GitHub) IssuesLabelled(ctx context.Context, label string) ([]Issue, err
 	return out, nil
 }
 
+// issuesSincePages bounds IssuesLabelledSince: 500 issues updated since the cut-off is far past any
+// window the factory looks back over, and an error beyond it is loud, never a short list.
+const issuesSincePages = 5
+
+// IssuesLabelledSince are the issues carrying label, open or closed, updated at or after since:
+// up to issuesSincePages pages of 100, for a label that accumulates (factory/proposed). Beyond the
+// cap it is an error, as IssuesLabelled's second page is. Pull requests are left out.
+func (g *GitHub) IssuesLabelledSince(ctx context.Context, label string, since time.Time) ([]Issue, error) {
+	var out []Issue
+	opts := &github.IssueListByRepoOptions{State: "all", Labels: []string{label}, Since: since,
+		ListOptions: github.ListOptions{PerPage: 100}}
+	for range issuesSincePages {
+		iss, resp, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, opts)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list labelled issues", err)
+		}
+		for _, i := range iss {
+			if !i.IsPullRequest() {
+				out = append(out, restIssue(i))
+			}
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.ListOptions.Page = resp.NextPage
+	}
+	return nil, fmt.Errorf("forge: more than %d issues carry %q since %s", issuesSincePages*100, label, since.Format(time.RFC3339))
+}
+
 // AddSubIssue shows child under parent as a GitHub sub-issue, by the child's numeric id: a view for
 // people (splitter SL8); the labels are the record.
 func (g *GitHub) AddSubIssue(ctx context.Context, parent int, childID int64) error {

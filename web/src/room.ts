@@ -5,6 +5,7 @@
 // composer, the connection), all fed by one RoomConnection.
 
 import { api } from "./api";
+import { mountBrand } from "./brand";
 import { focusRow } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountComposer, mountControls, rejection, shortPrincipal } from "./controls";
@@ -14,14 +15,18 @@ import { changesSummary, fetchSummary, focusApproval, renderNotes, type Summary 
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
+import type { Dashboard } from "./dashboards";
 import { mountStrip } from "./strip";
 import { mountThemeButton, type ThemeController } from "./theme";
 
 // mountRoom renders room id into app. get and socket are parameters so tests
-// drive the page with no broker.
-export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, o: Options & { get?: typeof fetch } = {}) {
+// drive the page with no broker. dashboards loads the strip's link templates once (main
+// passes fetchDashboards); absent, the strip shows none.
+export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
+  o: Options & { get?: typeof fetch; dashboards?: () => Promise<Dashboard[]> } = {}) {
   const header = document.createElement("header");
   header.className = "page-header";
+  mountBrand(header);
   const strip = mountStrip(header);
   // Not live: why, and when the page retries. Hidden while live.
   const banner = document.createElement("div");
@@ -123,6 +128,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let snap: Snapshot | undefined;
   let mark = 0; // the latest state frame's throughSeq
   let summary: Summary | undefined;
+  let dashboards: Dashboard[] = [];
   let connection = "connecting…";
   let events = 0; // the counters' last seq, for the dock's "live · N events"
   const showStatus = () => { status.textContent = connection === "live" ? `live · ${events} events` : connection; };
@@ -130,7 +136,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
     sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), connection,
-    now: state.latest(), running: state.running(), ran: state.ran() });
+    now: state.latest(), running: state.running(), ran: state.ran(), dashboards });
+  void o.dashboards?.().then((d) => { dashboards = d; refreshStrip(); }).catch(() => { /* no links */ });
   // The pill takes the reader, and the keyboard focus, to the panel.
   strip.onNeedsClick(() => {
     needsPanel.scrollIntoView?.({ block: "start" });

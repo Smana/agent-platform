@@ -281,6 +281,9 @@ func (d Doctor) opencodeCodeMode(warn func(string, string)) {
 			continue
 		}
 		factory, ok := mapAt(mapAt(cfg, "mcp"), "servers")["factory"].(map[string]any)
+		if ok && executionTimeout(factory) == 0 {
+			warn("opencode", p+" sets no timeout.execution on mcp.servers.factory: OpenCode cuts issue_file's form at its default tool timeout (add \"timeout\": {\"execution\": 900000}; roomctl setup opencode does it)")
+		}
 		if ok && factory["codemode"] != false && hasExecuteDeny(cfg) {
 			warn("opencode", p+" denies execute, which turns Code Mode off and hides the factory tools: add \"codemode\": false to mcp.servers.factory (roomctl setup opencode does it)")
 			return

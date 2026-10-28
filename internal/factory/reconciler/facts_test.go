@@ -512,3 +512,16 @@ func TestFactsClampDollarsToTheCap(t *testing.T) {
 		t.Errorf("runs %+v, want the run's dollars clamped", f.Runs)
 	}
 }
+
+// RA10: a fix task's facts carry its spec.origin; any other task's carry none.
+func TestFactsCarryTheOrigin(t *testing.T) {
+	task := issueTask("3buqdlot", 7, "x")
+	task.Status.Phase = v1alpha1.PhaseQueued
+	if f := factsOf(task); f.Origin != "" {
+		t.Fatalf("%+v", f)
+	}
+	task.Spec.Origin = "abcdefgh"
+	if f := factsOf(task); f.Origin != "abcdefgh" || f.Validate() != nil {
+		t.Fatalf("%+v", f)
+	}
+}

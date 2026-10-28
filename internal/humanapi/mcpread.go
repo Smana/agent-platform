@@ -82,7 +82,7 @@ func (s *Server) roomsList(ctx context.Context, p authn.Principal, args json.Raw
 func viewRow(r roomRow) roomview.Row {
 	return roomview.Row{ID: r.ID, URL: r.URL, Phase: r.Phase, State: r.State, Repository: r.Repository, Issue: r.Issue,
 		Title: r.Title, Task: r.Task, PR: r.PR, Reason: r.Reason, LastSeq: r.LastSeq, LastEventAt: r.LastEventAt,
-		NeedsMe: r.NeedsMe, NeedsYou: r.NeedsYou, Need: r.Need}
+		NeedsMe: r.NeedsMe, NeedsYou: r.NeedsYou, Need: r.Need, Step: r.Step}
 }
 
 // viewOptions are the choices of a view rendered for the model's chat: Markdown, with the rooms'

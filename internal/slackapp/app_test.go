@@ -522,7 +522,7 @@ func TestMentionSenderChecks(t *testing.T) {
 // M6: the thread never shows the package's internal error prefix.
 func TestRefusalHidesInternalPrefix(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
-	rig.mention("C03", "1729.0001", "<@U0BOT> nonsense")
+	rig.mention("C03", "1729.0001", "<@U0BOT>")
 	if p := rig.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || strings.Contains(p.text, "slackapp:") {
 		t.Fatalf("%q", p.text)
 	}
@@ -603,5 +603,31 @@ func TestOversizedDraftIsNotPosted(t *testing.T) {
 	}
 	if rig.metrics.count("events", "too_large") != 1 || rig.metrics.count("events", "drafted") != 0 {
 		t.Fatal("outcome")
+	}
+}
+
+// O14: a one-repository channel takes a title-only line 1; a many-repository channel's refusal
+// shows an example.
+func TestMentionOnAOneRepositoryChannel(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs(agents): the link is dead\n## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz")
+	c := rig.broker.all()
+	if d, ok := c[0].(Draft); len(c) != 1 || !ok || d.Repo != "Smana/ai-native-ref" || d.Title != "docs(agents): the link is dead" {
+		t.Fatalf("%+v %q", c, rig.lastPost().text)
+	}
+	two := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref", "Smana/cloud-native-ref"}, MaxCostUSD: 2})
+	two.mention("C03", "1729.0001", "<@U0BOT> docs: a title without a repository\nbody")
+	if p := two.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || !strings.Contains(p.text, "Try: `@factory Smana/ai-native-ref docs: a title without a repository`") || len(two.broker.all()) != 0 {
+		t.Fatalf("%q", p.text)
+	}
+}
+
+// A one-line mention is a draft: the thread shows the composed issue the check mark will file.
+func TestSingleLineMentionPostsTheComposedDraft(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: fix a dead link")
+	p := rig.lastPost().text
+	if !strings.HasPrefix(p, "Draft for ") || !strings.Contains(p, "## What is wrong\ndocs: fix a dead link") || !strings.Contains(p, "## Acceptance check\nNone given in Slack") {
+		t.Fatalf("%q", p)
 	}
 }

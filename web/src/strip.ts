@@ -8,10 +8,16 @@
 
 import type { Snapshot } from "./conn";
 import { el, shortPrincipal } from "./controls";
+import { type Dashboard, expandDashboards } from "./dashboards";
 import type { Latest } from "./room-state";
 import { ago, safeLink, type Summary, when } from "./summary";
 
 export { shortPrincipal };
+
+// A step's link is the broker's own, but it still goes in only when it is https on github.com.
+function isGitHubUrl(url?: string): boolean {
+  try { const u = url ? new URL(url) : null; return !!u && u.protocol === "https:" && u.hostname === "github.com"; } catch { return false; }
+}
 
 export interface StripInput {
   roomId: string; snap?: Snapshot; phase: string; driver: string; sealedBy?: { who: string; at: string };
@@ -21,6 +27,7 @@ export interface StripInput {
   // Whether an agent is present now, and whether one ever was (RoomState.running, ran).
   // Undefined when nothing tracks it: the Now line then reads the latest activity as current.
   running?: boolean; ran?: boolean;
+  dashboards?: Dashboard[]; // the operator's link templates (GET /api/roomctl); none, no group
 }
 
 // fmtTokens reads a token count at a glance: 189093 → "189 k", 1500000 → "1.5 M". A count
@@ -74,6 +81,19 @@ function chip(cls: string, ...body: (string | Node)[]): HTMLElement {
   return c;
 }
 
+// dashboardsChip is the "Dashboards:" group, filled with the room's ids: the run is the
+// facts' current or last one, else the history's last, else the state frame's last. A chip
+// in the chip row, so a phone's strip keeps its one sideways line. Undefined when no link shows.
+function dashboardsChip(i: StripInput): HTMLElement | undefined {
+  const s = i.summary;
+  const run = s?.status.run?.id || s?.runs?.at(-1)?.id || i.snap?.runs?.at(-1)?.id;
+  const links = expandDashboards(i.dashboards, { room: i.roomId, run, task: s?.status.task });
+  if (links.length === 0) return undefined;
+  const body: (string | Node)[] = ["Dashboards: "];
+  links.forEach((l, n) => body.push(...(n ? [" · "] : []), safeLink(l.label, l.url)));
+  return chip("chip-dashboards", ...body);
+}
+
 function chips(i: StripInput, now: number): HTMLElement[] {
   const st = i.summary?.status;
   const out: HTMLElement[] = [];
@@ -101,6 +121,8 @@ function chips(i: StripInput, now: number): HTMLElement[] {
     out.push(d);
   }
   if (i.snap) out.push(chip("chip-you", `you: ${i.snap.you.role}${i.snap.you.approver ? " (approver)" : ""}`));
+  const dash = dashboardsChip(i);
+  if (dash) out.push(dash);
   return out;
 }
 
@@ -143,8 +165,11 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
       const st = i.summary?.status;
       const text = st?.issue?.title ? `#${st.issue.number} ${st.issue.title}` : `Room ${i.roomId}`;
       const phase = st?.phase || i.phase;
-      if (title.textContent !== text) title.textContent = text;
-      document.title = phase ? `${text} · ${phase}` : text;
+      if (title.textContent !== text) {
+        title.textContent = text;
+        title.title = text; // a phone clamps the title to two lines: the whole of it on hover
+      }
+      document.title = phase ? `${text} · ${phase} · Maku` : `${text} · Maku`;
       const { now: latest, sealedBy, needs, connection, ...rest } = i;
       const headKey = JSON.stringify(rest);
       if (headKey !== shown.head) {
@@ -172,12 +197,21 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         const n = nowText(latest, t, present);
         if (b && b.textContent !== n) b.textContent = n;
       }
-      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next]);
+      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next, i.summary?.step]);
       if (tailKey !== shown.tail) {
         const lines: HTMLElement[] = [];
         if (sealedBy || i.sealed) lines.push(el("div", { className: "closed", textContent: sealedText(i) }));
         else if (st?.reason || st?.next) {
           lines.push(el("div", { className: "waiting", textContent: `Waiting: ${[st.reason, st.next].filter(Boolean).join(" → ")}` }));
+        }
+        const step = i.summary?.step;
+        if (step && !sealedBy && !i.sealed) {
+          // A PR-held room has nothing to decide here: say where to act, and link it.
+          const line = el("div", { className: "waiting", textContent: "Your move: " });
+          line.append(step.kind !== "approve" && isGitHubUrl(step.url)
+            ? safeLink(step.label, step.url!)
+            : document.createTextNode(step.kind === "approve" ? `${step.label}, in Needs you below` : step.label));
+          lines.push(line);
         }
         tail.replaceChildren(...lines);
         shown.tail = tailKey;

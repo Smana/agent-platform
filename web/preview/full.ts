@@ -7,7 +7,7 @@
 
 import type { RoomEvent, Snapshot } from "../src/conn";
 import type { Summary } from "../src/summary";
-import { initTheme } from "../src/theme";
+import { applyTheme, initTheme } from "../src/theme";
 import { mountPreviewPage } from "./page";
 
 const get = async <T>(path: string): Promise<T> => (await fetch(path)).json() as Promise<T>;
@@ -20,9 +20,17 @@ async function run() {
   ]);
   const events = text.trim().split("\n").map((l) => JSON.parse(l) as RoomEvent);
   const theme = initTheme();
-  if (new URLSearchParams(location.search).get("theme") === "dark") document.documentElement.classList.add("dark");
+  const override = new URLSearchParams(location.search).get("theme");
+  if (override === "light" || override === "dark") applyTheme(override);
 
-  const page = mountPreviewPage(document.getElementById("app")!, { snap, summary, count: events.length,
+  // Example dashboards (human.dashboards), filled with the fixture's room, run and task.
+  const dashboards = [
+    { label: "Room", url: "https://grafana.example.com/d/agent-room/agent-room?var-room={room}" },
+    { label: "Run", url: "https://grafana.example.com/d/agent-run/agent-run?var-run={run}" },
+    { label: "Task", url: "https://grafana.example.com/d/agent-factory/agent-factory?var-task={task}" },
+  ];
+  const page = mountPreviewPage(document.getElementById("app")!, { snap, summary: { ...summary, status: { ...summary.status, task: summary.room } },
+    count: events.length, dashboards,
     nothingSent: "Offline preview: nothing was sent.", sessionOpen: new URLSearchParams(location.search).has("session"), theme });
   for (const e of events) page.apply(e);
   page.setStatus(`live · ${events.length} events (offline fixture)`);

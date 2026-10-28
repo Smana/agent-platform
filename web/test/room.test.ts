@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
+import type { Dashboard } from "../src/dashboards";
 import { mountRoom } from "../src/room";
 import { FakeSocket } from "./fakes";
 
@@ -19,11 +20,11 @@ const event = (seq: number, type: string, payload: unknown) => ({ type: "event",
 
 // The room page with a fake broker: join opens the socket and answers its hello as
 // the broker does, the state frame first, then the replay.
-function page(get?: typeof fetch) {
+function page(get?: typeof fetch, dashboards?: () => Promise<Dashboard[]>) {
   const app = document.createElement("div");
   const sockets: FakeSocket[] = [];
   mountRoom(app, "3kq7x2ma", theme, { socket: (url) => { const s = new FakeSocket(url); sockets.push(s); return s; },
-    random: () => 0, get });
+    random: () => 0, get, dashboards });
   const last = () => sockets[sockets.length - 1];
   const join = (s: Snapshot, throughSeq: number, ...replay: unknown[]) => {
     last().open();
@@ -53,6 +54,17 @@ describe("the room page", () => {
 
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  // The templates load once, beside the summary; the strip fills them with the room's ids.
+  it("shows the configured dashboards in the strip, loaded once", async () => {
+    const load = vi.fn(async () => [{ label: "Room metrics", url: "https://grafana.example.com/d/r/x?var-room={room}" }]);
+    const p = page((async () => new Response("", { status: 503 })) as unknown as typeof fetch, load);
+    p.join(snapshot(), 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.app.querySelector<HTMLAnchorElement>(".chip-dashboards a")?.href).toBe("https://grafana.example.com/d/r/x?var-room=3kq7x2ma");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
 
   const agent = (seq: number, type: string, payload: unknown, ts = "2026-10-06T10:00:00Z") => {
     const f = event(seq, type, payload);
@@ -204,6 +216,13 @@ describe("the room page", () => {
     p.last().recv(event(1, "message", { kind: "chat", text: "hi", delivery: "none" }));
     expect(p.app.querySelector("header.page-header")).not.toBeNull();
     expect(p.app.querySelector("header.msg-head")?.classList.contains("page-header")).toBe(false);
+  });
+
+  it("mounts exactly one Maku brand ahead of the strip", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelectorAll(".brand")).toHaveLength(1);
+    expect(p.app.querySelector("header.page-header")?.firstElementChild?.classList.contains("brand")).toBe(true);
   });
 
   it("heads the page with the room's phase as the log moves it (R10)", () => {

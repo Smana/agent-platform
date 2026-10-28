@@ -89,6 +89,9 @@ type HumanConfig struct {
 	// MCP serves /mcp, the MCP server roomctl mcp relays (factory interfaces F2). Off unless
 	// enabled: v3 ships each feature behind a switch (D4).
 	MCP MCPConfig `json:"mcp,omitzero"`
+	// Dashboards are the room page's links out, such as Grafana's, filled with the room's ids.
+	// None by default: the page then shows no group at all.
+	Dashboards []DashboardConfig `json:"dashboards,omitempty"`
 }
 
 // EffectiveMode is the mode the broker serves: an empty mode is the OIDC deployment every existing
@@ -476,7 +479,8 @@ func (h HumanConfig) validate(system []string) []error {
 		if len(h.MCP.SessionStart) > 0 {
 			errs = append(errs, errors.New("human.mcp.sessionStart: mode local takes no sessionStart repository"))
 		}
-		return errs
+		// Dashboards are optional in either mode and checked the same way.
+		return append(errs, validateDashboards(h.Dashboards)...)
 	}
 	if h.EffectiveMode() != HumanModeOIDC {
 		return []error{fmt.Errorf("human: mode %q is not oidc or local", h.Mode)}
@@ -538,6 +542,7 @@ func (h HumanConfig) validate(system []string) []error {
 		}
 		listed[key] = true
 	}
+	errs = append(errs, validateDashboards(h.Dashboards)...)
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {
 			errs = append(errs, errors.New("human.access.readerFile: is required"))

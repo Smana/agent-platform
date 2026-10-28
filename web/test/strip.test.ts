@@ -81,7 +81,12 @@ describe("the title strip", () => {
     const { h, strip } = mount();
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });
     expect(h.querySelector("h1")?.textContent).toBe("#74 Chat view: pair tool calls");
-    expect(document.title).toBe("#74 Chat view: pair tool calls · Implementing");
+    expect(document.title).toBe("#74 Chat view: pair tool calls · Implementing · Maku");
+  });
+  it("keeps the product name when there is no phase", () => {
+    const { strip } = mount();
+    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0, connection: "connecting…" });
+    expect(document.title).toBe("Room 3kq7x2ma · Maku");
   });
   it("falls back to the room id before the summary arrives", () => {
     const { h, strip } = mount();
@@ -106,6 +111,22 @@ describe("the title strip", () => {
     expect(h.querySelector(".waiting")?.textContent).toBe("Waiting: the policy needs a maintainer's approval → an approver decides");
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary({ reason: undefined, next: undefined }), needs: 0, connection: "live" });
     expect(h.querySelector(".waiting")).toBeNull();
+  });
+  it("names the one step and links the PR for a room held on GitHub", () => {
+    const { h, strip } = mount();
+    const step = { kind: "pr" as const, label: "review and merge or close PR #77", url: "https://github.com/o/r/pull/77" };
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step }, needs: 0, connection: "live" });
+    const line = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
+    expect(line.textContent).toBe("Your move: review and merge or close PR #77");
+    expect(line.querySelector("a")?.getAttribute("href")).toBe(step.url);
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step: { kind: "approve", label: "approve here" } }, needs: 1, connection: "live" });
+    expect(h.textContent).toContain("Your move: approve here, in Needs you below");
+    // An off-GitHub URL is not linked, only said.
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0, connection: "live",
+      summary: { ...summary(), step: { kind: "answer", label: "answer the question on issue #3", url: "https://evil.example/x" } } });
+    const bad = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
+    expect(bad.querySelector("a")).toBeNull();
+    expect(bad.textContent).toBe("Your move: answer the question on issue #3");
   });
   it("shows a needs-you pill only when something does, and a closed line when sealed", () => {
     const { h, strip } = mount();
@@ -281,6 +302,54 @@ describe("the broker's golden summaries in the strip", () => {
   });
 });
 
+describe("the strip on a phone", () => {
+  const css = readFileSync(join(__dirname, "../src/app.css"), "utf8");
+  // Every @media (max-width: 640px) block, and the stylesheet without them: the desktop's.
+  const phoneRe = /@media \(max-width: 640px\)\s*{([\s\S]*?)\n}\n/g;
+  const phone = [...css.matchAll(phoneRe)].map((m) => m[1]).join("\n");
+  const desktop = css.replace(phoneRe, "");
+  const decl = (src: string, sel: string) => {
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = src.match(new RegExp(`(?:^|\\n)\\s*${esc}\\s*{([^}]*)}`));
+    expect(m, `rule ${sel}`).not.toBeNull();
+    return m![1];
+  };
+  const clamp2 = /display:\s*-webkit-box;[^}]*-webkit-line-clamp:\s*2;[^}]*-webkit-box-orient:\s*vertical;[^}]*overflow:\s*hidden/;
+
+  it("keeps the full title in title=, for the line a phone clamps", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    expect(h.querySelector(".strip-title")?.getAttribute("title")).toBe("#74 Chat view: pair tool calls");
+    strip.update(input({ summary: undefined }));
+    expect(h.querySelector(".strip-title")?.getAttribute("title")).toBe("Room 3kq7x2ma");
+  });
+  it("keeps the chips on one line that scrolls sideways, its scrollbar hidden", () => {
+    const chips = decl(phone, ".page-header .strip-chips");
+    expect(chips).toMatch(/flex-wrap:\s*nowrap/);
+    expect(chips).toMatch(/overflow-x:\s*auto/);
+    expect(chips).toMatch(/scrollbar-width:\s*none/);
+    expect(phone).toMatch(/\.page-header \.strip-chips::-webkit-scrollbar\s*{[^}]*display:\s*none/);
+  });
+  it("leaves room in the scrolling row for the Needs-you pill's focus ring", () => {
+    const chips = decl(phone, ".page-header .strip-chips");
+    const pad = chips.match(/padding-block:\s*(\d+)px/);
+    expect(pad, "padding-block").not.toBeNull();
+    expect(Number(pad![1])).toBeGreaterThanOrEqual(3); // a 2 px ring 1 px off the pill
+    expect(chips).toMatch(new RegExp(`margin-block:\\s*-${pad![1]}px`));
+  });
+  it("puts Needs you first in the row, so it never scrolls out of sight", () => {
+    expect(decl(phone, ".page-header .needs-pill")).toMatch(/order:\s*-1/);
+    expect(decl(phone, ".page-header .strip-chips > *")).toMatch(/flex:\s*none/);
+  });
+  it("clamps the title, the waiting lines and the Now line to two lines each", () => {
+    for (const sel of [".strip-title", ".page-header .waiting", ".page-header .now-link"]) expect(decl(phone, sel), sel).toMatch(clamp2);
+  });
+  it("leaves the desktop strip as it was", () => {
+    expect(desktop).not.toMatch(/line-clamp|scrollbar-width/);
+    expect(decl(desktop, ".strip-chips")).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
 describe("formatting", () => {
   // The same boundaries as roomctl's tokens() (internal/roomctl TestBudgetTextBoundaries).
   it.each([[0, "0"], [999, "999"], [1000, "1 k"], [189093, "189 k"], [999_499, "999 k"], [999_500, "1 M"], [1_000_000, "1 M"],
@@ -293,5 +362,54 @@ describe("formatting", () => {
   it("shortens a principal and keeps a short one", () => {
     expect(shortPrincipal("human:291847362183")).toBe("human:2918…");
     expect(shortPrincipal("system:factory")).toBe("system:factory");
+  });
+});
+
+// Operator-configured dashboards (human.dashboards): one chip in the chip row, so a phone's
+// strip keeps its one sideways line; none configured, no element at all.
+describe("the strip's dashboards", () => {
+  const templates = [
+    { label: "Room metrics", url: "https://grafana.example.com/d/agent-room/x?var-room={room}" },
+    { label: "Run", url: "https://grafana.example.com/d/agent-run/x?var-run={run}" },
+    { label: "Task", url: "https://grafana.example.com/d/agent-factory/x?var-task={task}" },
+  ];
+  const links = (h: HTMLElement) => [...h.querySelectorAll<HTMLAnchorElement>(".chip-dashboards a")];
+
+  it("shows nothing without templates", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    strip.update(input({ dashboards: [] }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+  it("fills the room's ids, and opens each in a new tab with no referrer", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates, summary: summary({ task: "3kq7x2ma" }) }));
+    const chip = h.querySelector(".strip-chips > .chip-dashboards")!;
+    expect(chip.textContent).toBe("Dashboards: Room metrics · Run · Task");
+    expect(links(h).map((a) => a.href)).toEqual([
+      "https://grafana.example.com/d/agent-room/x?var-room=3kq7x2ma",
+      "https://grafana.example.com/d/agent-run/x?var-run=ikely2yk",
+      "https://grafana.example.com/d/agent-factory/x?var-task=3kq7x2ma"]);
+    for (const a of links(h)) expect([a.rel, a.target]).toEqual(["noopener noreferrer", "_blank"]);
+  });
+  it("hides a {run} link with no run and a {task} link with no task", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates, summary: summary({ run: null }) }));
+    expect(links(h).map((a) => a.textContent)).toEqual(["Room metrics"]);
+    strip.update(input({ dashboards: templates.slice(1), summary: undefined }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+  it("takes the last run from the run history, else the state frame", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: templates.slice(1, 2), summary: { ...summary({ run: null }), runs: [{ id: "aaaaaaaa", role: "implementer" }, { id: "bbbbbbbb", role: "reviewer" }] } }));
+    expect(links(h)[0].href).toBe("https://grafana.example.com/d/agent-run/x?var-run=bbbbbbbb");
+    strip.update(input({ dashboards: templates.slice(1, 2), summary: undefined,
+      snap: { ...snap, runs: [{ id: "cccccccc", role: "implementer", phase: "Running" }] } }));
+    expect(links(h)[0].href).toBe("https://grafana.example.com/d/agent-run/x?var-run=cccccccc");
+  });
+  it("drops a link that does not come out https", () => {
+    const { h, strip } = mount();
+    strip.update(input({ dashboards: [{ label: "Plain", url: "http://grafana.example.com/?r={room}" }] }));
+    expect(h.querySelector(".chip-dashboards")).toBeNull();
   });
 });

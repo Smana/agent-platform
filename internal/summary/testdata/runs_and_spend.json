@@ -222,7 +222,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Implementing",
+      "phase": "Implementing", "task": "26zfnuxm",
       "run": {
         "id": "c3",
         "role": "implementer",
@@ -262,6 +262,7 @@
         "url": "https://rooms.example/r/26zfnuxm#01M4A"
       }
     ],
+    "step": {"kind": "approve", "label": "approve here", "url": "https://rooms.example/r/26zfnuxm"},
     "actions": [
       {
         "kind": "queue",

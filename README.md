@@ -1,5 +1,14 @@
 # agent-platform
 
+<a href="docs/naming.md">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/png/maku-lockup-horizontal-dark.png">
+    <img src="docs/assets/brand/png/maku-lockup-horizontal-light.png" alt="Maku, a controlled stage for delegated agent work" width="480">
+  </picture>
+</a>
+
+Maku is the product name; `agent-platform` stays the name of the repository, module, binaries, images and APIs ([naming](docs/naming.md)).
+
 **Run coding agents on your Kubernetes cluster without trusting them.**
 
 - **Sandboxed:** every run is an isolated pod holding only [short-lived, scoped credentials](docs/quickstart.md#what-differs-from-production), inside [a budget it cannot raise](docs/quickstart.md#what-differs-from-production).
@@ -9,7 +18,7 @@
 <a href="https://blog.ogenki.io/agent-platform/">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/room-dark.png">
-    <img alt="A room replaying an agent run: steps of tool calls, a denied command, an approval, the composer" src="docs/assets/room-light.png" width="800">
+    <img alt="A live factory room: the task's chips with its PR and the reviewer's approving verdict, the agent's latest claim, the triager's scope, its tool calls, the composer" src="docs/assets/room-light.png" width="800">
   </picture>
 </a>
 

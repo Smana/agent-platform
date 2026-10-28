@@ -344,14 +344,14 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Method and path | Does |
 |---|---|
-| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log. A `401` from the API, or one behind a refused WebSocket upgrade, sends the page to `/oauth2/start?rd=<the page>` |
+| `GET /`, `GET /r/{id}`, `GET /assets/{file...}` | The embedded UI, under a strict Content Security Policy. `/assets/` serves nested files (`/assets/svg/…`, `/assets/fonts/…`); a directory, `/assets` or `/assets/` is a `404`, never a listing. A room's page keeps its newest 5 000 events; older ones leave the page, never the log. A `401` from the API, or one behind a refused WebSocket upgrade, sends the page to `/oauth2/start?rd=<the page>` |
 | `GET /api/rooms` | One row per room the caller may read (room access, then their role): id, `url` (the room's page), phase, `state` (the [coarse state](#the-coarse-state)), owner, driver, data class, last `seq`, `lastEventAt` (when the log last moved; omitted when the room has no events or the time could not be read), `repository`, the task (`issue`, `title`, `task` phase, `pr`; absent when the room has none), `reason` (the task's wait code from its last facts, while its phase is `Queued`, `AwaitingCI`, `AwaitingHuman` or `Escalated`; absent otherwise or when it cannot be read), `needsYou` (how many things wait for the caller), `needsMe` (`needsYou` > 0: an approval is pending that the caller could decide in the web UI, or the factory's task is held on the room and the caller is its driver or owner — the summary's `kind: hold`, or a PR waits for the caller's merge — `kind: merge`, or an Escalated task waits for its issue's author and the caller owns the room — `kind: answer`; an approval past its deadline that the sweep has not decided yet counts for neither `needsYou` nor `need`, as the summary drops it), `need` (the first of those things, in the summary's order: the pending approval with the lowest id, then a hold, then a merge, then an answer; the same `kind`, `id`, `what`, `deadline?` and `url` as a `needsYou` item; absent when nothing waits for the caller), and the caller's own role. A room whose access cannot be verified is left out, with no error. The `X-Rooms-Access` header says why a list may be short, about the caller only: `unlinked` (not an admin, and no GitHub link on their ZITADEL user), `unverified` (a check failed past the cache, or none is configured), else `ok`. Filters, applied after the access and role checks so none reveals an unreadable room: `?repo=owner/name`; `?mine=1`, rooms whose task's issue the caller filed or labelled or whose PR they authored or review, matched on their linked GitHub login; `?needs_me=1`, rows with `needsMe` |
 | `GET /api/rooms/{id}/summary` | The room's [`summary/v1`](#get-apiroomsidsummary): status, what needs the caller, what they can do, the agents' notes |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket |
 | `POST /mcp` | The [MCP server](#post-mcp) `roomctl mcp` relays, when `human.mcp.enabled`; else `404` |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member, on a `repository` they can read (room access). `400` for another data class, a missing or malformed repository, an unknown field or a principal the Room CRD would refuse, `404` for a repository the caller cannot read or the factory App cannot see (missing, or the App not installed), `409` when a Room of the generated id exists, `429` past the caller's action budget (10/s, burst 20, shared with acts), `500` when the Room is refused for any other reason, such as the broker lacking `create` on rooms (logged at WARN), `503` when the API server is unreachable, overloaded or times out, or `access_unverified` when the caller's access cannot be checked. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post |
 | `GET /.well-known/roomctl` | The same `{url, issuer, clientID, projectID, version, humanMode}` with no sign-in, for `roomctl configure --url`; none of it is a secret. `humanMode` is `oidc` or `local` (`local`: no IdP, no token, and the `roomctl` values are empty). The proxy in front must let this path through unauthenticated |
-| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version, humanMode}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`, and the broker's version, whose roomctl release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version, humanMode}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`, and the broker's version, whose roomctl release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID`. `dashboards?` (`[{label, url}]`): the room page's link templates from [`human.dashboards`](integration.md#the-brokers-configuration), unfilled; the page fills `{room}`, `{run}` and `{task}` per room. Absent when none is configured. They are not secrets, so any member gets them; `/.well-known/roomctl` leaves them out, since `roomctl configure` has no use for them |
 
 ### `GET /api/rooms/{id}/summary`
 
@@ -370,11 +370,12 @@ keeps only the notes after `seq` N; pass back the number of the previous answer'
 |---|---|
 | `apiVersion` | `summary/v1`, the contract both renderers check |
 | `room`, `url` | The room id and its page |
-| `status` | `state`: the [coarse state](#the-coarse-state), from the log's task phase, else the room's. `reason` and `next` (absent unless the task waits: `Queued`, `AwaitingCI`, `AwaitingHuman`, `Escalated`; absent in a sealed room): why, and what happens or who acts next. `issue.title` is the issue's title, bounded. `phase`: the task's, else the room's, and `Closed` or `Sealed` once the log is sealed. `run`, `budget`, `pr`, `issue`, `lastVerdict`: the factory's latest facts and the latest review verdict, each `null` when absent. `spend` (`usedMicroUSD`, `limitMicroUSD?`): the task's dollars, in millionths of a dollar, beside `budget`'s tokens; absent until the factory reports it. Empty fields inside them are left out, such as a PR's `reviewers` before anyone reviews |
+| `status` | `state`: the [coarse state](#the-coarse-state), from the log's task phase, else the room's. `reason` and `next` (absent unless the task waits: `Queued`, `AwaitingCI`, `AwaitingHuman`, `Escalated`; absent in a sealed room): why, and what happens or who acts next. `issue.title` is the issue's title, bounded. `phase`: the task's, else the room's, and `Closed` or `Sealed` once the log is sealed. `task`: the room's Task, which the factory names as the room, so the room id; absent in a room without task facts. `run`, `budget`, `pr`, `issue`, `lastVerdict`: the factory's latest facts and the latest review verdict, each `null` when absent. `spend` (`usedMicroUSD`, `limitMicroUSD?`): the task's dollars, in millionths of a dollar, beside `budget`'s tokens; absent until the factory reports it. Empty fields inside them are left out, such as a PR's `reviewers` before anyone reviews |
 | `runs` | The task's run history, oldest first, at most 20, from the factory's latest facts: `id`, `role`, `trigger?`, `startedAt?`, `endedAt?`, `outcome?` (`succeeded`, `failed`, `budget_exhausted`, `revoked`, `lost` or `ended`; absent while the run goes on), `verdict?` (at most 32 bytes), `microUSD?` (the run's dollars). Absent when the task has none. Kept in a sealed room, like `status.spend`: they are facts, not needs |
 | `needsYou` | `kind: merge` (owners; `id` is the PR number): the task is `AwaitingHuman` on a PR; `what` says how to merge under the repository ruleset (the bypass box, or `gh pr merge N --squash --admin --repo owner/name`), `url` is the PR. `[{kind: approval, id, what, deadline, url}]`: the pending approvals the caller could decide in the web UI. Each carries a link to its card in the room, never a command. `kind: answer` (owners; `id` is the issue number): an Escalated task waits for its issue's author (`needs_author`); `author?` is the author's GitHub login, `url` the issue. `kind: hold` (no `deadline`): the factory's task is `Queued` behind a hold on the room (a person driving it, or another run in it), listed for its driver and owner; `id` is the wait (`waiting_human_driver`, `waiting_room_busy`), `what` says what releases it, `url` is the room. It goes with the factory's next facts |
 | `actions` | What the caller may do now, by their standing: `queue` and `stop` carry a `cli` line (every `gh` command passes `--repo owner/name`); `steer`, for the driver and only while an agent is in the room (it joined and has not left), carries none, since `roomctl` never steers |
 | `notes` | `{untrusted: true, items: [{at, run, text}]}`: the last 20 progress notes after `after`. `untrusted` is always `true`: they are the agents' claims, rendered as text |
+| `queued` | `{untrusted: true, items: [{ref, author, text}]}`: the notes still queued for the next run, oldest first, redacted; absent when none wait or the room is sealed. The card lists them under "Queued for the next run" |
 | `cursor` | `seq:N`, the last `seq` folded |
 
 A sealed room has no `reason`, `next`, `needsYou` or `actions`. A fork's summary starts at its `forked_from`: the
@@ -593,9 +594,9 @@ from its creation, then `failed` (`no such room`). A slow triage can flip a `fai
 
 ### `POST /v1/tasks`
 
-It serves on the factory's `api.listen`, only while `api.sponsored` is non-empty
-(otherwise `404`). It takes sponsored tokens only: a human or a system caller gets
-`403 sponsored_only`. (`POST /v1/runs` refuses a sponsored caller the other way round, with
+It serves on the factory's `api.listen`, only while `api.sponsored` or `api.internalPrincipals` is
+non-empty (otherwise `404`). It takes sponsored and [internal](#an-internal-principals-request) tokens
+only: a human or a system caller gets `403 sponsored_only`. (`POST /v1/runs` refuses a sponsored caller the other way round, with
 `403 sponsored_only_tasks`: a sponsored principal starts tasks, never runs.) The broker's
 `run_create` calls it with the caller's own token. Model and
 limits: [sponsored principals](factory.md#sponsored-principals).
@@ -612,8 +613,46 @@ limits: [sponsored principals](factory.md#sponsored-principals).
 | `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
 | `503` | `kill_switch`, `meter_unpriced`, `tasks_unavailable`, `ledger_unavailable`, `intake_failed` |
 
+#### An internal principal's request
+
+An [internal principal](factory.md#internal-principals) (RunLore) sends the same route with a finding,
+and gets `investigate` on internal data, never a title or a link to another user. The body is
+`repository`, `text` (the finding), `dataClass: internal`, `maxCostUSD` and `incident`, all required:
+`incident` is `{alert, resource, severity, cluster, verdict, confidence}` (`alert` and `resource`
+required). `Idempotency-Key` is the incident's trigger key.
+
+| | |
+|---|---|
+| `201` | `{task, room, issue}`: an `investigate` task and a public stub issue labelled `factory/proposed`; it names the alert, resource and room, never the finding |
+| `200` | `{task, room, issue, duplicate: true}`: a task of the key is still open. Once it ended, the same key is a new generation |
+| `202` | `{accepted: false, reason: below_threshold}`: the verdict is not `action_required` or `action_suggested`, or `confidence` is under `minConfidence` |
+| `400` | `bad_json`, `idempotency_key_required`, `title_not_allowed`, `on_behalf_of_not_allowed`, `bad_ref`, `bad_data_class` (anything but `internal`), `incident_required`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class` |
+| `403`, `409` | `repository_not_allowed`, `repository_not_owned` |
+| `429` | `principal_daily_tasks` (the principal's tasks created this UTC day, whatever their kind), `principal_task_cap`, `principal_budget_exhausted` |
+| `503` | as above |
+
+A sponsored principal's request refuses an `incident` (`bad_json`), and an internal principal's refuses
+everything a sponsored one's does beyond its own keys.
+
+### `POST /v1/tasks/{task}/verification`
+
+An internal principal with `verification: true` says whether the fix of its own proposal held. It serves
+on the same port, only while some internal principal has `verification: true` (otherwise `404`). `{task}`
+is the **fix** task, whose `spec.origin` names a task the caller created. The body is
+`verdict` (`resolved` or `persisting`), `alert` (`name`, `firingAtMerge`, `firingNow`), `checkedAt`
+(RFC 3339) and `evidence?` (at most 16 KiB, scanned for secrets); at most 32 KiB, unknown fields refused.
+
+| | |
+|---|---|
+| `201` | `{task, verdict, recordedAt}`: the verdict is `status.monitor.verification` of the fix task, which the [post-merge monitor](factory.md#the-post-merge-monitor) reads; the evidence is `status.published.evidence` of the origin task (internal: the origin room is closed by then) |
+| `200` | `{…, duplicate: true}`: the same verdict was already recorded |
+| `400` | `bad_json`, `bad_verdict`, `bad_evidence` |
+| `401`, `403` | `unauthenticated`; `not_permitted` (not an internal principal), `verification_not_allowed`, `not_own_task` (no origin, another principal's origin, or a class with no `monitor.verification`) |
+| `404`, `409` | `no_such_task`; `not_merged`, `window_closed` (past `monitor.verification.within` after the merge), `verdict_already_recorded` (another verdict) |
+| `503` | `tasks_unavailable` |
+
 `agent_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
-principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
+or internal principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
 `bad_*`, `max_cost_*`, `repository_*`, `invalid_draft`, the caps and the `503`s); any other value is
 `other`. The `unauthenticated`, `not_permitted` and `sponsored_only` refusals come before the
 principal is known and are **not counted**.
@@ -641,6 +680,10 @@ ids and closed codes only: never room text, a title, a branch or a message.
 A task event fires on a change of phase only: the factory rewrites a phase's facts (budget, run,
 pull request) without a new event. `repo` is on `task_received` and `task_triaged` only.
 `verdict_posted` is sent once GitHub accepted the comment, not when it was attempted.
+
+`origin` is on **every** event of a room whose task was started from an issue the factory published
+(see [`factory/publish`](factory.md#internal-principals)): the room id of the investigate task. It is
+absent on any other room's events.
 
 `reason`, `limit` and `state` are clipped to closed lists (`webhook.Reasons`, `webhook.Limits`,
 `webhook.States`); anything else is sent as `other`. The factory's room escalations `foreign_room`,
@@ -788,6 +831,7 @@ appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 | `room_progress` | all | `text`, one line of 1–280 characters; one note a minute per run per broker replica, on top of the call limit | `{seq}` | `message{kind: progress}`, delivered to nobody; a refused note over the minute answers `rate_limited: one progress note a minute`. The harness calls it too (#60), through the same identity proxy, so nothing is bypassed: a fixed `Harness (<role>): …` line at the first step and after a commit, push, check run or PR that exited 0, each once, 60 s apart, at most 8. The prefix is a text convention, not an attribution. The minute is shared with the agent's own notes, so the harness's are the guaranteed floor and the model's are best effort. The bounds are per process: the first note of a resumed run starts `(resumed)` |
 | `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (the full 40-hex sha, `git rev-parse HEAD`; an abbreviation is refused); `scope` (the triager only, listed to it alone: `{state: ready or question, task, touches, leave, plan, assumptions, acceptance: [{check, proves}], question}`, at most 4096 bytes as JSON; any other role's is refused. It is listed to every triager, but only a scoper run's is used: an investigate triager leaves it empty, as a malformed one refuses the handoff); `split` (the triager only, listed to it alone, and only beside a `scope` in state `ready`: `{why, children: [2 to 5 scopes in state ready, in the order they merge]}`, at most 21 KiB as JSON) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch, scope?, split?}`; `fromRole` and `branch` from the `AgentRun` |
 | `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` (as `room_handoff`) | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |
+| `room_judge` | implementer | `verdict: met \| not_yet \| impossible`, `reason` (1–1000 bytes), `evidence` (1–20 ids, one line each) | `{seq}` | `message{kind: judge_verdict, verdict, text, evidence}`. The harness calls it (O15) after each completion-judge round, once its own override is applied (a failing check is never `met`); the summary's `status.lastJudge` and `room_changes`' `judge` milestone show it, the reason as untrusted text. It is the judge's reading, not a decision. It is the harness's alone: the tool is listed and callable only on a request carrying the harness client's `X-Agent-Harness: 1` marker, which the model's own MCP client is configured without, so it is not on the model's tool list and its call is refused `not_permitted`. The marker is not a secret: a command the model runs could send it if it can reach the route with the run's credentials |
 
 A refused call is a tool result with `isError: true`, whose text starts with its reason:
 

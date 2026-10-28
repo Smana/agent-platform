@@ -19,6 +19,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/finding"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -204,7 +205,11 @@ func reasons() map[string]string {
 		"run_lost":                  "the run disappeared",
 		"no_pr":                     "the agent opened no pull request",
 		"no_action":                 "the triager found nothing to change",
-		"proposal_ready":            "the triager proposed a change for a maintainer to publish",
+		"no_proposal":               "the triager's run made no proposal to publish",
+		"task_not_ended":            "the task is still running, and its proposal is final only once it ends",
+		"invalid_draft":             "the proposal does not follow the issue template (a title `<area>: <what is wrong>`, then the sections What is wrong, What it should be and Acceptance check)",
+		"redacted":                  "the proposal holds something that looks like a secret, so it stays in the room",
+		"proposal_ready":            "the triager proposed a change for a maintainer to publish (factory/publish)",
 		"merged":                    "the pull request was merged",
 		"pr_closed":                 "the pull request was closed",
 		"text_too_long":             "the issue text is longer than the factory accepts (14 KiB)",
@@ -250,6 +255,7 @@ func reasons() map[string]string {
 		"gate_path":                 "it touches a gate path, so an agent can never merge it; a human must re-author the change",
 		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"class_mismatch":            "the diff is not the class the triage predicted",
+		"class_unarmed":             "the factory does not merge this class: a maintainer reviews and merges it",
 		"file_not_allowed":          "it changes a file outside its class's allowed files",
 		"file_protected":            "it changes a file its class protects",
 		"file_added_or_deleted":     "it changes a file in a way other than editing its content (an add, delete, rename, copy or mode change), which its class does not allow",
@@ -310,12 +316,38 @@ func Started(t *v1alpha1.Task, s runs.Spec, roomsURL string) Event {
 }
 
 // ProposalReady narrates a finished triage on the task's issue: the proposal stays in the room
-// (internal) until a human publishes it (R38).
+// (internal) until a maintainer publishes it (R38). factory/publish has the factory file the
+// sanitised proposal as a new issue; starting that one is a second label (RunLore RA9).
 func ProposalReady(t *v1alpha1.Task, roomsURL string) Event {
 	return Event{Key: "proposal", Body: fmt.Sprintf("Agent factory task `%s`: the triager proposes a change. Read the "+
-		"proposal in the room, %s/r/%s (tailnet only). If it is safe to publish, open a new issue with the text you "+
-		"approve and label it `factory/ready`; nothing else starts from this finding.",
+		"proposal in the room, %s/r/%s (tailnet only). If it is safe to publish, label this issue `factory/publish`: "+
+		"the factory files the proposal as a new issue, which you read before you label it `factory/ready`. "+
+		"Nothing else starts from this finding.",
 		t.Name, strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)}
+}
+
+// Published answers a factory/publish that filed the proposal, or one whose proposal was already
+// filed: the issue's number, and the next step.
+func Published(_, issue int, by string) Event {
+	return Event{Key: fmt.Sprintf("published-%d", issue),
+		Body: fmt.Sprintf("Published as #%d by @%s. Read it, then label it `factory/ready` to start the fix.", issue, by)}
+}
+
+// publishReasons are the prose of a factory/publish refusal that differs from Reason's, which
+// speaks of factory/ready.
+var publishReasons = map[string]string{
+	"unauthorised_labeller": "only a maintainer's factory/publish files a proposal",
+}
+
+// PublishRefused answers a factory/publish the poller will not act on, keyed by the label's time,
+// so each label is answered once. Nothing was created.
+func PublishRefused(n int, reason string, at time.Time) Event {
+	why, ok := publishReasons[reason]
+	if !ok {
+		why = Reason(reason)
+	}
+	return Event{Key: fmt.Sprintf("publish-refused-%s-%d", reason, at.Unix()),
+		Body: fmt.Sprintf("The agent factory did not publish #%d's proposal: %s.", n, why)}
 }
 
 // NeedsAuthor is the bounce (scoper design SC8, "The bounce, on the issue"): one comment naming the
@@ -583,6 +615,22 @@ func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, contr
 		}
 	}
 	return Event{Key: key, Body: body}
+}
+
+// FollowUpMarker is the hidden line that lets the factory find the follow-up issue it filed for
+// task's fix, so a lost write or a timed-out create never files a second one.
+func FollowUpMarker(task string) string {
+	return fmt.Sprintf("<!-- agent-factory follow-up=%s -->", task)
+}
+
+// FollowUpIssue is the stub issue RunLore's persisting verdict files (RA12, R13): the merged pull
+// request, the alert and the origin room. It carries no evidence: the issue is public.
+func FollowUpIssue(task string, pr int, alert, originRoom, roomsURL string) (title, body string) {
+	a := finding.LabelSafe(alert)
+	body = fmt.Sprintf("RunLore reports that the fix in #%d did not hold: alert `%s` is still firing after the merge.\n\n"+
+		"The finding and its evidence stay in the room of the task that proposed it: %s/r/%s (tailnet only).",
+		pr, a, strings.TrimSuffix(roomsURL, "/"), originRoom) + "\n\n" + FollowUpMarker(task)
+	return fmt.Sprintf("RunLore: the fix in #%d did not hold (%s)", pr, a), body
 }
 
 // FollowUpFound says pull request later changed lines pull request m introduced, within the
