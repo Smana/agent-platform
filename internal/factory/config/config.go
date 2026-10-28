@@ -145,6 +145,9 @@ type Config struct {
 	// Ignored are the keys the file sets that this release accepts and ignores, for the binary
 	// to warn about: Parse has no logger.
 	Ignored []Ignored `json:"-"`
+	// Warnings are sentences about a file that loads and that a later release refuses, for the
+	// binary to log: Parse has no logger.
+	Warnings []string `json:"-"`
 }
 
 // Broker is SP2's room-broker system API. Its :8443 is TLS (GP-18): the URL is https and the
@@ -180,6 +183,9 @@ type Repository struct {
 	Schedules    []Schedule       `json:"schedules,omitempty"`
 	Checks       Checks           `json:"checks,omitzero"`
 }
+
+// TestFirstFor reports whether a public task of class starts with the tester (v3 feature 4, TF1).
+func (r *Repository) TestFirstFor(class string) bool { return r.Classes[class].TestFirst }
 
 // EgressProfiles are the registry profiles a run may request on top of github: the AgentRun
 // XRD's enum, which the composition turns into FQDNs.
@@ -364,12 +370,15 @@ type Merge struct {
 	RequiredChecks []string `json:"requiredChecks"`
 	// The checks main's CI runs on push, watched on the merge commit. Not RequiredChecks: a
 	// path-filtered push workflow never reports there, and absent must not mean pending (§6.4).
-	VerifyChecks     []string `json:"verifyChecks"`
-	LeakScanCheck    string   `json:"leakScanCheck"`  // R42: TruffleHog's check run, "Security scanning 🔒"
-	PolicyBotLogin   string   `json:"policyBotLogin"` // the status's expected creator
-	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
-	AutoMergesPerDay int      `json:"autoMergesPerDay"`
-	FixRuns          int32    `json:"fixRuns"`
+	VerifyChecks []string `json:"verifyChecks"`
+	// ContractCheck is the check run that proves a task's test contract (R21, TF7): required on
+	// a task with a contract (row 2b), only reported on one without.
+	ContractCheck    string `json:"contractCheck,omitempty"`
+	LeakScanCheck    string `json:"leakScanCheck"`  // R42: TruffleHog's check run, "Security scanning 🔒"
+	PolicyBotLogin   string `json:"policyBotLogin"` // the status's expected creator
+	MergerLogin      string `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
+	AutoMergesPerDay int    `json:"autoMergesPerDay"`
+	FixRuns          int32  `json:"fixRuns"`
 	// CheckReruns caps the re-runs of a cancelled required check per task; 0 hands it to a human
 	// instead. Above 0 the merger App must hold actions: write.
 	CheckReruns  int32    `json:"checkReruns"`
@@ -983,6 +992,21 @@ func Parse(raw []byte) (*Config, error) {
 	for _, ip := range c.API.InternalPrincipals {
 		c.Budgets.addSponsoredDay(ip.Sponsored)
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.Templates)) {
+		t := c.Templates[name]
+		if i := slices.Index(t.Roles, "tester"); i >= 0 {
+			t.Roles = slices.Delete(slices.Clone(t.Roles), i, i+1)
+			c.Templates[name] = t
+			c.Warnings = append(c.Warnings, fmt.Sprintf("template %s: tester is the test writer since v3 feature 4; dropped from the template, refused from the next minor (TO1)", name))
+		}
+	}
+	for _, r := range c.Repos() {
+		for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
+			if cl := r.Classes[name]; cl.Live && len(cl.HoldoutChecks) == 0 {
+				c.Warnings = append(c.Warnings, fmt.Sprintf("class %s of %s is live without holdoutChecks: refused from the next minor (TO5)", name, r.Name))
+			}
+		}
+	}
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
 	return &c, nil
@@ -1344,8 +1368,13 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 			bad("checks.egress: %q is not one of %v, or is listed twice", p, EgressProfiles)
 		}
 	}
-	if _, ok := r.Classes["review"]; ok {
-		bad("review is the implicit class of everything else; do not declare it")
+	for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
+		if r.Classes[name].TestFirst && r.Merge.ContractCheck == "" {
+			bad("class %s: testFirst needs merge.contractCheck", name)
+		}
+	}
+	if m := r.Merge; m.ContractCheck != "" && slices.Contains(m.RequiredChecks, m.ContractCheck) {
+		bad("merge.contractCheck %q must not be one of merge.requiredChecks: it only reports on a task without a contract (TF7)", m.ContractCheck)
 	}
 	// §1 schedules. The name keys every task it starts, so names are unique across every
 	// repository and C2-shaped;
