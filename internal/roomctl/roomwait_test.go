@@ -5,6 +5,7 @@ package roomctl
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -292,7 +293,17 @@ func TestRoomWaitStopsOnCancel(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 	cancelOf(s, t, 7)
-	g.release <- time.Now() // the next tick comes after the cancel
+	// The relay reads stdin on its own goroutine and handles the cancel inline, before the next
+	// line. A notification the broker has seen therefore proves the cancel has reached the wait's
+	// context; only then does the next tick come.
+	s.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/after-cancel"})
+	for deadline := time.Now().Add(5 * time.Second); !slices.Contains(brokerMethods(b), "notifications/after-cancel"); {
+		if time.Now().After(deadline) {
+			t.Fatal("the cancel never landed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	g.release <- time.Now()
 	// Closing stdin ends Serve only after the wait has returned: that is the sync point.
 	_ = s.in.Close()
 	for m := range s.lines {
@@ -540,3 +551,5 @@ func TestRoomWaitTimeoutAfterFailedPollsSaysSo(t *testing.T) {
 		t.Fatalf("%q", text)
 	}
 }
+
+func brokerMethods(b *mcpBroker) []string { m, _ := b.seen(); return m }
