@@ -617,7 +617,7 @@ func TestMentionOnAOneRepositoryChannel(t *testing.T) {
 	}
 	two := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref", "Smana/cloud-native-ref"}, MaxCostUSD: 2})
 	two.mention("C03", "1729.0001", "<@U0BOT> docs: a title without a repository\nbody")
-	if p := two.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || !strings.Contains(p.text, "for example") || len(two.broker.all()) != 0 {
+	if p := two.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || !strings.Contains(p.text, "Try: `@factory Smana/ai-native-ref docs: a title without a repository`") || len(two.broker.all()) != 0 {
 		t.Fatalf("%q", p.text)
 	}
 }
