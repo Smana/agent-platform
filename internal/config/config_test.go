@@ -433,8 +433,8 @@ func TestHumanLocalModeRefusesMCP(t *testing.T) {
 		t.Fatalf("an empty mcp block: %v", err)
 	}
 	// OIDC mode keeps validating /mcp as before: the refusal is local mode's alone.
-	roomctl := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
-	if _, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n")); err != nil {
+	maku := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
+	if _, err := Load(write(t, maku+"  mcp:\n    enabled: true\n")); err != nil {
 		t.Fatalf("oidc mode with /mcp on: %v", err)
 	}
 }

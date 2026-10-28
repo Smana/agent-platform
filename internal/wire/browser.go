@@ -21,7 +21,7 @@ const (
 	FrameTransient = "transient"
 )
 
-// ClientFrame is a frame from a browser or roomctl: hello first, then acts and pings.
+// ClientFrame is a frame from a browser or maku: hello first, then acts and pings.
 type ClientFrame struct {
 	Type        string          `json:"type"`
 	RoomID      string          `json:"roomId,omitempty"`

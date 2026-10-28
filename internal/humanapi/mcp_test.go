@@ -15,14 +15,14 @@ import (
 	"github.com/Smana/maku/internal/fanout"
 )
 
-// mcpOn serves /mcp, roomctl's client id being "roomctl".
+// mcpOn serves /mcp, maku's client id being "maku".
 func mcpOn(s *Server, _ *fanout.Hub, _ *hubView) {
-	s.MCP, s.RoomctlClient = true, func() string { return "roomctl" }
+	s.MCP, s.RoomctlClient = true, func() string { return "maku" }
 }
 
-// viaRoomctl is user's request with roomctl's token, with extra header pairs.
+// viaRoomctl is user's request with maku's token, with extra header pairs.
 func viaRoomctl(user string, kv ...string) http.Header {
-	return header(user, append([]string{"X-Test-Client", "roomctl"}, kv...)...)
+	return header(user, append([]string{"X-Test-Client", "maku"}, kv...)...)
 }
 
 // post sends body to /mcp with h; it returns the status, the Content-Type and the body.
@@ -79,7 +79,7 @@ func TestMCPIsOffUnlessConfigured(t *testing.T) {
 	}
 }
 
-// Only roomctl's token drives /mcp: a web session never carries its standing there.
+// Only maku's token drives /mcp: a web session never carries its standing there.
 func TestMCPTakesRoomctlTokensOnly(t *testing.T) {
 	e := setup(t, mcpOn)
 	for name, c := range map[string]struct {
@@ -90,7 +90,7 @@ func TestMCPTakesRoomctlTokensOnly(t *testing.T) {
 		"a web session":          {header("dev"), http.StatusForbidden},
 		"another client":         {header("dev", "X-Test-Client", "other"), http.StatusForbidden},
 		"not in an agents group": {viaRoomctl("stranger"), http.StatusForbidden},
-		"roomctl":                {viaRoomctl("dev"), http.StatusOK},
+		"maku":                   {viaRoomctl("dev"), http.StatusOK},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _ := rpc(t, e, c.h, "ping", nil); code != c.want {
@@ -103,11 +103,11 @@ func TestMCPTakesRoomctlTokensOnly(t *testing.T) {
 	}
 	noClient := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.MCP = true })
 	if code, _ := rpc(t, noClient, viaRoomctl("dev"), "ping", nil); code != http.StatusForbidden {
-		t.Fatalf("a broker without a roomctl client admits nobody: %d", code)
+		t.Fatalf("a broker without a maku client admits nobody: %d", code)
 	}
-	same := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.WebClient = func() string { return "roomctl" } })
+	same := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.WebClient = func() string { return "maku" } })
 	if code, _ := rpc(t, same, viaRoomctl("dev"), "ping", nil); code != http.StatusForbidden {
-		t.Fatalf("a roomctl client that is the web client admits nobody: %d", code)
+		t.Fatalf("a maku client that is the web client admits nobody: %d", code)
 	}
 }
 

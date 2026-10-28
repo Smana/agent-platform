@@ -157,7 +157,7 @@ func TestCreateRoomErrorsAreLoggedAndMapped(t *testing.T) {
 	}
 }
 
-// #48: the same values, with no sign-in, for `roomctl configure --url`. None is a secret.
+// #48: the same values, with no sign-in, for `maku configure --url`. None is a secret.
 func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
 	srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Issuer: "https://auth.example",
 		RoomctlClient: func() string { return "3434@agents" }, ProjectID: func() string { return "29184" }}
@@ -172,8 +172,8 @@ func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
 	}
 }
 
-// GET /api/roomctl: what `roomctl configure` needs, and the broker's version for the
-// install snippet to pin roomctl's release, for any agents member. The
+// GET /api/roomctl: what `maku configure` needs, and the broker's version for the
+// install snippet to pin maku's release, for any agents member. The
 // client id is read at use, like the web client's: the IdP mints it per build.
 func TestRoomctlSetup(t *testing.T) {
 	id := "3434@agents"
@@ -203,7 +203,7 @@ func TestRoomctlSetup(t *testing.T) {
 	}
 	id = ""
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
-		t.Fatalf("no roomctl client yet: %d %v", code, out)
+		t.Fatalf("no maku client yet: %d %v", code, out)
 	}
 	srv.RoomctlClient, srv.ProjectID = nil, nil
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" || out["projectID"] != "" {
@@ -213,7 +213,7 @@ func TestRoomctlSetup(t *testing.T) {
 
 // GET /api/roomctl carries the room page's dashboard templates (human.dashboards) to any member,
 // unfilled: the page fills each room's ids. Absent, the field is left out. The unauthenticated
-// /.well-known/roomctl never carries them: roomctl configure has no use for them.
+// /.well-known/roomctl never carries them: maku configure has no use for them.
 func TestRoomctlSetupDashboards(t *testing.T) {
 	links := []Dashboard{{Label: "Room metrics", URL: "https://grafana.example.com/d/agent-room/x?var-room={room}"},
 		{Label: "Run", URL: "https://grafana.example.com/d/agent-run/x?var-run={run}"}}

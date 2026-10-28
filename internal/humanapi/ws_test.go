@@ -1199,7 +1199,7 @@ func TestWebUI(t *testing.T) {
 	for name, tc := range map[string]struct {
 		web  string
 		want bool
-	}{"the web client": {"web", true}, "another client": {"roomctl", false}, "an unreadable client id": {"", false}} {
+	}{"the web client": {"web", true}, "another client": {"maku", false}, "an unreadable client id": {"", false}} {
 		t.Run(name, func(t *testing.T) {
 			e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.WebClient = func() string { return tc.web } })
 			c := dial(t, e, "dev", hello(nil, 0))

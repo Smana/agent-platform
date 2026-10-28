@@ -557,7 +557,7 @@ func TestHumanServer(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	clientFile := filepath.Join(t.TempDir(), "client-id")
 	writeID(t, clientFile, "web-1")
-	roomctlFile := filepath.Join(t.TempDir(), "roomctl-client-id")
+	roomctlFile := filepath.Join(t.TempDir(), "maku-client-id")
 	writeID(t, roomctlFile, "cli-1")
 	projectFile := filepath.Join(t.TempDir(), "project-id")
 	writeID(t, projectFile, "proj-1")
@@ -585,7 +585,7 @@ func TestHumanServer(t *testing.T) {
 	}
 	writeID(t, roomctlFile, "cli-2")
 	if got := s.RoomctlClient(); got != "cli-2" || s.PublicURL != cfg.PublicURL || s.Issuer != humanIssuer || s.ProjectID() != "proj-1" {
-		t.Fatalf("roomctl setup %q %q %q, want the file's current id, the public URL and the issuer", got, s.PublicURL, s.Issuer)
+		t.Fatalf("maku setup %q %q %q, want the file's current id, the public URL and the issuer", got, s.PublicURL, s.Issuer)
 	}
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))

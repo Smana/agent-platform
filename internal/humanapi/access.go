@@ -70,7 +70,7 @@ func (s *Server) gate(ctx context.Context, room *v1alpha1.Room, p authn.Principa
 }
 
 // The X-Rooms-Access header of GET /api/rooms (ruling R21): why a list may be short, about the
-// caller alone, so it tells no room's existence. roomctl turns it into a hint.
+// caller alone, so it tells no room's existence. maku turns it into a hint.
 const (
 	accessHeader     = "X-Rooms-Access"
 	accessOK         = "ok"

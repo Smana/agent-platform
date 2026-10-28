@@ -134,9 +134,9 @@ func Overview(w io.Writer, rows []Row, o Options) error {
 	if hidden > 0 {
 		// The way to list them is the caller's own: a command on a terminal, the tool's argument in
 		// the Markdown an agent reads.
-		how, verb, noun := "roomctl rooms --all shows it", "see it", "room"
+		how, verb, noun := "maku rooms --all shows it", "see it", "room"
 		if hidden > 1 {
-			how, verb, noun = "roomctl rooms --all shows them", "see them", "rooms"
+			how, verb, noun = "maku rooms --all shows them", "see them", "rooms"
 		}
 		if md {
 			how = "call `rooms_list` with `all: true` to " + verb

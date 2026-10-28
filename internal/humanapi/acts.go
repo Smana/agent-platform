@@ -184,7 +184,7 @@ var deliveries = map[string]policy.Action{"none": policy.Chat, "queued": policy.
 // it again under the room's row lock.
 var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrupt": true, "driver_give": true}
 
-// Handle serves one act frame of p in room, through the web UI or roomctl (ruling
+// Handle serves one act frame of p in room, through the web UI or maku (ruling
 // P18), on the connection session, and returns its ack.
 func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
 	via := ViaRoomctl

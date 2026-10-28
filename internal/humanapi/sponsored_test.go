@@ -123,7 +123,7 @@ func TestSponsoredTokenElsewhere(t *testing.T) {
 }
 
 // C28: the instructions are built per principal: a sponsored one is not told of a developer's
-// room page, roomctl or labels, and a human's text is unchanged.
+// room page, maku or labels, and a human's text is unchanged.
 func TestSponsoredInstructions(t *testing.T) {
 	e := setup(t, mcpOn, withSponsored(sponsoredP))
 	text := func(h http.Header) string {
@@ -131,7 +131,7 @@ func TestSponsoredInstructions(t *testing.T) {
 		return fmt.Sprint(out["result"].(map[string]any)["instructions"])
 	}
 	human, sponsored := text(viaRoomctl("dev")), text(bearer("slack-app"))
-	if human != mcpInstructions || sponsored == human || strings.Contains(sponsored, "roomctl") ||
+	if human != mcpInstructions || sponsored == human || strings.Contains(sponsored, "maku") ||
 		!strings.Contains(sponsored, "untrusted: true") {
 		t.Fatalf("human %q, sponsored %q", human, sponsored)
 	}

@@ -19,7 +19,7 @@ import (
 
 // room_tail as an MCP Task (F5): it waits for the room's next events. The broker keeps no task:
 // the task id carries the query, any replica answers tasks/get from the log, and the result is a
-// page read when asked. tasks/result never blocks: roomctl mcp, the only client /mcp admits,
+// page read when asked. tasks/result never blocks: maku mcp, the only client /mcp admits,
 // polls tasks/get first, so every request stays inside oauth2-proxy's 30 s.
 const (
 	tailWait      = 5 * time.Minute // a task's wait when it asks for no ttl
@@ -198,7 +198,7 @@ func (s *Server) tasksGet(ctx context.Context, w http.ResponseWriter, req mcpwir
 }
 
 // tasksResult is tasks/result: the page of a terminal task, tied to it by _meta. A working task is
-// -32600: poll tasks/get, as roomctl mcp does.
+// -32600: poll tasks/get, as maku mcp does.
 func (s *Server) tasksResult(ctx context.Context, w http.ResponseWriter, req mcpwire.Request, p authn.Principal) {
 	ref, ok := taskParams(w, req, p, s.now())
 	if !ok {

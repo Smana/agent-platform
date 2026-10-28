@@ -298,14 +298,14 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
   app.replaceChildren(header, tools, form, table, cliSetup(get2));
 }
 var roomId = /^[a-z2-7]{8}$/;
-function installRoomctl(version) {
+function installMaku(version) {
   const base2 = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "") ? `https://github.com/Smana/maku/releases/download/${version}` : "https://github.com/Smana/maku/releases/latest/download";
   return [
     `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
     `base=${base2}`,
-    `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+    `curl -fsSLO "$base/maku-$os-$arch" && curl -fsSLO "$base/maku.sha256"`,
     `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
-    `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`
+    `grep " maku-$os-$arch$" maku.sha256 | $sum -c - && sudo install -m 0755 "maku-$os-$arch" /usr/local/bin/maku`
   ].join("\n");
 }
 function continued(cmd, flags) {
@@ -315,27 +315,27 @@ function continued(cmd, flags) {
 function setupSteps(c) {
   const installStep = {
     title: "Install",
-    code: installRoomctl(c.version),
+    code: installMaku(c.version),
     before: ["linux and macOS \xB7 amd64 and arm64 \xB7 checked against the release's sha256"]
   };
   if (c.humanMode === "local") {
     return [
       installStep,
-      { title: "Point it at this broker", code: continued("roomctl configure", [["--url", `${c.url}`]]) },
-      { title: "Start a run", code: continued("roomctl run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }
+      { title: "Point it at this broker", code: continued("maku configure", [["--url", `${c.url}`]]) },
+      { title: "Start a run", code: continued("maku run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }
     ];
   }
   if (!c.clientID) return;
   return [
     installStep,
     { title: "Point it at this broker", code: continued(
-      "roomctl configure",
+      "maku configure",
       [["--url", `${c.url}`], ["--issuer", `${c.issuer}`], ["--client-id", c.clientID], ["--project-id", `${c.projectID}`]]
     ) },
     {
       title: "Sign in",
-      code: "roomctl login",
-      after: ["Then: ", { code: "roomctl status" }, " \xB7 ", { code: "roomctl mcp" }, " for your agent's tools"]
+      code: "maku login",
+      after: ["Then: ", { code: "maku status" }, " \xB7 ", { code: "maku mcp" }, " for your agent's tools"]
     }
   ];
 }
@@ -392,7 +392,7 @@ function cliSetup(get2 = fetch) {
   const d = document.createElement("details");
   d.className = "cli-setup";
   const summary = document.createElement("summary");
-  summary.textContent = "Use roomctl from your terminal";
+  summary.textContent = "Use maku from your terminal";
   const card = document.createElement("div");
   card.className = "cli-card";
   const live = document.createElement("span");
@@ -414,7 +414,7 @@ function cliSetup(get2 = fetch) {
       const r = await api("/api/roomctl", {}, get2);
       const c = await r.json();
       const steps = r.ok ? setupSteps(c) : void 0;
-      if (!steps) return say("roomctl is not set up on this broker: it has no roomctl client.");
+      if (!steps) return say("maku is not set up on this broker: it has no maku client.");
       const ol = document.createElement("ol");
       ol.className = "cli-steps";
       ol.append(...steps.map((s, i) => stepItem(s, i + 1, live)));
@@ -513,14 +513,14 @@ var rows = [
 ];
 var params = new URLSearchParams(location.search);
 var cli = params.get("cli");
-var roomctl = {
+var maku = {
   oidc: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "293847561029384756@agents", projectID: "293847560192837465", version: "v0.9.0" },
   local: { url: "http://localhost:8080", humanMode: "local", version: "v0.9.0" },
   none: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "" }
 };
 var get = (async (url) => {
   if (url.startsWith("/api/roomctl")) {
-    return cli && roomctl[cli] ? new Response(JSON.stringify(roomctl[cli])) : new Response(JSON.stringify({}), { status: 404 });
+    return cli && maku[cli] ? new Response(JSON.stringify(maku[cli])) : new Response(JSON.stringify({}), { status: 404 });
   }
   const q = new URL(url, location.origin).searchParams;
   return new Response(JSON.stringify(rows.filter((r) => (!q.has("needs_me") || (r.needsYou ?? 0) > 0) && (!q.get("repo") || r.repository === q.get("repo")))));

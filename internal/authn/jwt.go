@@ -75,7 +75,7 @@ type Claims struct {
 }
 
 // GroupNames is the groups claim our ZITADEL action sets on ID tokens, else the
-// project role names ZITADEL asserts natively, which is what a roomctl access
+// project role names ZITADEL asserts natively, which is what a maku access
 // token may carry instead (accessTokenRoleAssertion). Sorted, never nil.
 func (c *Claims) GroupNames() []string {
 	if len(c.Groups) > 0 {
@@ -318,7 +318,7 @@ type Principal struct {
 	RunID       string
 	Sub         string
 	Groups      []string
-	ClientID    string    // humans: the rooms client, the ID token's azp or roomctl's client_id (ruling P18)
+	ClientID    string    // humans: the rooms client, the ID token's azp or maku's client_id (ruling P18)
 	Expiry      time.Time // a connection lives min(exp, 1 h)
 	AccessToken string    // humans and sponsored principals; forwarded to the factory (C4), never logged
 	// Sponsored marks a sponsored principal's token (factory interfaces F4): a service account's,

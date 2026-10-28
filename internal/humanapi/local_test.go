@@ -124,7 +124,7 @@ func TestLocalHumanOriginPolicy(t *testing.T) {
 		t.Fatalf("local discovery: %s", body)
 	}
 
-	// OIDC: no every-route gate, and discovery says which mode roomctl is talking to.
+	// OIDC: no every-route gate, and discovery says which mode maku is talking to.
 	o := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
 		s.PublicURL, s.Issuer, s.HumanMode = "https://rooms.example", "https://auth.example", config.HumanModeOIDC
 		s.RoomctlClient, s.ProjectID, s.UI = func() string { return "cli" }, func() string { return "proj" }, index

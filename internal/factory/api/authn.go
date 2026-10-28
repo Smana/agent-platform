@@ -17,12 +17,12 @@ import (
 const AudienceSystem = "agent-factory"
 
 // Authenticator maps a run-request to its caller: a human through one of the
-// two rooms clients (the broker forwards rooms-proxy's token, roomctl sends its
+// two rooms clients (the broker forwards rooms-proxy's token, maku sends its
 // own), or an allowlisted system caller on the cluster's issuer.
 type Authenticator struct {
 	Humans      *authn.Verifier   // ZITADEL, offline against its JWKS
 	Groups      policy.Groups     // the two agents groups; a human must be in one (R23)
-	ClientIDs   func() []string   // rooms-proxy (the broker forwards it) and roomctl (the CLI)
+	ClientIDs   func() []string   // rooms-proxy (the broker forwards it) and maku (the CLI)
 	Systems     *authn.Verifier   // the cluster's issuer; nil when no system caller is allowed
 	SystemAllow map[string]string // ServiceAccount sub → system:<component>; empty ships: none exists yet
 	// Sponsored is F4's third branch; nil while api.sponsored is empty.

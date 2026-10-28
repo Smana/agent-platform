@@ -97,7 +97,7 @@ func forkFixture(t *testing.T, funcs *interceptor.Funcs) (*Actor, *actLog, *v1al
 }
 
 // forkAs sends fork as who, an agents member with no standing of their own in
-// the room (a watcher), through roomctl unless web.
+// the room (a watcher), through maku unless web.
 func forkAs(a *Actor, room *v1alpha1.Room, who string, web bool, action Action) wire.ServerFrame {
 	return forkIn(a, room, who, "agents-member", web, action)
 }
@@ -126,7 +126,7 @@ func forkedSpec(t *testing.T, a *Actor, room *v1alpha1.Room, f wire.ServerFrame)
 	return child.Spec
 }
 
-// SC-7, offline: a watcher forks from roomctl (ruling P18 allows it) into a room
+// SC-7, offline: a watcher forks from maku (ruling P18 allows it) into a room
 // they own and drive, with the source's policy, and its first run starts on the
 // new room's branch from the commit at the fork point, on their own token.
 func TestForkCreatesTheForkersRoomAndItsRun(t *testing.T) {

@@ -1,0 +1,14 @@
+add this to .github/mcp.json (maku setup never edits a config):
+
+{
+  "mcpServers": {
+    "factory": {
+      "type": "local",
+      "command": "maku",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}
+
+setup installs the factory-handoff skill in .github/skills

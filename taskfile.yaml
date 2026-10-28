@@ -96,7 +96,7 @@ tasks:
       - git diff --exit-code -- config/crd api
 
   quickstart:
-    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart + roomctl (Linux, docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
+    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart + maku (Linux, docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
     cmds:
       - hack/quickstart/up.sh
 

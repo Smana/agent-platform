@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# quickstart-e2e: this checkout's images and roomctl in kind, a stub model, one run to Succeeded through roomctl run.
+# quickstart-e2e: this checkout's images and maku in kind, a stub model, one run to Succeeded through maku run.
 # Env: GITHUB_TOKEN REPO (the throwaway repo the harness clones). `.github/workflows/quickstart-e2e.yaml`.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -43,7 +43,7 @@ for i in maku-broker maku-bridge maku-run-controller; do
   docker build -f "images/$i/Dockerfile" -t "ghcr.io/smana/$i:$TAG" .
 done
 docker build -f hack/quickstart/stub-model/Dockerfile -t "ghcr.io/smana/stub-model:$TAG" .
-mkdir -p .quickstart/e2e && go build -o .quickstart/e2e/roomctl ./cmd/roomctl
+mkdir -p .quickstart/e2e && go build -o .quickstart/e2e/maku ./cmd/maku
 
 step "cluster and image load"
 hack/quickstart/fetch-runsc.sh
@@ -59,7 +59,7 @@ done
 step "up.sh (it keeps the cluster that exists)"
 export MODEL_API_KEY=stub MODEL=stub MODEL_BASE_URL="$STUB_URL" CHART_REF=charts/maku
 # A non-default port exercises the publicURL/port agreement.
-export ROOMCTL="$PWD/.quickstart/e2e/roomctl" LOCAL_PORT=18080
+export ROOMCTL="$PWD/.quickstart/e2e/maku" LOCAL_PORT=18080
 export UP_HELM_ARGS="--set e2e.unpinnedImages=true --set broker.image.tag=$TAG --set runController.image.tag=$TAG --set runController.images.harness.tag=$TAG --set runController.images.bridge.tag=$TAG"
 hack/quickstart/up.sh
 
@@ -86,22 +86,22 @@ step "stub model"
 kubectl apply -f hack/quickstart/stub-model.yaml.tmpl
 kubectl -n e2e rollout status deploy/stub-model --timeout=120s
 
-step "roomctl run"
-export XDG_CONFIG_HOME="$PWD/.quickstart/e2e/config" # never the developer's roomctl config, never HOME
+step "maku run"
+export XDG_CONFIG_HOME="$PWD/.quickstart/e2e/config" # never the developer's maku config, never HOME
 mkdir -p "$XDG_CONFIG_HOME"
-.quickstart/e2e/roomctl configure --url http://localhost:18080
+.quickstart/e2e/maku configure --url http://localhost:18080
 rc=0
-timeout 900 .quickstart/e2e/roomctl run --repo "$REPO" --task 'quickstart-e2e: change nothing' | tee .quickstart/e2e/run.log || rc=$?
+timeout 900 .quickstart/e2e/maku run --repo "$REPO" --task 'quickstart-e2e: change nothing' | tee .quickstart/e2e/run.log || rc=$?
 room=$(sed -n 's/^room \([a-z2-7]\{8\}\): .*/\1/p' .quickstart/e2e/run.log)
 claim=$(sed -n 's#^run requested: \([a-z0-9-]*\)/\([a-z0-9-]*\)$#\2#p' .quickstart/e2e/run.log)
-((rc == 0)) || { echo "roomctl run exited $rc" >&2; exit 1; }
-[[ -n $room && -n $claim ]] || { echo "roomctl run printed no room or claim" >&2; exit 1; }
+((rc == 0)) || { echo "maku run exited $rc" >&2; exit 1; }
+[[ -n $room && -n $claim ]] || { echo "maku run printed no room or claim" >&2; exit 1; }
 phase=$(kubectl -n agents get agentrun "$claim" -o jsonpath='{.status.phase}')
-[[ $phase == Succeeded ]] || { echo "AgentRun $claim is '$phase', roomctl run said Succeeded" >&2; exit 1; }
+[[ $phase == Succeeded ]] || { echo "AgentRun $claim is '$phase', maku run said Succeeded" >&2; exit 1; }
 
 # lastSeq is not evidence: the Room's Open event and the broker's own run events raise it with no
 # bridge. Only a harness-origin row proves the bridge mirrored the agent into the room.
 n=$(kubectl -n maku exec rooms-1 -c postgres -- psql -d rooms -tAc \
   "select count(*) from events where room_id='$room' and origin='harness'")
 ((${n:-0} > 0)) || { echo "room $room has no harness-origin event" >&2; exit 1; }
-echo "quickstart-e2e OK: roomctl run took $claim to Succeeded; room $room has $n harness events"
+echo "quickstart-e2e OK: maku run took $claim to Succeeded; room $room has $n harness events"

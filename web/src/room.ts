@@ -193,7 +193,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
     });
   };
   const scheduleSummary = () => { refreshTimer ??= setTimeout(loadSummary, 1000); };
-  // The broker's link is <room>#<approvalId> (roomctl status, the summary's needsYou url).
+  // The broker's link is <room>#<approvalId> (maku status, the summary's needsYou url).
   // The card appears once the replay delivers its request, so the landing is retried on
   // each panel refresh until it lands. A viewer who may not decide has a read-only card:
   // the landing shows it and focuses nothing.

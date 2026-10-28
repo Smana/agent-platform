@@ -313,11 +313,11 @@ func TestOverviewNeedPhrasesAndDatedDeadline(t *testing.T) {
 // terminal, the tool's argument in the Markdown an agent reads.
 func TestOverviewFooterByFormat(t *testing.T) {
 	rows := overviewRows()
-	if out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms}); !strings.Contains(out, "`roomctl rooms --all`") && !strings.Contains(out, "roomctl rooms --all shows it") {
+	if out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms}); !strings.Contains(out, "`maku rooms --all`") && !strings.Contains(out, "maku rooms --all shows it") {
 		t.Errorf("Text footer:\n%s", out)
 	}
 	out := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
-	if !strings.Contains(out, "1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") || strings.Contains(out, "roomctl") {
+	if !strings.Contains(out, "1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") || strings.Contains(out, "maku") {
 		t.Errorf("Markdown footer:\n%s", out)
 	}
 }

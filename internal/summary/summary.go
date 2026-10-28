@@ -2,7 +2,7 @@
 
 // Package summary folds a room's log into the room's top layer (spec 2026-10-08): status,
 // needs-you, actions and the agents' progress notes. It is pure: the web page and
-// roomctl status render the same object, so every view agrees.
+// maku status render the same object, so every view agrees.
 package summary
 
 import (
@@ -17,7 +17,7 @@ import (
 	"github.com/Smana/maku/internal/policy"
 )
 
-// APIVersion is the contract roomctl and the web page render against.
+// APIVersion is the contract maku and the web page render against.
 const APIVersion = "summary/v1"
 
 // maxNotes bounds the notes a summary returns.
@@ -138,7 +138,7 @@ type Need struct {
 type Action struct {
 	Kind string `json:"kind"` // queue | steer | stop
 	What string `json:"what"`
-	CLI  string `json:"cli,omitempty"` // steer has none: roomctl never steers (P18)
+	CLI  string `json:"cli,omitempty"` // steer has none: maku never steers (P18)
 }
 
 // Summary is the summary/v1 object.
@@ -418,7 +418,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
-			CLI: fmt.Sprintf("roomctl post %s --queue '<text>'", room)})
+			CLI: fmt.Sprintf("maku post %s --queue '<text>'", room)})
 	}
 	// Web-only in the matrix (P18), and only while an agent is present: the facts' run outlives it.
 	if policy.Allowed(sub, policy.Steer) && len(st.Agents) > 0 {

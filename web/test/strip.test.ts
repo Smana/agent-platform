@@ -329,7 +329,7 @@ describe("the title strip", () => {
       expect(h.querySelector(".chip-run")?.textContent).toBe("implementer · ikely2yk · 4 min");
     });
   });
-  it("shows the last verdict, as roomctl status does", () => {
+  it("shows the last verdict, as maku status does", () => {
     const { h, strip } = mount();
     strip.update(input({ summary: summary({ lastVerdict: { by: "reviewer", verdict: "changes_requested", at: "2026-10-04T13:00:00Z" } }) }));
     expect(h.querySelector(".chip-verdict")?.textContent).toBe("last verdict: reviewer changes_requested");
@@ -445,7 +445,7 @@ describe("the strip on a phone", () => {
 });
 
 describe("formatting", () => {
-  // The same boundaries as roomctl's tokens() (internal/roomctl TestBudgetTextBoundaries).
+  // The same boundaries as maku's tokens() (internal/maku TestBudgetTextBoundaries).
   it.each([[0, "0"], [999, "999"], [1000, "1 k"], [189093, "189 k"], [999_499, "999 k"], [999_500, "1 M"], [1_000_000, "1 M"],
     [1_500_000, "1.5 M"], [4000000, "4 M"]])("fmtTokens(%d) = %s", (n, s) => expect(fmtTokens(n)).toBe(s));
   it("reads a zero limit without a percentage", () => {

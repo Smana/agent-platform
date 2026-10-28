@@ -7,9 +7,9 @@ const oidc = { url: "https://rooms.priv.example", issuer: "https://auth.example"
 const install = [
   `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
   `base=https://github.com/Smana/maku/releases/download/v0.7.0`,
-  `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+  `curl -fsSLO "$base/maku-$os-$arch" && curl -fsSLO "$base/maku.sha256"`,
   `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
-  `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
+  `grep " maku-$os-$arch$" maku.sha256 | $sum -c - && sudo install -m 0755 "maku-$os-$arch" /usr/local/bin/maku`,
 ].join("\n");
 
 async function open(body: object) {
@@ -35,7 +35,7 @@ afterEach(() => { vi.useRealTimers(); stubClipboard(undefined); });
 
 describe("the CLI setup fold", () => {
   it("says what it is for in its summary", () => {
-    expect(cliSetup().querySelector("summary")?.textContent).toBe("Use roomctl from your terminal");
+    expect(cliSetup().querySelector("summary")?.textContent).toBe("Use maku from your terminal");
   });
 
   it("reads as three numbered steps on an OIDC broker: install, point it at the broker, sign in", async () => {
@@ -44,13 +44,13 @@ describe("the CLI setup fold", () => {
     expect(titles).toEqual(["Install", "Point it at this broker", "Sign in"]);
     expect(code).toEqual([
       install,
-      "roomctl configure \\\n  --url https://rooms.priv.example \\\n  --issuer https://auth.example \\\n  --client-id 3434@agents \\\n  --project-id 29184",
-      "roomctl login",
+      "maku configure \\\n  --url https://rooms.priv.example \\\n  --issuer https://auth.example \\\n  --client-id 3434@agents \\\n  --project-id 29184",
+      "maku login",
     ]);
     expect(notes[0]).toEqual(["linux and macOS · amd64 and arm64 · checked against the release's sha256"]);
-    expect(notes[2]).toEqual(["Then: roomctl status · roomctl mcp for your agent's tools"]);
+    expect(notes[2]).toEqual(["Then: maku status · maku mcp for your agent's tools"]);
     expect([...d.querySelectorAll(".cli-step")[2].querySelectorAll(".cli-note code")].map((c) => c.textContent))
-      .toEqual(["roomctl status", "roomctl mcp"]);
+      .toEqual(["maku status", "maku mcp"]);
   });
 
   it("splits configure into one flag a line, each continued with a backslash", async () => {
@@ -66,8 +66,8 @@ describe("the CLI setup fold", () => {
     expect(titles).toEqual(["Install", "Point it at this broker", "Start a run"]);
     expect(code).toEqual([
       install,
-      "roomctl configure --url http://localhost:8080",
-      "roomctl run \\\n  --repo <owner/name> \\\n  --task '<what the run should do>'",
+      "maku configure --url http://localhost:8080",
+      "maku run \\\n  --repo <owner/name> \\\n  --task '<what the run should do>'",
     ]);
   });
 
@@ -85,10 +85,10 @@ describe("the CLI setup fold", () => {
     expect(code[1]).toContain(`--url <img src=x onerror="alert(1)"> \\`);
   });
 
-  it("keeps today's message, in the card, when this broker has no roomctl client", async () => {
+  it("keeps today's message, in the card, when this broker has no maku client", async () => {
     const { d, steps } = await open({ url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "" });
     expect(steps).toHaveLength(0);
-    expect(d.querySelector(".cli-card")?.textContent).toBe("roomctl is not set up on this broker: it has no roomctl client.");
+    expect(d.querySelector(".cli-card")?.textContent).toBe("maku is not set up on this broker: it has no maku client.");
     expect(d.querySelector("button")).toBeNull();
   });
 });

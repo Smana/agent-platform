@@ -12,7 +12,7 @@ const (
 )
 
 // Step is the one thing a human does for a waiting room, and where. It is the same sentence in the
-// room page, roomctl and the MCP tools.
+// room page, maku and the MCP tools.
 type Step struct {
 	Kind  string `json:"kind"`
 	Label string `json:"label"`

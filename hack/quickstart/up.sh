@@ -3,7 +3,7 @@
 # task quickstart: kind + Cilium + gVisor + cert-manager + CNPG + maku. Safe to re-run.
 # Env: MODEL_API_KEY GITHUB_TOKEN REPO (required); MODEL MODEL_BASE_URL CHART_REF AP_VERSION;
 #      LOCAL_PORT (default 8080: the port you forward; the broker's publicURL follows it);
-#      ROOMCTL (a roomctl binary to use instead of the release's; required when UP_HELM_ARGS sets the image tags);
+#      ROOMCTL (a maku binary to use instead of the release's; required when UP_HELM_ARGS sets the image tags);
 #      ALLOW_UNSANDBOXED=1 (exactly 1: run agents under the default runtime, no gVisor; each run's room
 #      then shows a Not sandboxed banner);
 #      UP_HELM_ARGS (extra `helm upgrade --install` args for the chart, word-split; setting any
@@ -61,18 +61,18 @@ if [[ ${UP_HELM_ARGS:-} != *image*tag* ]]; then
 fi
 helm template ap "$CHART" -n "$NS" "${chart_args[@]}" "${extra[@]}" >/dev/null
 
-step "roomctl"
+step "maku"
 mkdir -p .quickstart/bin
 if [[ -n ${ROOMCTL:-} ]]; then
-  install -m 0755 "$ROOMCTL" .quickstart/bin/roomctl
+  install -m 0755 "$ROOMCTL" .quickstart/bin/maku
 elif [[ -n ${AP_VERSION:-} ]]; then
-  qs_fetch_roomctl "$AP_VERSION" .quickstart/bin/roomctl
+  qs_fetch_roomctl "$AP_VERSION" .quickstart/bin/maku
 else
-  echo "set ROOMCTL=<a roomctl built from this checkout>: UP_HELM_ARGS sets the images, so there is no release to take roomctl from" >&2
+  echo "set ROOMCTL=<a maku built from this checkout>: UP_HELM_ARGS sets the images, so there is no release to take maku from" >&2
   exit 1
 fi
-.quickstart/bin/roomctl help | grep -q '^  run --repo' ||
-  { echo ".quickstart/bin/roomctl has no run command: use a release that has it (AP_VERSION) or ROOMCTL" >&2; exit 1; }
+.quickstart/bin/maku help | grep -q '^  run --repo' ||
+  { echo ".quickstart/bin/maku has no run command: use a release that has it (AP_VERSION) or ROOMCTL" >&2; exit 1; }
 
 step "gVisor binaries ($GVISOR_RELEASE)"
 hack/quickstart/fetch-runsc.sh
@@ -153,9 +153,9 @@ cat <<MSG
 Ready. In a second terminal, keep the broker forwarded (local mode answers this port only):
   export KUBECONFIG=$PWD/.quickstart/kubeconfig
   kubectl -n $NS port-forward deploy/room-broker $LOCAL_PORT:8080
-Then, here (XDG_CONFIG_HOME keeps roomctl's quickstart config apart from any other):
+Then, here (XDG_CONFIG_HOME keeps maku's quickstart config apart from any other):
   export KUBECONFIG=$PWD/.quickstart/kubeconfig XDG_CONFIG_HOME=$PWD/.quickstart/config PATH=$PWD/.quickstart/bin:\$PATH
-  roomctl configure --url http://localhost:$LOCAL_PORT
-  roomctl run --repo $REPO --task 'Fix a typo in the README'
+  maku configure --url http://localhost:$LOCAL_PORT
+  maku run --repo $REPO --task 'Fix a typo in the README'
 The room page: http://localhost:$LOCAL_PORT
 MSG

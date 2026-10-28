@@ -97,8 +97,8 @@ grep -q "@rooms-rw.\${ns}.svc" "$qs/db.sh" || bad "db.sh does not point the brok
 {
 grep -qF 'deploy/room-broker $LOCAL_PORT:8080' "$qs/up.sh" || bad "up.sh port-forward command"
 grep -qF 'broker.publicURL=http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh does not set publicURL from LOCAL_PORT"
-grep -qF 'roomctl configure --url http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh's configure line does not use LOCAL_PORT"
-grep -qF 'roomctl run --repo $REPO' "$qs/up.sh" || bad "up.sh does not print roomctl run"
+grep -qF 'maku configure --url http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh's configure line does not use LOCAL_PORT"
+grep -qF 'maku run --repo $REPO' "$qs/up.sh" || bad "up.sh does not print maku run"
 grep -qF 'qs_platform_ok "$(uname -s)"' "$qs/up.sh" || bad "up.sh does not stop on an unproven platform"
 }
 [[ $(q ConfigMap '.[] | select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .publicURL') == http://localhost:8080 ]] || bad "default publicURL is not http://localhost:8080"

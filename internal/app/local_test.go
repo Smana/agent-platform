@@ -66,7 +66,7 @@ func TestAuthenticatorsLocal(t *testing.T) {
 }
 
 // Local mode tells the listener what serves it: the fixed groups, the origin the every-route CSRF
-// gate compares against, and the mode roomctl's discovery reports. OIDC keeps the configured groups
+// gate compares against, and the mode maku's discovery reports. OIDC keeps the configured groups
 // and leaves the gate off.
 func TestHumanServerModes(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)

@@ -78,26 +78,26 @@ qs_secret() {
   QS_NS=$ns QS_NAME=$name QS_TYPE=$type yq -n "$expr"
 }
 
-# qs_fetch_roomctl VERSION DEST: the release's roomctl for this Linux machine, checked against the
-# release's roomctl.sha256, installed 0755 at DEST.
+# qs_fetch_roomctl VERSION DEST: the release's maku for this Linux machine, checked against the
+# release's maku.sha256, installed 0755 at DEST.
 qs_fetch_roomctl() {
   local arch tmp base rc=0
   case $(uname -m) in
   x86_64) arch=amd64 ;;
   aarch64 | arm64) arch=arm64 ;;
-  *) echo "no roomctl release for $(uname -m)" >&2; return 1 ;;
+  *) echo "no maku release for $(uname -m)" >&2; return 1 ;;
   esac
   base="https://github.com/Smana/maku/releases/download/$1"
   tmp=$(mktemp -d)
   if ! {
-    curl -fsSL -o "$tmp/roomctl-linux-$arch" "$base/roomctl-linux-$arch" &&
-      curl -fsSL -o "$tmp/roomctl.sha256" "$base/roomctl.sha256" &&
-      (cd "$tmp" && grep " roomctl-linux-$arch\$" roomctl.sha256 | sha256sum -c - >/dev/null) &&
-      install -m 0755 "$tmp/roomctl-linux-$arch" "$2"
+    curl -fsSL -o "$tmp/maku-linux-$arch" "$base/maku-linux-$arch" &&
+      curl -fsSL -o "$tmp/maku.sha256" "$base/maku.sha256" &&
+      (cd "$tmp" && grep " maku-linux-$arch\$" maku.sha256 | sha256sum -c - >/dev/null) &&
+      install -m 0755 "$tmp/maku-linux-$arch" "$2"
   }; then
     rc=1
   fi
   rm -rf "$tmp" # this function's own temp dir
-  ((rc == 0)) || echo "could not fetch roomctl $1 for linux-$arch (or its checksum did not match)" >&2
+  ((rc == 0)) || echo "could not fetch maku $1 for linux-$arch (or its checksum did not match)" >&2
   return "$rc"
 }

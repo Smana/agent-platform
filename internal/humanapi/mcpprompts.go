@@ -46,7 +46,7 @@ func refText(s string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// mcpPrompts are the prompts a human's roomctl is offered; a sponsored principal has none.
+// mcpPrompts are the prompts a human's maku is offered; a sponsored principal has none.
 var mcpPrompts = []mcpPrompt{
 	{
 		name: "handoff", description: "Hand a side task to the agent factory as one issue.",
@@ -63,7 +63,7 @@ var mcpPrompts = []mcpPrompt{
 		args: []promptArg{{"room", "a room id, #<issue>, PR #<n> or an issue number; default: your most recently updated room"}},
 		text: func(a map[string]string) string {
 			if r := refText(a["room"]); r != "" {
-				return "Call `room_summary` with room `" + r + "` (as written: roomctl resolves #<issue>, PR #<n> and numbers, and says when several rooms match; ask the developer then, never guess), and show its text as it is."
+				return "Call `room_summary` with room `" + r + "` (as written: maku resolves #<issue>, PR #<n> and numbers, and says when several rooms match; ask the developer then, never guess), and show its text as it is."
 			}
 			return "Find the caller's most recently updated room (from `rooms_list`), call `room_summary` for it, and show its text as it is."
 		},

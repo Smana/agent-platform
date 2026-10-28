@@ -19,7 +19,7 @@ import (
 
 // The tail's bounds: a page is what one tools/call returns.
 const (
-	tailFirst  = 50        // events a tail without a cursor starts with, as roomctl watch
+	tailFirst  = 50        // events a tail without a cursor starts with, as maku watch
 	tailMax    = 100       // events a page holds
 	tailBudget = 256 << 10 // payload bytes a page holds past its first event
 	tailScan   = 2000      // events one page scans for its kinds
@@ -116,7 +116,7 @@ func (s *Server) roomSummaryTool(ctx context.Context, p authn.Principal, args js
 	return viewResult{text: text.String(), data: sum}, nil
 }
 
-// room_tail is the room's events after a cursor, a page at a time: what roomctl watch prints.
+// room_tail is the room's events after a cursor, a page at a time: what maku watch prints.
 func (s *Server) roomTail(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	a, after, err := tailArguments(args)
 	if err != nil {
@@ -200,7 +200,7 @@ func (s *Server) coarse(room *v1alpha1.Room, sealed bool) string {
 	return summary.Coarse(task, phase, s.nextRun(room.Name))
 }
 
-// parseCursor reads seq:N, or N, as roomctl status --after does.
+// parseCursor reads seq:N, or N, as maku status --after does.
 func parseCursor(c string) (int64, bool) {
 	n, err := strconv.ParseInt(strings.TrimPrefix(c, "seq:"), 10, 64)
 	return n, err == nil && n >= 0

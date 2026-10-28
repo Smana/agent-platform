@@ -413,7 +413,7 @@ func TestQueueAndPromote(t *testing.T) {
 	}
 }
 
-// Ruling P18: from a CLI session (roomctl), nobody steers, interrupts, promotes,
+// Ruling P18: from a CLI session (maku), nobody steers, interrupts, promotes,
 // moves the driver token or decides, whatever their standing; they read, chat,
 // queue and fork. Each refused act is accepted from the web UI, so only the
 // web-UI gate refuses it.
@@ -469,7 +469,7 @@ func TestCLISessionsNeverSteer(t *testing.T) {
 				want = "not_permitted"
 			}
 			if f := send(false); f.Rejected != want {
-				t.Fatalf("from roomctl: %+v, want %q", f, want)
+				t.Fatalf("from maku: %+v, want %q", f, want)
 			}
 		})
 	}

@@ -616,7 +616,7 @@ type API struct {
 	Repositories []string `json:"repositories"` // OD-6: cloud-native-ref only
 	HumanIssuer  string   `json:"humanIssuer"`
 	HumanJWKS    string   `json:"humanJWKS"`
-	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
+	// Files holding the rooms-proxy and maku client ids (from agents-secrets).
 	ClientIDFiles []string `json:"clientIDFiles"`
 	// ProjectIDFile holds the ZITADEL project id a sponsored token's aud must hold, as the broker's
 	// human.projectIDFile pins the human path; required while api.sponsored is non-empty.
@@ -1292,7 +1292,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if len(c.API.ClientIDFiles) == 0 {
-		bad("api.clientIDFiles is empty: the rooms-proxy and roomctl client ids name the human callers")
+		bad("api.clientIDFiles is empty: the rooms-proxy and maku client ids name the human callers")
 	}
 	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
 		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")

@@ -16,7 +16,7 @@ import (
 	"github.com/Smana/maku/internal/fanout"
 )
 
-// F3: the tools mirror roomctl's standing; none labels, approves, steers, stops or starts work.
+// F3: the tools mirror maku's standing; none labels, approves, steers, stops or starts work.
 func TestMCPToolList(t *testing.T) {
 	e := setup(t, mcpOn)
 	_, out := rpc(t, e, viaRoomctl("dev"), "tools/list", nil)

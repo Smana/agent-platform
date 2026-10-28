@@ -86,7 +86,7 @@ type HumanConfig struct {
 	// Access turns on D7: a member sees a room only if they can read its repository
 	// on GitHub. Unset, rooms are visible to admins only, never to every member.
 	Access *AccessConfig `json:"access,omitempty"`
-	// MCP serves /mcp, the MCP server roomctl mcp relays (factory interfaces F2). Off unless
+	// MCP serves /mcp, the MCP server maku mcp relays (factory interfaces F2). Off unless
 	// enabled: v3 ships each feature behind a switch (D4).
 	MCP MCPConfig `json:"mcp,omitzero"`
 	// Dashboards are the room page's links out, such as Grafana's, filled with the room's ids.
@@ -487,7 +487,7 @@ func (h HumanConfig) validate(system []string) []error {
 			{"human.issuer", h.Issuer != "", "the loopback user is not an IdP principal"},
 			{"human.jwksURL", h.JWKSURL != "", "there is no token to verify"},
 			{"human.clientIDFile", h.ClientIDFile != "", "there is no OAuth client"},
-			{"human.roomctlClientIDFile", h.RoomctlClientIDFile != "", "there is no roomctl client"},
+			{"human.roomctlClientIDFile", h.RoomctlClientIDFile != "", "there is no maku client"},
 			{"human.projectIDFile", h.ProjectIDFile != "", "no token carries a project audience"},
 			{"human.access", h.Access != nil, "the local user is an admin, and D7 gates members only"},
 			{"human.slackLink", h.SlackLink != nil, "a link code names a sponsored principal and a GitHub link, neither of which mode local has"},
@@ -496,7 +496,7 @@ func (h HumanConfig) validate(system []string) []error {
 				errs = append(errs, fmt.Errorf("%s: mode local takes no %s: %s", f.name, strings.TrimPrefix(f.name, "human."), f.why))
 			}
 		}
-		// The MCP server is the OIDC viewers': /mcp takes roomctl's tokens, and its sponsored callers
+		// The MCP server is the OIDC viewers': /mcp takes maku's tokens, and its sponsored callers
 		// and sessionStart's GitHub check name principals and repositories local mode does not have.
 		if h.MCP.Enabled {
 			errs = append(errs, errors.New("human.mcp.enabled: mode local serves no /mcp: the loopback user has no token to present"))
@@ -534,7 +534,7 @@ func (h HumanConfig) validate(system []string) []error {
 		errs = append(errs, errors.New("human.groups: admin and member must differ"))
 	}
 	if h.MCP.Enabled && h.RoomctlClientIDFile == "" {
-		errs = append(errs, errors.New("human.mcp.enabled: needs human.roomctlClientIDFile, since /mcp takes roomctl's tokens only"))
+		errs = append(errs, errors.New("human.mcp.enabled: needs human.roomctlClientIDFile, since /mcp takes maku's tokens only"))
 	}
 	if len(h.MCP.Sponsored) > 0 && !h.MCP.Enabled {
 		errs = append(errs, errors.New("human.mcp.sponsored needs human.mcp.enabled"))

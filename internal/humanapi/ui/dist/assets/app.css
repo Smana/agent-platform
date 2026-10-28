@@ -693,7 +693,7 @@ table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collaps
 .rooms .task-link:hover, .rooms .task-link:focus-visible { text-decoration: underline; }
 .rooms .task-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
 .rooms .room-row a:not(.task-link), .rooms .room-row button { position: relative; z-index: 1; }
-/* The room id is copied into roomctl: above the link too, so it selects and a click stays put. */
+/* The room id is copied into maku: above the link too, so it selects and a click stays put. */
 .rooms td.room-id { position: relative; z-index: 1; cursor: text; }
 /* The strip's phase chip (.page-header .chip), on the card's tokens; 50%, not the strip's 45%,
    so its border still holds 3:1 on a hovered row. */

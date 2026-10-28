@@ -18,7 +18,7 @@ func TestLocal(t *testing.T) {
 	r.Host = "localhost:8080"
 	p, err := l.Authenticate(r)
 	if err != nil || p.ID != LocalPrincipal || len(p.Groups) != 2 || p.ClientID != LocalClientID || !p.Expiry.After(time.Now()) {
-		t.Fatalf("no Origin (curl, roomctl): %+v %v", p, err)
+		t.Fatalf("no Origin (curl, maku): %+v %v", p, err)
 	}
 	r.Header.Set("Origin", "http://localhost:8080")
 	if _, err := l.Authenticate(r); err != nil {

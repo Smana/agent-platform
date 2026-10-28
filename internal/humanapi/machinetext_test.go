@@ -31,7 +31,7 @@ func TestMachineText(t *testing.T) {
 	}
 }
 
-// F8: text from roomctl or the MCP server is stored sanitised and labelled, the queue row
+// F8: text from maku or the MCP server is stored sanitised and labelled, the queue row
 // included; the web UI's is stored as typed.
 func TestMachineSentTextIsLabelled(t *testing.T) {
 	queue := func(via, text string) (wire.ServerFrame, *actLog) {
@@ -64,7 +64,7 @@ func TestMachineSentTextIsLabelled(t *testing.T) {
 	if f, _ := queue(ViaMCP, strings.Repeat("a", envelope.MaxHumanMessage-10)); f.Rejected != "too_large" {
 		t.Fatalf("over 16 KiB once labelled: %+v", f)
 	}
-	// roomctl's WebSocket acts go through Handle, which names roomctl for every client but the web UI.
+	// maku's WebSocket acts go through Handle, which names maku for every client but the web UI.
 	a, log, room := fixture("human:own")
 	raw, _ := json.Marshal(Action{Kind: "message", Delivery: "none", Text: "hi"})
 	p := authn.Principal{Kind: envelope.ActorHuman, ID: "human:col", Groups: []string{"agents-member"}}
