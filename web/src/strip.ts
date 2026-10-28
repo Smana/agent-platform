@@ -88,7 +88,7 @@ function statusOf(i: StripInput, t: number): RunStatus {
   const st = i.summary?.status;
   const run = st?.run;
   return statusLine({
-    state: st?.state || (i.sealed || i.sealedBy ? "stopped" : undefined), phase: st?.phase || i.phase, reason: st?.reason,
+    state: st?.state || (i.sealed || i.sealedBy ? "stopped" : undefined), phase: st?.phase || i.phase, reasonCode: st?.reasonCode,
     runRole: run?.role, runStartedAt: run?.startedAt, runPresent: !!run && (i.running ?? !run.endedAt),
     pr: st?.pr?.number, issue: st?.issue?.number,
     mine: i.approvals?.mine ?? 0, others: Math.max(0, (i.approvals?.total ?? 0) - (i.approvals?.mine ?? 0)),

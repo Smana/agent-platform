@@ -121,6 +121,41 @@ func (s *Store) TaskStateAt(ctx context.Context, roomID string, after, upTo int6
 	return p, nil
 }
 
+// taskReasonsSQL is lastTaskStateSQL for many rooms at once, each above its own bound: the
+// lateral subquery keeps the events_task_facts index's predicate verbatim.
+const taskReasonsSQL = `SELECT r.id, coalesce(t.payload->>'reason', '')
+	FROM unnest($1::text[], $2::bigint[]) AS r(id, after)
+	CROSS JOIN LATERAL (SELECT payload FROM events
+		WHERE room_id = r.id AND type = 'state_changed' AND payload->>'kind' = 'task' AND seq > r.after
+		ORDER BY seq DESC LIMIT 1) t`
+
+// TaskReasons is the reason code of each room's last task facts above its bound in after (a
+// fork's fork point, as in LastTaskState), for the rooms that have facts there. One query: the
+// room list reads it for every failed row it shows.
+func (s *Store) TaskReasons(ctx context.Context, after map[string]int64) (map[string]string, error) {
+	out := map[string]string{}
+	if len(after) == 0 {
+		return out, nil
+	}
+	ids, seqs := make([]string, 0, len(after)), make([]int64, 0, len(after))
+	for id, seq := range after {
+		ids, seqs = append(ids, id), append(seqs, seq)
+	}
+	rows, err := s.pool.Query(ctx, taskReasonsSQL, ids, seqs)
+	if err != nil {
+		return nil, fmt.Errorf("store: task reasons: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, reason string
+		if err := rows.Scan(&id, &reason); err != nil {
+			return nil, fmt.Errorf("store: task reasons: %w", err)
+		}
+		out[id] = reason
+	}
+	return out, rows.Err()
+}
+
 // LastEventAt is when each room's log last moved, for the rooms in ids that exist. One query:
 // the room list reads it for every row it shows.
 func (s *Store) LastEventAt(ctx context.Context, ids []string) (map[string]time.Time, error) {

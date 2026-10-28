@@ -11,7 +11,7 @@ import (
 
 // roomRowOnlyFields are the roomRow fields the text view deliberately does not show: the JSON has
 // them, the table does not.
-var roomRowOnlyFields = []string{"Owner", "Driver", "DataClass", "You"}
+var roomRowOnlyFields = []string{"Owner", "Driver", "DataClass", "You", "Status"}
 
 // A field added to roomRow or to roomview.Row without its twin fails here: every roomRow field is
 // carried by name or listed as JSON-only, and every Row field is filled by the conversion.

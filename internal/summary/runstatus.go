@@ -5,8 +5,43 @@ package summary
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
+
+	"github.com/Smana/maku/internal/policy"
 )
+
+// ApprovalCounts is a room's live approvals as its status line counts them for a viewer.
+type ApprovalCounts struct {
+	Mine   int `json:"mine"`   // the viewer may decide them
+	Others int `json:"others"` // only others may
+}
+
+// Decidable reports whether web, the viewer as the web UI, may decide an approval its prompters
+// prompted: the Decide right, and under four-eyes not one of them (OD-16), as the page's
+// decideStatus and the act's check say.
+func Decidable(web policy.Subject, fourEyes bool, prompters []string) bool {
+	return policy.Allowed(web, policy.Decide) && (!fourEyes || !slices.Contains(prompters, web.ID))
+}
+
+// CountApprovals counts the live approvals of st for web: one past its deadline that the sweep
+// has not decided is none, as needsYou drops it. nil when none is live.
+func (st State) CountApprovals(web policy.Subject, fourEyes bool, now time.Time) *ApprovalCounts {
+	var c ApprovalCounts
+	for _, a := range st.Pending {
+		switch {
+		case !a.ExpiresAt.IsZero() && now.After(a.ExpiresAt):
+		case Decidable(web, fourEyes, a.Prompters):
+			c.Mine++
+		default:
+			c.Others++
+		}
+	}
+	if c == (ApprovalCounts{}) {
+		return nil
+	}
+	return &c
+}
 
 // Run status kinds: the first thing a room says, so a reader sees at a glance where it stands.
 // web/src/run-status.ts mirrors this file; internal/summary/runstatus_cases.json is the
@@ -37,19 +72,20 @@ func (s RunStatus) String() string { return s.Icon + " " + s.Words }
 
 // StatusIn is what StatusLine reads, all of it from the summary and the viewer's approvals.
 type StatusIn struct {
-	State, Phase, Reason string
-	RunRole              string    // the run's role
-	RunStart             time.Time // zero when unknown
-	RunPresent           bool      // an agent is present now
-	PR, Issue            int
-	Mine, Others         int // live approvals the viewer may decide, and those only others may
-	Step                 *Step
-	Now                  time.Time
+	State, Phase string
+	ReasonCode   string    // the factory's raw reason code (the summary's reasonCode), never its prose
+	RunRole      string    // the run's role
+	RunStart     time.Time // zero when unknown
+	RunPresent   bool      // an agent is present now
+	PR, Issue    int
+	Mine, Others int // live approvals the viewer may decide, and those only others may
+	Step         *Step
+	Now          time.Time
 }
 
 var roleRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
 
-// failureWords is why a task failed or was handed back, in words, by the factory's reason code.
+// failureWords is why a task failed, in words, by the factory's reason code.
 func failureWords() map[string]string {
 	return map[string]string{
 		"budget-task": "budget reached", "resume_budget": "budget reached", "ci_red": "CI stayed red",
@@ -77,7 +113,7 @@ func Elapsed(from, now time.Time) string {
 func StatusLine(in StatusIn) RunStatus {
 	s := func(kind, icon, words string) RunStatus { return RunStatus{kind, icon, words} }
 	fail := func() RunStatus {
-		w := failureWords()[in.Reason]
+		w := failureWords()[in.ReasonCode]
 		switch {
 		case w != "":
 		case in.Phase == "Rejected":
@@ -111,8 +147,6 @@ func StatusLine(in StatusIn) RunStatus {
 		return s(KindWaitingPR, "⏳", fmt.Sprintf("Waiting — review and merge PR #%d", in.PR))
 	case in.Step != nil && in.Step.Kind == StepAnswer && in.Issue > 0:
 		return s(KindWaiting, "⏳", fmt.Sprintf("Waiting — answer the question on issue #%d", in.Issue))
-	case in.Phase == "Escalated" && failureWords()[in.Reason] != "":
-		return fail()
 	case in.Phase == "Escalated":
 		return s(KindWaiting, "⏳", "Waiting — a maintainer decides")
 	case in.State == StateWaiting:
@@ -146,7 +180,7 @@ func StatusLine(in StatusIn) RunStatus {
 
 // StatusOf is the status of a summary, as the caller holds it: now is the clock the run's age reads.
 func StatusOf(s Summary, now time.Time) RunStatus {
-	in := StatusIn{State: s.Status.State, Phase: s.Status.Phase, Reason: s.Status.Reason, Step: s.Step, Now: now}
+	in := StatusIn{State: s.Status.State, Phase: s.Status.Phase, ReasonCode: s.Status.ReasonCode, Step: s.Step, Now: now}
 	if in.State == "" {
 		in.State = Coarse(s.Status.Phase, s.Status.Phase, false)
 	}
@@ -159,9 +193,13 @@ func StatusOf(s Summary, now time.Time) RunStatus {
 	if s.Status.Issue != nil {
 		in.Issue = s.Status.Issue.Number
 	}
-	for _, n := range s.NeedsYou {
-		if n.Kind == "approval" {
-			in.Mine++
+	if a := s.Status.Approvals; a != nil {
+		in.Mine, in.Others = a.Mine, a.Others
+	} else { // a broker without the counts: what needs the caller is theirs
+		for _, n := range s.NeedsYou {
+			if n.Kind == "approval" {
+				in.Mine++
+			}
 		}
 	}
 	return StatusLine(in)

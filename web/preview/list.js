@@ -154,6 +154,31 @@ function cell(tag, ...kids) {
   c.append(...kids);
   return c;
 }
+function statusCell(st, phase) {
+  const td = cell("td");
+  td.className = "status";
+  if (!st?.kind) {
+    const chip = document.createElement("span");
+    chip.className = "chip chip-phase";
+    chip.textContent = phase;
+    td.append(chip);
+    return td;
+  }
+  const line = document.createElement("span");
+  line.className = "row-status";
+  line.dataset.kind = st.kind;
+  const icon2 = document.createElement("span");
+  icon2.className = "row-status-icon";
+  icon2.setAttribute("aria-hidden", "true");
+  icon2.textContent = st.icon;
+  const words = document.createElement("span");
+  words.className = "row-status-words";
+  words.textContent = st.text;
+  line.append(icon2, " ", words);
+  td.title = phase;
+  td.append(line);
+  return td;
+}
 function roomRow(row, now) {
   const c = rowCells(row, now);
   const needs = cell("td");
@@ -170,9 +195,7 @@ function roomRow(row, now) {
   a.textContent = c.task;
   const repo2 = cell("td", c.repo);
   repo2.className = "repo";
-  const phase = document.createElement("span");
-  phase.className = "chip chip-phase";
-  phase.textContent = c.phase;
+  const status = statusCell(row.status, c.phase);
   const last = cell("td", c.last || "\u2014");
   const t = lastMs(row);
   if (t) last.title = new Date(t).toLocaleString();
@@ -182,7 +205,7 @@ function roomRow(row, now) {
   id.className = "room-id";
   const tr = document.createElement("tr");
   tr.className = "room-row";
-  tr.append(needs, cell("td", a), repo2, cell("td", phase), cell("td", c.pr), last, id);
+  tr.append(needs, cell("td", a), repo2, status, cell("td", c.pr), last, id);
   return tr;
 }
 async function listRooms(app, get2 = fetch, filters = {}, theme2) {
@@ -265,7 +288,7 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
   table.className = "rooms";
   table.setAttribute("aria-label", "Rooms");
   const head = document.createElement("tr");
-  head.append(...["Needs you", "Task", "Repository", "Phase", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
+  head.append(...["Needs you", "Task", "Repository", "Status", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
   const thead = document.createElement("thead");
   thead.append(head);
   const tbody = document.createElement("tbody");
@@ -504,12 +527,12 @@ var ago2 = (min) => new Date(Date.now() - min * 6e4).toISOString();
 var repo = "Smana/ai-native-ref";
 var base = { owner: "system:factory", driver: "system:factory", dataClass: "internal", repository: repo };
 var rows = [
-  { ...base, id: "k2p9rt4v", phase: "Active", lastSeq: 318, issue: 152, title: "docs: a getting-started page for the platform", task: "Escalated", needsYou: 1, lastEventAt: ago2(4) },
-  { ...base, id: "3kq7x2ma", phase: "Active", lastSeq: 142, issue: 147, title: "feat: retry the bridge upload on a 503", task: "Reviewing", pr: 148, lastEventAt: ago2(18) },
-  { ...base, id: "d66mo4b4", phase: "Active", lastSeq: 95, issue: 144, title: "fix: the meter double-counts a resumed run", task: "Implementing", lastEventAt: ago2(52) },
-  { ...base, id: "yacoriey", phase: "Idle", lastSeq: 70, issue: 139, title: "chore: bump the chart's CRD copy", task: "Merged", pr: 141, lastEventAt: ago2(60 * 5) },
-  { ...base, id: "m4tq2zxa", phase: "Idle", lastSeq: 33, issue: 131, title: "docs: name the trace router's allowlist", task: "Closed", lastEventAt: ago2(60 * 26) },
-  { ...base, id: "p7wn5c3e", phase: "Idle", owner: "human:2", driver: "human:2", lastSeq: 12, lastEventAt: ago2(60 * 24 * 3) }
+  { ...base, id: "k2p9rt4v", phase: "Active", lastSeq: 318, issue: 152, title: "docs: a getting-started page for the platform", task: "Escalated", needsYou: 1, lastEventAt: ago2(4), status: { kind: "waiting-you", icon: "\u23F3", text: "Waiting for you \u2014 approve a pending action" } },
+  { ...base, id: "3kq7x2ma", phase: "Active", lastSeq: 142, issue: 147, title: "feat: retry the bridge upload on a 503", task: "Reviewing", pr: 148, lastEventAt: ago2(18), status: { kind: "finished", icon: "\u2713", text: "Finished \u2014 PR #148 opened, handed to the reviewer" } },
+  { ...base, id: "d66mo4b4", phase: "Active", lastSeq: 95, issue: 144, title: "fix: the meter double-counts a resumed run", task: "Implementing", lastEventAt: ago2(52), status: { kind: "running", icon: "\u25CF", text: "Running \u2014 implementer, 12 min" } },
+  { ...base, id: "yacoriey", phase: "Idle", lastSeq: 70, issue: 139, title: "chore: bump the chart's CRD copy", task: "Done", pr: 141, lastEventAt: ago2(60 * 5), status: { kind: "done", icon: "\u2713", text: "Done \u2014 merged" } },
+  { ...base, id: "m4tq2zxa", phase: "Idle", lastSeq: 33, issue: 131, title: "docs: name the trace router's allowlist", task: "Rejected", lastEventAt: ago2(60 * 26), status: { kind: "failed", icon: "\u2717", text: "Failed \u2014 CI stayed red" } },
+  { ...base, id: "p7wn5c3e", phase: "Idle", owner: "human:2", driver: "human:2", lastSeq: 12, lastEventAt: ago2(60 * 24 * 3), status: { kind: "waiting", icon: "\u23F3", text: "Waiting \u2014 for the next message or run" } }
 ];
 var params = new URLSearchParams(location.search);
 var cli = params.get("cli");

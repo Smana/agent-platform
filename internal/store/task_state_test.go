@@ -5,6 +5,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Smana/maku/internal/envelope"
 )
@@ -144,4 +145,35 @@ func stateDraft(n int64, payload []byte) envelope.Draft {
 	d.Actor = envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
 	d.RunID = ""
 	return d
+}
+
+// The room list's failed rows read their reason codes in one call: each room's last task facts
+// above its own bound, nothing for a room without them.
+func TestTaskReasonsReadsEveryRoomInOneCall(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := t.Context()
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "aaaaaaa2", Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	var seqs []int64
+	for _, d := range []envelope.Draft{
+		stateDraft(1, envelope.StatePayload("task", map[string]any{"phase": "Implementing", "reason": "older"})),
+		stateDraft(2, envelope.StatePayload("task", map[string]any{"phase": "Rejected", "reason": "ci_red"})),
+	} {
+		ev, _, err := s.Append(ctx, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seqs = append(seqs, ev.Seq)
+	}
+	got, err := s.TaskReasons(ctx, map[string]int64{room: 0, "aaaaaaa2": 0, "nosuchrm": 0})
+	if err != nil || len(got) != 1 || got[room] != "ci_red" {
+		t.Fatalf("got %v, %v: want the latest facts' code, nothing for a room without facts", got, err)
+	}
+	if got, err := s.TaskReasons(ctx, map[string]int64{room: seqs[1]}); err != nil || len(got) != 0 {
+		t.Fatalf("got %v, %v: nothing is after the bound", got, err)
+	}
+	if got, err := s.TaskReasons(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no rooms: %v, %v", got, err)
+	}
 }

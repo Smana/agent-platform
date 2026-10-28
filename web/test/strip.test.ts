@@ -59,8 +59,12 @@ describe("the run status line", () => {
     const text = () => h.querySelector(".run-status")?.textContent;
     strip.update(input({ summary: state({ state: "done", phase: "Done" }) }));
     expect(text()).toBe("✓ Done — merged");
+    strip.update(input({ summary: state({ state: "failed", phase: "Rejected", reasonCode: "budget-task" }) }));
+    expect(text()).toBe("✗ Failed — budget reached"); // the code, not the prose reason
+    strip.update(input({ summary: state({ state: "failed", phase: "Rejected", reasonCode: "ci_red" }) }));
+    expect(text()).toBe("✗ Failed — CI stayed red");
     strip.update(input({ summary: state({ state: "waiting_for_human", phase: "Escalated", reason: "budget-task" }) }));
-    expect(text()).toBe("✗ Failed — budget reached");
+    expect(text()).toBe("⏳ Waiting — a maintainer decides"); // an escalated task waits, whatever its reason
     strip.update(input({ summary: undefined, sealed: true }));
     expect(text()).toBe("■ Stopped");
   });

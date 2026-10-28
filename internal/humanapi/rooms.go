@@ -207,7 +207,17 @@ type roomRow struct {
 	// Step is the one thing to do for the room and where: approve on its page, or merge or close
 	// the PR on GitHub. Absent when nothing waits for a human.
 	Step *summary.Step `json:"step,omitempty"`
-	You  wire.You      `json:"you"`
+	// Status is the room page's status line (summary.StatusLine) for the caller, from this row's
+	// data: fixed words and numbers, never agent text. Absent when the state is unknown.
+	Status *rowStatus `json:"status,omitempty"`
+	You    wire.You   `json:"you"`
+}
+
+// rowStatus is a row's status line: the kind the page colours by, its icon and its words.
+type rowStatus struct {
+	Kind string `json:"kind"`
+	Icon string `json:"icon"`
+	Text string `json:"text"`
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
@@ -429,6 +439,8 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
 	readable := map[string]bool{}
 	out := []roomRow{}
+	var ins []summary.StatusIn   // each row's status line input, out's twin
+	failed := map[string]int64{} // the failed rows' fork points: their reason codes are read in one call
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
 		repo := room.Spec.Repository
@@ -483,10 +495,69 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
 		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
+		ins = append(ins, s.statusIn(room, row, web, live, expired))
+		if row.State == summary.StateFailed {
+			failed[row.ID] = roomctrl.ForkSeq(room)
+		}
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
+	s.stampStatus(ctx, out, ins, failed)
 	return out, access, nil
+}
+
+// statusIn is the row's status line input, as the room's summary gives it to the caller: the
+// row's projected data, with no store read of its own; a failed row's reason code is stampStatus's.
+// live are the approvals a decider's row read, expired those it dropped (nil for a viewer who cannot decide, whose every
+// pending one is others'); an unswept expired approval a non-decider's row cannot tell from a live
+// one reads as waiting on another approver until the sweep decides it.
+func (s *Server) statusIn(room *v1alpha1.Room, row roomRow, web policy.Subject, live []store.Approval, expired int) summary.StatusIn {
+	in := summary.StatusIn{State: row.State, Phase: cmp.Or(row.Task, row.Phase), PR: row.PR, Issue: row.Issue,
+		Step: row.Step, Now: s.now()}
+	if row.Phase == "Closed" || row.Phase == "Sealed" {
+		in.Phase = row.Phase // as the summary of a sealed log says its seal, not the task it stopped
+	}
+	for _, a := range live {
+		if summary.Decidable(web, room.Spec.Approvals.FourEyes, a.Prompters) {
+			in.Mine++
+		}
+	}
+	in.Others = max(0, int(room.Status.PendingApprovals)-expired-in.Mine)
+	// The page's run is the factory's facts' run while an agent is in the room, so a room without a
+	// task has none. runwatch's live Running claim stands in for both: its start can differ from the
+	// facts' by the seconds the factory takes to record it.
+	if room.Status.Task != nil {
+		for _, r := range s.Runs.InRoom(room.Name) {
+			if r.Live() && r.Phase == "Running" {
+				in.RunRole, in.RunStart, in.RunPresent = r.Role, r.StartedAt, true
+				break
+			}
+		}
+	}
+	return in
+}
+
+// stampStatus sets each row's status line from its input, reading the failed rows' reason codes
+// (failed: their fork points) in one store read. An unread code leaves the phase's words.
+func (s *Server) stampStatus(ctx context.Context, rows []roomRow, ins []summary.StatusIn, failed map[string]int64) {
+	codes := map[string]string{}
+	if len(failed) > 0 {
+		c, err := s.Log.TaskReasons(ctx, failed)
+		if err != nil {
+			s.log().Warn("room list: failure reasons unread", "err", err)
+		} else {
+			codes = c
+		}
+	}
+	for i := range rows {
+		in := ins[i]
+		if _, ok := failed[rows[i].ID]; ok {
+			in.ReasonCode = summary.ReasonCode(&envelope.TaskFacts{Reason: codes[rows[i].ID]})
+		}
+		if st := summary.StatusLine(in); st.Kind != "" {
+			rows[i].Status = &rowStatus{Kind: st.Kind, Icon: st.Icon, Text: st.Words}
+		}
+	}
 }
 
 // waits are the task phases whose rows carry a reason, as the summary's status does.

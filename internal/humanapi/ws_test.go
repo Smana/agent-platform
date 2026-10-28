@@ -64,6 +64,7 @@ type memLog struct {
 	approvalErr    error
 	approvalReads  int
 	factsReads     int
+	reasonReads    int
 	lastEventAt    map[string]time.Time
 	lastEventAtErr error
 }
@@ -91,6 +92,28 @@ func (m *memLog) LastEventAt(_ context.Context, ids []string) (map[string]time.T
 		}
 	}
 	return out, m.lastEventAtErr
+}
+
+// TaskReasons is each room's last task facts' reason above its bound, as the store's one query reads them.
+func (m *memLog) TaskReasons(_ context.Context, after map[string]int64) (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reasonReads++
+	out := map[string]string{}
+	for id, bound := range after {
+		for i := len(m.evs) - 1; i >= 0; i-- {
+			e := m.evs[i]
+			var p struct {
+				Kind   string `json:"kind"`
+				Reason string `json:"reason"`
+			}
+			if e.RoomID == id && e.Seq > bound && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil && p.Kind == "task" {
+				out[id] = p.Reason
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // LastTaskState is the log's last task facts above after, as the store's query reads them.
@@ -996,7 +1019,7 @@ func TestRoomList(t *testing.T) {
 		t.Fatalf("%d %v", code, err)
 	}
 	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"needsYou":0,"owner":"human:own","phase":"Active",` +
-		`"repository":"Smana/maku","state":"running","url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
+		`"repository":"Smana/maku","state":"running","status":{"icon":"●","kind":"running","text":"Running — between runs"},"url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)
 	}

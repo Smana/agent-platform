@@ -70,6 +70,12 @@ const pairs = (t: Tokens) => [
   ["the phase chip's border on a card", mix(t["--card-foreground"], t["--card"], 0.5), t["--card"], 3],
   ["the phase chip's border on a hovered room row", mix(t["--card-foreground"], t["--card"], 0.5), mix(t["--primary"], t["--card"], 0.06), 3],
   ["the focus ring on a hovered room row", t["--ring"], mix(t["--primary"], t["--card"], 0.06), 3],
+  // The room list's status line: its words on a row, and each kind's accent bar on a card and a hovered row.
+  ["a room row's status words on a hovered row", t["--card-foreground"], mix(t["--primary"], t["--card"], 0.06), 4.5],
+  ...(["--primary", "--warning-border", "--success", "--destructive", "--muted-foreground"] as const).flatMap((k) => [
+    [`a room row's ${k} status accent on a card`, t[k], t["--card"], 3],
+    [`a room row's ${k} status accent on a hovered row`, t[k], mix(t["--primary"], t["--card"], 0.06), 3],
+  ] as const),
 ] as const;
 
 // The Maku matrices: [description, foreground, background, minimum, expectedRatio].

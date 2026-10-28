@@ -23,16 +23,18 @@ Sources: `docs/api.md` (the `:8080` checks), `internal/policy/policy.go` (`Group
 
 A table, one row per room you can read. Rooms that need you come first, then the most recently
 active, then by id. The whole row opens the room page: the task cell's link covers the row, so it
-stays one link for the keyboard and a screen reader. The phase shows as the room page's phase chip.
+stays one link for the keyboard and a screen reader. The status says where each room stands in the
+room page's words: the same status line, computed by the broker with the same function, so the list
+and the room page never disagree.
 
-<img alt="The room list: factory rooms from two repositories, the ones that need you first, each with its repository, phase chip, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
+<img alt="The room list: factory rooms from two repositories, the ones that need you first, each with its repository, status line, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
 
 | Column | Shows |
 |---|---|
 | Needs you | A count of what waits for you: approvals you could decide, a task held on a room you drive or own, a PR waiting for your merge. Empty when nothing does |
 | Task | The factory task's issue number and title; `Room <id>` for a room with no task |
 | Repository | The room's `owner/name` |
-| Phase | The task's phase, else the room's |
+| Status | The room page's status line: an icon, a colour accent and fixed words, such as `⏳ Waiting for you — approve a pending action` or `✓ Done — merged` (the API's `status`). The task's phase, else the room's, on hover; the phase chip alone when the broker sends no status. On a phone it replaces the repository column |
 | PR | `#n`, when the task has one |
 | Last activity | How long ago the room's log last moved (`lastEventAt`), the exact time on hover; `—` for a room with no events |
 | Room | The room id |

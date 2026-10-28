@@ -11,7 +11,8 @@ export type StatusKind = "running" | "queued" | "waiting-you" | "waiting-other" 
 export interface RunStatus { kind: StatusKind | ""; icon: string; words: string }
 
 export interface StatusIn {
-  state?: string; phase?: string; reason?: string;
+  state?: string; phase?: string;
+  reasonCode?: string; // the factory's raw code (the summary's reasonCode), never the prose reason
   runRole?: string; runStartedAt?: string; runPresent?: boolean;
   pr?: number; issue?: number;
   mine?: number; others?: number; // live approvals the viewer may decide, and those only others may
@@ -19,6 +20,7 @@ export interface StatusIn {
   now?: number; // ms since the epoch
 }
 
+// FAILURES is why a task failed, in words, by the factory's reason code.
 const FAILURES: Record<string, string> = {
   "budget-task": "budget reached", resume_budget: "budget reached", ci_red: "CI stayed red",
   ci_cancelled: "a check was cancelled", deadline: "time limit reached", agent_error: "the agent stopped on an error",
@@ -39,12 +41,11 @@ export function elapsed(fromMs: number, nowMs: number): string {
 export function statusLine(i: StatusIn): RunStatus {
   const s = (kind: StatusKind, icon: string, words: string): RunStatus => ({ kind, icon, words });
   const fail = (): RunStatus => {
-    const w = (i.reason && Object.hasOwn(FAILURES, i.reason) ? FAILURES[i.reason] : "")
+    const w = (i.reasonCode && Object.hasOwn(FAILURES, i.reasonCode) ? FAILURES[i.reasonCode] : "")
       || (i.phase === "Rejected" ? "rejected" : i.phase === "Reverted" ? "the merge was reverted" : "");
     return s("failed", "✗", w ? `Failed — ${w}` : "Failed");
   };
   const mine = i.mine ?? 0, others = i.others ?? 0, pr = i.pr ?? 0, issue = i.issue ?? 0;
-  const reasoned = !!i.reason && Object.hasOwn(FAILURES, i.reason);
   if (i.state === "done") return s("done", "✓", i.phase === "NoOp" ? "Done — nothing to change" : pr > 0 ? "Done — merged" : "Done");
   if (i.state === "failed") return fail();
   if (i.state === "stopped" || i.phase === "Closed" || i.phase === "Sealed") return s("stopped", "■", "Stopped");
@@ -53,7 +54,7 @@ export function statusLine(i: StatusIn): RunStatus {
   if (others > 0) return s("waiting-other", "⏳", "Waiting for another approver");
   if (i.step?.kind === "pr" && pr > 0) return s("waiting-pr", "⏳", `Waiting — review and merge PR #${pr}`);
   if (i.step?.kind === "answer" && issue > 0) return s("waiting", "⏳", `Waiting — answer the question on issue #${issue}`);
-  if (i.phase === "Escalated") return reasoned ? fail() : s("waiting", "⏳", "Waiting — a maintainer decides");
+  if (i.phase === "Escalated") return s("waiting", "⏳", "Waiting — a maintainer decides");
   if (i.state === "waiting_for_human") return s("waiting", "⏳", "Waiting — for the next message or run");
   if (i.state === "queued") return s("queued", "○", "Queued");
   if (i.state === "running") {
