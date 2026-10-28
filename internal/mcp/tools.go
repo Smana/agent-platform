@@ -159,20 +159,6 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindJudgeVerdict, Text: a.Reason,
 					Verdict: a.Verdict, Evidence: a.Evidence, Delivery: envelope.DeliveryNone})
 			}},
-		{Name: "room_contract", Roles: []string{"tester"}, Action: policy.Chat, HarnessOnly: true,
-			Description: "The tester's harness reports the sha of the contract commit it pushed. Only the harness's own client lists or may call it; it is never on the model's list.",
-			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["commit","base"],"properties":{"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},"base":{"type":"string","pattern":"^[0-9a-f]{40}$"}}}`),
-			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
-				var a struct {
-					Commit string `json:"commit"`
-					Base   string `json:"base"`
-				}
-				if mcpwire.DecodeArgs(args, &a) != nil || !commitRE.MatchString(a.Commit) || !commitRE.MatchString(a.Base) {
-					return nil, argError("commit and base are full 40-hex shas: the pushed contract commit and the commit it sits on")
-				}
-				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindContract, Text: "contract commit pushed",
-					Commit: a.Commit, Base: a.Base, Delivery: envelope.DeliveryNone})
-			}},
 		{Name: "room_handoff", Roles: []string{"implementer", "tester", "triager"}, Action: policy.Chat,
 			Description: "Hand the work to the next role, with the commit you pushed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). Call it once, then finish.",
 			InputSchema: json.RawMessage(handoffSchema("")),
