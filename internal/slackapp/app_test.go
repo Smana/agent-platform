@@ -605,3 +605,19 @@ func TestOversizedDraftIsNotPosted(t *testing.T) {
 		t.Fatal("outcome")
 	}
 }
+
+// O14: a one-repository channel takes a title-only line 1; a many-repository channel's refusal
+// shows an example.
+func TestMentionOnAOneRepositoryChannel(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs(agents): the link is dead\n## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz")
+	c := rig.broker.all()
+	if d, ok := c[0].(Draft); len(c) != 1 || !ok || d.Repo != "Smana/ai-native-ref" || d.Title != "docs(agents): the link is dead" {
+		t.Fatalf("%+v %q", c, rig.lastPost().text)
+	}
+	two := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref", "Smana/cloud-native-ref"}, MaxCostUSD: 2})
+	two.mention("C03", "1729.0001", "<@U0BOT> docs: a title without a repository\nbody")
+	if p := two.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || !strings.Contains(p.text, "for example") || len(two.broker.all()) != 0 {
+		t.Fatalf("%q", p.text)
+	}
+}

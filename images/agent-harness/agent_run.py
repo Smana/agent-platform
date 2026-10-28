@@ -509,6 +509,7 @@ class ProgressNotes:
         self.last = None
         self.failures = 0
         self.tool = None
+        self.names = None
         self.session = None
         self.rid = 0
 
@@ -587,7 +588,10 @@ class ProgressNotes:
         if not notify:
             self.rid += 1
             body["id"] = self.rid
-        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        # The marker tells the broker this is the harness, not the model: room_judge is listed and callable
+        # only here. The model's own MCP client (build_request) is configured without it.
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "X-Agent-Harness": "1"}
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         if self.traceparent:
@@ -617,22 +621,26 @@ class ProgressNotes:
         except urllib.error.HTTPError as exc:
             if not 400 <= exc.code < 500:
                 raise
-            self.tool, self.session = None, None
+            self.names, self.tool, self.session = None, None, None
             return self.call(text)
         finally:
             self.traceparent = None
             if span:
                 span.end()
 
-    def call(self, text: str) -> bool:
-        if self.tool is None:
+    def find_tool(self, name: str) -> str | None:
+        """The gateway's name for the broker's tool: the tool itself, <backend>__<tool> (Agent Router) or
+        <backend>_<tool> (agentgateway, ADR-0053); the suffix covers all three."""
+        if self.names is None:
             self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "agent-run", "version": "1"}})
             self.rpc("notifications/initialized", notify=True)
-            names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
-            # The gateway may prefix the backend's name: <backend>__<tool> (Agent Router) or
-            # <backend>_<tool> (agentgateway, ADR-0053); the suffix covers both.
-            self.tool = next((n for n in names if n == "room_progress" or n.endswith("_room_progress")), None)
+            self.names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
+        return next((n for n in self.names if n == name or n.endswith("_" + name)), None)
+
+    def call(self, text: str) -> bool:
+        if self.tool is None:
+            self.tool = self.find_tool("room_progress")
             if self.tool is None:
                 self.failures = NOTE_FAILURES
                 raise RuntimeError("room_progress is not exposed to this run")
@@ -643,6 +651,28 @@ class ProgressNotes:
                 return False
             raise RuntimeError(message[:200])
         return True
+
+    def judge(self, kind: str, reason: str, evidence: list) -> None:
+        """Posts the completion judge's verdict as a room event (O15), through the run's own MCP route.
+        Best effort: a verdict that cannot be posted is still in the harness log."""
+        try:
+            self.traceparent = None
+            for attempt in range(2):
+                try:
+                    name = self.find_tool("room_judge")
+                    if name is None:
+                        raise RuntimeError("room_judge is not exposed to this run")
+                    result = self.rpc("tools/call", {"name": name, "arguments": {
+                        "verdict": kind, "reason": _short(reason, loop_policy.REASON_MAX), "evidence": list(evidence)[:20]}})
+                    if result.get("isError"):
+                        raise RuntimeError(_text({"content": result.get("content")})[:200])
+                    return
+                except urllib.error.HTTPError as exc:  # an expired session redoes the handshake once
+                    if attempt or not 400 <= exc.code < 500:
+                        raise
+                    self.names, self.tool, self.session = None, None, None
+        except Exception as exc:  # noqa: BLE001 -- a verdict note must never fail the run
+            print("agent-run: judge verdict not posted: %s" % exc, file=sys.stderr, flush=True)
 
 
 # v3 feature 3: the repository's checks in the sandbox, on a check-enabled run only (AGENT_CHECKS=1,
@@ -1177,7 +1207,10 @@ def loop_for(env: dict):
         return None
 
 
-def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE) -> tuple[int, str | None, str]:
+NO_VERDICT_FAILING = "the completion judge gave no verdict and a check failed (%s)"
+
+
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
     stuck conversation does, so a bridge that drops the reason still has the task escalated."""
     tick = stall_watch(env, steps, policy, state, path)
@@ -1194,15 +1227,27 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
         if code or policy.judge_model is None:
             return code, None, ""
         sent = None  # the continuation, once the judge asked for one
+        failing = ()  # the failing checks the evidence showed, once it was read
         try:
             n = commits_since(env, state.mark) if state.sent else None
             new_commit = n is None or n > 0
             message, offered = evidence(env, task)
+            failing = getattr(offered, "failing", ())
             answer = ask_judge(env, policy.judge_model, message)
             if answer is None:
+                if failing:
+                    return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
                 return 0, None, ""  # no answer: the run ends as it would with no policy
             rounds += 1
             v = loop_policy.verdict(answer[0], offered)
+            guarded = loop_policy.guard(v, offered) if isinstance(offered, loop_policy.Offered) else v
+            if guarded is not v:
+                print("agent-run judge %d: override %s -> %s, failing %s, pending %s, unpushed %s" % (
+                    rounds, v.kind, guarded.kind, ",".join(offered.failing) or "-", ",".join(offered.pending) or "-", offered.unpushed),
+                    flush=True)
+                v = guarded
+            if notes is not None and v.kind != "invalid":
+                notes.judge(v.kind, v.reason, v.evidence)
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
@@ -1217,6 +1262,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
         except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
             print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
             if sent is None:
+                if failing:  # the run must not end as met with a check known to fail
+                    return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
                 return 0, None, ""  # today's end
             # The judge said not_yet but the message did not go (SDK 1.56 answers 429 when its run
             # capacity is full: saved, no run started). Ending as met would hand off silently.
@@ -1418,6 +1465,10 @@ def server_env(env: dict) -> dict:
         out["OH_SECRET_KEY"] = run_key() if suspendable(env) else secrets.token_urlsafe(32)
     out["PYTHONPATH"] = os.pathsep.join(p for p in (SITE_DIR, env.get("PYTHONPATH")) if p)
     out["AGENT_RUN_RETRY_LOG"] = RETRY_LOG
+    # The run's deadline as wall-clock time, for the model-timeout retry (sitecustomize): it retries only
+    # with a whole second window and the final checks' reserve left.
+    if env.get("AGENT_RUN_SECONDS", "").isdigit():
+        out["AGENT_RUN_DEADLINE"] = str(time.time() + int(env["AGENT_RUN_SECONDS"]))
     return out
 
 
@@ -1461,7 +1512,7 @@ def main() -> int:
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None)
         if policy:
-            code, end, note = drive(env, cid, steps, policy, state, task)
+            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes)
         else:
             code = poll(cid, on_tick=steps)
         steps()

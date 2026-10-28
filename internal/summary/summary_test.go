@@ -452,3 +452,17 @@ func TestABouncedTaskNeedsAnAnswer(t *testing.T) {
 		t.Fatal("only the room's owner is asked to answer")
 	}
 }
+
+// O15: the harness's completion judge verdicts fold into the summary, the last one kept.
+func TestFoldKeepsTheLastJudgeVerdict(t *testing.T) {
+	judge := func(seq int64, verdict, reason string) envelope.Event {
+		return ev(seq, envelope.Message, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:cf4ato2x", Role: "implementer"},
+			envelope.MessagePayload{Kind: envelope.KindJudgeVerdict, Verdict: verdict, Text: reason, Evidence: []string{"check:validate"}, Delivery: envelope.DeliveryNone})
+	}
+	st := summary.Fold([]envelope.Event{judge(1, "not_yet", "validate fails"), note(2, "n"), judge(3, "impossible", "cannot pass")})
+	s := summary.View(st, "r", "https://x/r/r", policy.Subject{Kind: envelope.ActorHuman, Role: policy.ParseRole("owner")}, 0, time.Unix(1_760_000_100, 0))
+	j := s.Status.LastJudge
+	if j == nil || j.Verdict != "impossible" || j.Reason != "cannot pass" || len(j.Evidence) != 1 || len(s.Notes.Items) != 1 {
+		t.Fatalf("%+v %+v", j, s.Notes)
+	}
+}

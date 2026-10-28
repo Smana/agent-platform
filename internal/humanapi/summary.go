@@ -61,6 +61,16 @@ func (s *Server) summaryOf(ctx context.Context, id string, p authn.Principal, af
 		last = page[len(page)-1].Seq
 	}
 	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, s.now())
+	if fold.Sealed == "" { // a sealed room takes no next run
+		if q, err := s.Log.Queue(ctx, id); err != nil {
+			s.log().Warn("summary: queue unreadable", "room", id, "err", err)
+		} else if len(q) > 0 {
+			view.Queued.Untrusted = true
+			for _, n := range q {
+				view.Queued.Items = append(view.Queued.Items, summary.QueuedNote{Ref: n.Ref, Author: n.Author, Text: n.Text})
+			}
+		}
+	}
 	s.warnNoRepository(view, fold.Facts, id, sub)
 	// The fold's task phase is fresher than the Room's projection; a sealed log is a closed room.
 	task, phase := "", room.Status.Phase

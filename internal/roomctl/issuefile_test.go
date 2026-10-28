@@ -450,3 +450,58 @@ func TestIssueFileStartNotChosen(t *testing.T) {
 		})
 	}
 }
+
+// O10: OpenCode cut issue_file's form short ("context deadline exceeded"). When the form cannot be
+// shown or is not answered, the result holds ONE command that files the issue with gh and never labels
+// it: starting the factory stays the developer's own act, whatever the draft could do.
+func TestIssueFileFallbackCommand(t *testing.T) {
+	check := func(t *testing.T, res map[string]any, _ bool) {
+		t.Helper()
+		text := fmt.Sprint(res["result"])
+		for _, want := range []string{"next:", "gh issue create", "--repo=Smana/a", "docs: a dead link", "--body-file=-"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("no %q in %s", want, text)
+			}
+		}
+		if strings.Contains(text, "--add-label") || strings.Contains(text, "gh issue edit") {
+			t.Fatalf("the fallback starts the factory: %s", text)
+		}
+		if !strings.Contains(text, "starts the factory") || !strings.Contains(text, "factory/ready") {
+			t.Fatalf("it does not say how the developer starts it: %s", text)
+		}
+	}
+	t.Run("a client that cannot ask", func(t *testing.T) {
+		s := relayTo(t, newMCPBroker(t), tok, withFile((&filing{}).file))
+		s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{}})
+		check(t, s.request(t, 2, "tools/call", issueFileArgs), false)
+	})
+	t.Run("a form that is not answered in time", func(t *testing.T) {
+		old := elicitWait
+		elicitWait = 50 * time.Millisecond
+		t.Cleanup(func() { elicitWait = old })
+		b := newMCPBroker(t)
+		b.canStart = boolp(true)
+		s := startSession(t, b, &filing{}, &labeling{}, time.Second)
+		s.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": issueFileArgs})
+		var res map[string]any
+		for { // the form, its cancellation, then the result
+			m := s.next(t)
+			if m["id"] == 2.0 {
+				res = m
+				break
+			}
+		}
+		check(t, res, true)
+	})
+}
+
+// The command quotes what the draft holds: a title with a quote, a body that holds the heredoc's end.
+func TestFallbackCommandQuoting(t *testing.T) {
+	cmd := fallbackCommand(draftShape{Repo: "Smana/a", Title: "fix: it's $(bad)", Body: "x\nBODY_EOF\ny"})
+	if !strings.Contains(cmd, `--title='fix: it'\''s $(bad)'`) || strings.Count(cmd, "\nBODY_EOF\n") != 1 && !strings.Contains(cmd, "BODY_EOF_1") {
+		t.Fatalf("%s", cmd)
+	}
+	if strings.Contains(cmd, "--add-label") {
+		t.Fatalf("filed only: %s", cmd)
+	}
+}

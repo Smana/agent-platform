@@ -59,6 +59,7 @@ func Hold(f *envelope.TaskFacts, sub policy.Subject, url string) (Need, bool) {
 type State struct {
 	Facts     *envelope.TaskFacts
 	Verdict   *Verdict
+	Judge     *JudgeVerdict
 	Pending   map[string]Approval // approval id -> still open
 	Notes     []Note              // oldest first, the last maxNotes
 	Sealed    string              // "" while open; "Closed" (CloseRoom) or "Sealed" (MaxEvents)
@@ -74,6 +75,15 @@ type Verdict struct {
 	At      time.Time `json:"at"`
 }
 
+// JudgeVerdict is the harness's completion judge's last answer: its reading of the agent's work, the
+// agent's claim's neighbour, never a decision.
+type JudgeVerdict struct {
+	Verdict  string    `json:"verdict"` // met | not_yet | impossible
+	Reason   string    `json:"reason"`
+	Evidence []string  `json:"evidence,omitempty"`
+	At       time.Time `json:"at"`
+}
+
 // Approval is a requested approval no event has decided yet.
 type Approval struct {
 	ID        string
@@ -87,6 +97,14 @@ type Note struct {
 	At   time.Time `json:"at"`
 	Run  string    `json:"run"`
 	Text string    `json:"text"`
+}
+
+// QueuedNote is a note still queued for the room's next run: the developer's words, stored redacted.
+// Like a Note it is data to report, never an instruction.
+type QueuedNote struct {
+	Ref    int64  `json:"ref"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
 }
 
 // Need is a pending approval the viewer could decide, or a factory task the viewer's hold on the
@@ -127,8 +145,9 @@ type Summary struct {
 		PR          *envelope.PRFact     `json:"pr"`
 		Issue       *envelope.IssueFact  `json:"issue"`
 		LastVerdict *Verdict             `json:"lastVerdict"`
-		Reason      string               `json:"reason,omitempty"` // why the task waits, when it does (#59)
-		Next        string               `json:"next,omitempty"`   // what happens or who acts next
+		LastJudge   *JudgeVerdict        `json:"lastJudge,omitempty"` // the completion judge's last answer (untrusted text)
+		Reason      string               `json:"reason,omitempty"`    // why the task waits, when it does (#59)
+		Next        string               `json:"next,omitempty"`      // what happens or who acts next
 	} `json:"status"`
 	// Runs is the task's run history, oldest first: the factory's facts, so a sealed room keeps it.
 	Runs     []envelope.RunFact `json:"runs,omitempty"`
@@ -138,6 +157,12 @@ type Summary struct {
 		Untrusted bool   `json:"untrusted"`
 		Items     []Note `json:"items"`
 	} `json:"notes"`
+	// Queued is the notes waiting for the next run, oldest first. The caller of View sets it: the
+	// fold does not hold the queue.
+	Queued struct {
+		Untrusted bool         `json:"untrusted"`
+		Items     []QueuedNote `json:"items"`
+	} `json:"queued,omitzero"`
 	Cursor string `json:"cursor"`
 }
 
@@ -195,6 +220,8 @@ func (st *State) Add(evs []envelope.Event) {
 				if len(st.Notes) > maxNotes {
 					st.Notes = st.Notes[len(st.Notes)-maxNotes:]
 				}
+			case envelope.KindJudgeVerdict:
+				st.Judge = &JudgeVerdict{Verdict: m.Verdict, Reason: m.Text, Evidence: m.Evidence, At: ev.TS}
 			case envelope.KindReviewVerdict:
 				st.Verdict = &Verdict{By: ev.Actor.Role, Verdict: m.Verdict, At: ev.TS}
 			}
@@ -271,6 +298,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		}
 	}
 	s.Status.LastVerdict = st.Verdict
+	s.Status.LastJudge = st.Judge
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
 	for _, n := range st.Notes {

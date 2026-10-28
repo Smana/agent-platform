@@ -117,6 +117,7 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 	c.needs(s)
 	c.runs(s)
 	c.notes(s)
+	c.queued(s)
 	c.ranOn(s)
 	c.actions(s)
 	_, err := io.WriteString(w, strings.TrimRight(c.b.String(), "\n")+"\n")
@@ -191,6 +192,10 @@ func (c *card) facts(s summary.Summary) {
 	}
 	if v := c.prFact(s); v != "" {
 		rows = append(rows, [2]string{"PR", v})
+	}
+	if j := s.Status.LastJudge; j != nil {
+		rows = append(rows, [2]string{"Judge", c.words(j.Verdict, judgeWords(j.Verdict), c.md()) + " " + c.quoted(j.Reason, c.md()) +
+			" (the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
 	}
 	if s.Status.Next != "" {
 		rows = append(rows, [2]string{"Next", c.broker(s.Status.Next)})
@@ -467,6 +472,27 @@ func (c *card) notes(s summary.Summary) {
 	c.line(c.head("Agents' notes") + ", their claims, not checked")
 	for _, n := range items {
 		c.line("- " + stamp(n.At, c.o.Now) + " " + c.token(n.Run, false) + " " + c.quoted(n.Text, false))
+	}
+}
+
+// queued lists the notes waiting for the next run: the developer's own words, quoted as inert as
+// the agents' notes.
+func (c *card) queued(s summary.Summary) {
+	items := s.Queued.Items
+	if len(items) == 0 {
+		return
+	}
+	more := 0
+	if len(items) > maxCardNotes {
+		more, items = len(items)-maxCardNotes, items[:maxCardNotes]
+	}
+	c.line("")
+	c.line(c.head("Queued for the next run") + ", read by that run as data")
+	for _, n := range items {
+		c.line("- " + c.quoted(n.Text, false))
+	}
+	if more > 0 {
+		c.line("- and " + strconv.Itoa(more) + " more")
 	}
 }
 

@@ -124,6 +124,11 @@ func outcomeWords(outcome string) string {
 }
 
 // verdictWords is a reviewer's verdict in words.
+// judgeWords is the completion judge's verdict as words.
+func judgeWords(verdict string) string {
+	return word(map[string]string{"met": "met", "not_yet": "not yet", "impossible": "impossible"}, verdict)
+}
+
 func verdictWords(verdict string) string {
 	return word(map[string]string{
 		"approve": "approved", "approved": "approved", "changes": "changes requested", "none": "no verdict",

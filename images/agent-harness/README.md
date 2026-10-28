@@ -78,7 +78,8 @@ for a transient error, which agent-server retries first (#99, owner decision OD-
 | `503`, or Envoy's `upstream connect error or disconnect/reset before headers` under any status | yes | nothing reached the model, so nothing is spent twice |
 | connection refused or reset (litellm reports it as a `500` caused by `APIConnectionError`) | yes | the same |
 | `429` | **never** | it can be the gateway's own budget throttle; a retry would hammer the budget |
-| a timeout, any other `4xx` or `5xx` | no | a timeout would outlast the bound; the rest is not transient |
+| the SDK's hard timeout (`LLMTimeoutError`, 300 s) | **once**, as a fresh request with a fresh window | a rare call hangs (glm-5.3 via Z.ai: p99 82 s) and one hang failed whole runs; logged `agent-run model retry timeout 1/1`, counted with the others; never a call that already emitted a token, and only when the run's deadline leaves a whole second window plus the final checks' reserve (`AGENT_RUN_DEADLINE`) |
+| any other `4xx` or `5xx` | no | not transient |
 
 Three attempts at most, 10 s then 20 s apart (30 s of backoff, inside OD-7's 60 s). After the third the run
 escalates exactly as before, with the same `agent-run error: LLMServiceUnavailableError …` line. The SDK's own

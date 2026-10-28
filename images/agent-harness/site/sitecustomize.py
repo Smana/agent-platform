@@ -127,19 +127,23 @@ def transient(exc, openai) -> bool:
                or ENVOY_RESET in str(e) for e in chain)
 
 
-def _retrying(attempt, wait, exc, kwargs, openai) -> bool:
-    """Whether to send the call again; if so, logs the retry and counts it in $AGENT_RUN_RETRY_LOG."""
-    # A stream that failed midway has already produced tokens.
-    if wait is None or kwargs.get("enable_streaming") or not transient(exc, openai):
-        return False
-    line = "agent-run model retry %d/%d in %ds: %s %s" % (
-        attempt, len(RETRY_WAITS_S), wait, type(exc).__name__, " ".join(str(exc).split())[:200])
+def _log_retry(line: str) -> None:
+    """Prints a retry and counts it in $AGENT_RUN_RETRY_LOG."""
     print(line, file=sys.stderr, flush=True)
     try:
         with open(os.environ["AGENT_RUN_RETRY_LOG"], "a") as f:
             f.write(line + "\n")
     except (KeyError, OSError):
         pass  # the count is best effort, the retry is not
+
+
+def _retrying(attempt, wait, exc, kwargs, openai) -> bool:
+    """Whether to send the call again; if so, logs the retry and counts it in $AGENT_RUN_RETRY_LOG."""
+    # A stream that failed midway has already produced tokens.
+    if wait is None or kwargs.get("enable_streaming") or not transient(exc, openai):
+        return False
+    _log_retry("agent-run model retry %d/%d in %ds: %s %s" % (
+        attempt, len(RETRY_WAITS_S), wait, type(exc).__name__, " ".join(str(exc).split())[:200]))
     return True
 
 
@@ -182,6 +186,82 @@ def patch_model_retry(llm, openai, sleep=time.sleep, asleep=asyncio.sleep) -> bo
 
     llm._transport_call = _transport_call
     llm._atransport_call = _atransport_call
+    return True
+
+
+# What a timeout retry must leave before the run's deadline, beyond a whole second hard-timeout window: the
+# final checks' margin (agent_run.CHECKS_MARGIN_S) and the closing note's wait.
+RETRY_RESERVE_S = 120 + 60
+HARD_TIMEOUT_S = 300  # the SDK's default LLM.timeout, used when the LLM does not say
+
+
+def time_for_a_retry(llm) -> bool:
+    """Whether the run's deadline (AGENT_RUN_DEADLINE, epoch seconds, set by agent-run) leaves room for a
+    second hard-timeout window and the reserve. With no readable deadline there is nothing to compare."""
+    try:
+        left = float(os.environ["AGENT_RUN_DEADLINE"]) - time.time()
+    except (KeyError, ValueError):
+        return True
+    window = getattr(llm, "timeout", None)
+    window = window if isinstance(window, (int, float)) and window > 0 else HARD_TIMEOUT_S
+    return left > window + RETRY_RESERVE_S
+
+
+def patch_timeout_retry(llm, timeout_error) -> bool:
+    """Wraps the model call's public entry points, sync and async, to send a call that hit the SDK's hard
+    timeout (LLMTimeoutError, 300 s) once more, as a fresh request with a fresh window.
+
+    Live on gcp-0 (2026-10-27) a rare call hung on glm-5.3 via Z.ai (p99 was 82 s) and one timeout failed
+    the whole run, twice. patch_model_retry cannot help: the SDK's window wraps its attempts, so a hang
+    has no time left to retry inside it. Only that timeout is retried, once: never a 4xx or any other
+    error, and never a call that already emitted a token to its stream callback."""
+    sync_call = getattr(llm, "completion", None)
+    async_call = getattr(llm, "agenerate", None)
+    if sync_call is None or async_call is None:
+        print("agent-harness: timeout retry NOT applied: %s has no completion or agenerate (an SDK upgrade?); "
+              "one model timeout will end the run" % getattr(llm, "__name__", llm), file=sys.stderr, flush=True)
+        return False
+
+    def attempt_kwargs(kwargs):
+        """kwargs for one attempt, with on_token wrapped to note that a token came out. SDK 1.56 always
+        passes a stream callback, so its presence says nothing: only a token already emitted does."""
+        seen = [False]
+        out = dict(kwargs)
+        cb = kwargs.get("on_token")
+        if cb is not None:
+            def on_token(*args, **kw):
+                seen[0] = True
+                return cb(*args, **kw)
+
+            out["on_token"] = on_token
+        return out, seen
+
+    def again(llm_self, exc, seen) -> bool:
+        if seen[0] or not time_for_a_retry(llm_self):
+            return False
+        _log_retry("agent-run model retry timeout 1/1: %s %s" % (type(exc).__name__, " ".join(str(exc).split())[:200]))
+        return True
+
+    def completion(self, *args, **kwargs):
+        kw, seen = attempt_kwargs(kwargs)
+        try:
+            return sync_call(self, *args, **kw)
+        except timeout_error as exc:
+            if not again(self, exc, seen):
+                raise
+        return sync_call(self, *args, **attempt_kwargs(kwargs)[0])
+
+    async def agenerate(self, *args, **kwargs):
+        kw, seen = attempt_kwargs(kwargs)
+        try:
+            return await async_call(self, *args, **kw)
+        except timeout_error as exc:
+            if not again(self, exc, seen):
+                raise
+        return await async_call(self, *args, **attempt_kwargs(kwargs)[0])
+
+    llm.completion = completion
+    llm.agenerate = agenerate
     return True
 
 
@@ -277,12 +357,14 @@ def _install() -> None:
         patch_traceparent(mcp.shared.session, StreamableHTTPTransport, trace)
     try:
         import openai
+        from openhands.sdk.llm.exceptions import LLMTimeoutError
         from openhands.sdk.llm.llm import LLM
     except ImportError as exc:
         print("agent-harness: #99 retry and prompt cache NOT applied: %s" % exc, file=sys.stderr, flush=True)
     else:
         patch_cache_breakpoints(LLM)
         patch_model_retry(LLM, openai)
+        patch_timeout_retry(LLM, LLMTimeoutError)
     # Fail closed: unlike the patches above, which keep the run available, this one is a security
     # control, so an agent-server that cannot apply it must not start.
     try:

@@ -139,6 +139,26 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				return out, err
 			}},
+		{Name: "room_judge", Roles: []string{"implementer"}, Action: policy.Chat, HarnessOnly: true,
+			Description: "The harness's completion judge records its verdict on your finished conversation: met, not_yet or impossible, a reason and the evidence ids it cited. Only the harness's own client lists or may call it; it is never on the model's list.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["verdict","reason","evidence"],"properties":{"verdict":{"type":"string","enum":["met","not_yet","impossible"]},"reason":{"type":"string","minLength":1,"maxLength":1000},"evidence":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":200}}}}`),
+			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
+				var a struct {
+					Verdict  string   `json:"verdict"`
+					Reason   string   `json:"reason"`
+					Evidence []string `json:"evidence"`
+				}
+				ok := mcpwire.DecodeArgs(args, &a) == nil && (a.Verdict == "met" || a.Verdict == "not_yet" || a.Verdict == "impossible") &&
+					text(a.Reason, 1000) && len(a.Evidence) >= 1 && len(a.Evidence) <= 20
+				for _, e := range a.Evidence {
+					ok = ok && text(e, 200) && !strings.ContainsAny(e, "\n\r")
+				}
+				if !ok {
+					return nil, argError("verdict is met, not_yet or impossible; reason 1 to 1000 bytes; evidence 1 to 20 ids of one line each")
+				}
+				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindJudgeVerdict, Text: a.Reason,
+					Verdict: a.Verdict, Evidence: a.Evidence, Delivery: envelope.DeliveryNone})
+			}},
 		{Name: "room_handoff", Roles: []string{"implementer", "tester", "triager"}, Action: policy.Chat,
 			Description: "Hand the work to the next role, with the commit you pushed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). Call it once, then finish.",
 			InputSchema: json.RawMessage(handoffSchema("")),

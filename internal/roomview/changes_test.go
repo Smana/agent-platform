@@ -393,3 +393,20 @@ func TestChangeSetSinceIsOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("%s %v", b, err)
 	}
 }
+
+// O15: a judge verdict is a milestone, with its reason quoted as the agent's text.
+func TestMilestonesListTheJudgesVerdict(t *testing.T) {
+	j := ev(5, at(9, 0), "cf4ato2x", envelope.Message, envelope.MessagePayload{Kind: envelope.KindJudgeVerdict, Verdict: "not_yet",
+		Text: "check:validate failed **bold**", Evidence: []string{"check:validate"}, Delivery: envelope.DeliveryNone})
+	c := milestones(nil, j)
+	if len(c.Items) != 1 || c.Items[0].Kind != "judge" || c.Items[0].Verdict != "not yet" {
+		t.Fatalf("%+v", c.Items)
+	}
+	var b bytes.Buffer
+	if err := Changes(&b, c, Options{Format: Markdown, Now: at(10, 0), Rooms: rooms}); err != nil {
+		t.Fatal(err)
+	}
+	if out := b.String(); !strings.Contains(out, "completion judge: not yet") || !strings.Contains(out, "`check:validate failed **bold**`") {
+		t.Fatalf("%s", out)
+	}
+}

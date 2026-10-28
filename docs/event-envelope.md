@@ -103,7 +103,7 @@ The payload shape of every `type`.
 
 | `type` | Payload | Written by |
 |---|---|---|
-| `message` | `{kind: chat \| review_verdict \| task_state \| progress, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive). The factory defines `task_state`'s text. `progress` is a run's one-line note for the humans following the room, at most 280 characters, delivered to nobody: the agent's claim, rendered as text | Harness (chat), system callers (`task_state`), room tools (`progress` through `room_progress` only) and humans |
+| `message` | `{kind: chat \| review_verdict \| task_state \| progress \| judge_verdict, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive). `judge_verdict` adds `{verdict: met \| not_yet \| impossible, evidence[]}`: the harness's completion judge's answer, `text` its reason. The factory defines `task_state`'s text. `progress` is a run's one-line note for the humans following the room, at most 280 characters, delivered to nobody: the agent's claim, rendered as text | Harness (chat), system callers (`task_state`), room tools (`progress` through `room_progress` only) and humans |
 | `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker |
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge |

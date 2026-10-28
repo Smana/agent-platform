@@ -43,9 +43,10 @@ const (
 	// opencodeJSON is what opencode 2.0.22's own `mcp add` writes to ./opencode.json (observed):
 	// mcp.servers.<name>, not the mcp.<name> its docs show. The CLI is the authority for the version
 	// we target.
+	// timeout.execution (ms) outlives issue_file's form: OpenCode v2 otherwise cuts the tool (O10).
 	// "codemode": false keeps the server's tools on the native list: OpenCode v2 otherwise exposes
 	// them through Code Mode, which an `execute` deny rule turns off, hiding the server.
-	opencodeJSON = "{\n  \"mcp\": {\n    \"servers\": {\n      \"factory\": {\n        \"type\": \"local\",\n        \"command\": [\"{CMD}\", \"mcp\"],\n        \"codemode\": false\n      }\n    }\n  }\n}\n"
+	opencodeJSON = "{\n  \"mcp\": {\n    \"servers\": {\n      \"factory\": {\n        \"type\": \"local\",\n        \"command\": [\"{CMD}\", \"mcp\"],\n        \"codemode\": false,\n        \"timeout\": {\"execution\": 900000}\n      }\n    }\n  }\n}\n"
 	codexTOML    = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
 )
 
@@ -267,6 +268,25 @@ func (s Setup) Do(ctx context.Context) error {
 // snippetPath is the resolved config file a setup edits or tells the developer about.
 func snippetPath(s Setup, path string) string { return s.resolve(path) }
 
+// opencodeExecutionTimeout is the tool execution timeout (ms) setup writes: the form issue_file shows
+// waits for a human, and OpenCode cut it with "context deadline exceeded".
+const opencodeExecutionTimeout = 900000
+
+// executionTimeout is mcp.servers.<factory>.timeout.execution in ms, 0 when absent.
+func executionTimeout(factory map[string]any) float64 {
+	t, _ := factory["timeout"].(map[string]any)
+	switch v := t["execution"].(type) {
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	}
+	return 0
+}
+
 // opencodeCodeMode sets "codemode": false on mcp.servers.factory of the config `opencode mcp add`
 // just wrote, keeping the rest of the file. It is the one config edit setup makes, and it refuses a
 // file that is not plain JSON (comments), telling the developer what to add instead.
@@ -275,7 +295,7 @@ func (s Setup) opencodeCodeMode(path string) error {
 		return nil
 	}
 	tell := func(why string) error {
-		_, err := fmt.Fprintf(s.Out, "%s: %s: add \"codemode\": false to mcp.servers.factory yourself, or OpenCode's Code Mode (which an execute deny rule turns off) may hide the factory tools\n", path, why)
+		_, err := fmt.Fprintf(s.Out, "%s: %s: add \"codemode\": false and \"timeout\": {\"execution\": 900000} to mcp.servers.factory yourself, or OpenCode's Code Mode (which an execute deny rule turns off) may hide the factory tools, and its tool timeout may cut issue_file's form\n", path, why)
 		return err
 	}
 	b, err := os.ReadFile(filepath.Clean(path))
@@ -293,10 +313,24 @@ func (s Setup) opencodeCodeMode(path string) error {
 	if !ok {
 		return tell("no mcp.servers.factory")
 	}
-	if factory["codemode"] == false {
+	changed := false
+	if factory["codemode"] != false {
+		factory["codemode"], changed = false, true
+	}
+	if executionTimeout(factory) < opencodeExecutionTimeout {
+		t := map[string]any{}
+		switch old := factory["timeout"].(type) {
+		case map[string]any:
+			t = old
+		case json.Number: // a v1-style number: the catalog's
+			t["catalog"] = old
+		}
+		t["execution"], changed = opencodeExecutionTimeout, true
+		factory["timeout"] = t
+	}
+	if !changed {
 		return nil
 	}
-	factory["codemode"] = false
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -304,7 +338,7 @@ func (s Setup) opencodeCodeMode(path string) error {
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil { //nolint:gosec // a config the developer owns
 		return err
 	}
-	_, err = fmt.Fprintf(s.Out, "set \"codemode\": false on mcp.servers.factory in %s: its tools stay on OpenCode's native list\n", path)
+	_, err = fmt.Fprintf(s.Out, "set \"codemode\": false and timeout.execution %d on mcp.servers.factory in %s: its tools stay on OpenCode's native list, and issue_file's form can wait for you\n", opencodeExecutionTimeout, path)
 	return err
 }
 
