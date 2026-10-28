@@ -274,10 +274,12 @@ func (r *Reconciler) fileFollowUp(ctx context.Context, t *v1alpha1.Task) {
 	title, body := narrate.FollowUpIssue(t.Name, ref.Number, m.Verification.Alert.Name, t.Spec.Origin, r.Cfg.RoomsURL)
 	// The issue may exist already (its status write was lost, or its create timed out): adopt it by its marker.
 	marker := narrate.FollowUpMarker(t.Name)
-	found, err := r.gh(ctx).IssuesLabelled(ctx, "factory/proposed")
+	// Only issues updated since the merge are read: factory/proposed accumulates, and one page of all of
+	// them would stop filing for good. A listing that fails files anyway: a stray duplicate stub beats
+	// a verdict nobody is told about.
+	found, err := r.gh(ctx).IssuesLabelledSince(ctx, "factory/proposed", m.Since.Time)
 	if err != nil {
-		r.log().Warn("RunLore follow-up issue not filed", "task.id", t.Name, "err", err)
-		return
+		r.log().Warn("RunLore follow-up issue lookup failed; filing without it", "task.id", t.Name, "err", err)
 	}
 	for _, i := range found {
 		if forge.SameLogin(i.Author, r.Cfg.FactoryLogin) && strings.Contains(i.Body, marker) {

@@ -697,3 +697,13 @@ func TestVerificationSeedIsCorrectedToGitHubsMergeTime(t *testing.T) {
 		t.Fatalf("since %v", got)
 	}
 }
+
+// A listing that fails must not stop the follow-up for good: the stub is filed without it.
+func TestFollowUpIsFiledWhenTheLookupFails(t *testing.T) {
+	g := verifyRig(t, "system:runlore", "persisting", time.Hour, 2*time.Hour)
+	g.f.FailLists(errors.New("boom"))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if len(g.f.Created()) != 1 || tk.Status.Monitor.FollowUpIssue == 0 {
+		t.Fatalf("%d %+v", len(g.f.Created()), tk.Status.Monitor)
+	}
+}

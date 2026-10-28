@@ -338,6 +338,18 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `[{"number":41,"id":4101,"state":"open"}]`)
 			return
 		}
+		if q.Get("labels") == "factory/proposed" { // a label that accumulates: read since a time, over pages
+			if q.Get("since") != "2026-10-01T00:00:00Z" || q.Get("state") != "all" {
+				t.Errorf("the adoption lookup is bounded by since and reads closed issues: %v", q)
+			}
+			if q.Get("page") == "" {
+				w.Header().Set("Link", `<https://api.github.com/repos/Smana/demo/issues?page=2>; rel="next"`)
+				_, _ = io.WriteString(w, `[{"number":70,"state":"closed"}]`)
+				return
+			}
+			_, _ = io.WriteString(w, `[{"number":77,"state":"open","body":"<!-- agent-factory follow-up=3buqdlot -->"},{"number":78,"pull_request":{"url":"x"}}]`)
+			return
+		}
 		if q.Get("labels") == "factory/child-of:#7" {
 			if q.Get("state") != "all" {
 				t.Errorf("a split's parts are read open or closed: %v", q)
@@ -1731,5 +1743,15 @@ func TestMultiCommitRebase(t *testing.T) {
 		if got := c.p.MultiCommitRebase(); got != c.want {
 			t.Errorf("%s: %v", name, got)
 		}
+	}
+}
+
+// A label that accumulates is read since a time and across pages, so the follow-up lookup does not
+// stop at the first 100 issues of the repository's life.
+func TestIssuesLabelledSinceReadsEveryPage(t *testing.T) {
+	r := newRig(t)
+	got, err := r.g.IssuesLabelledSince(t.Context(), "factory/proposed", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(got) != 2 || got[1].Number != 77 {
+		t.Fatalf("%+v %v", got, err)
 	}
 }
