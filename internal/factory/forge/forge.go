@@ -181,7 +181,10 @@ type Commit struct {
 }
 
 // Subject is the message's first line.
-func (c Commit) Subject() string { s, _, _ := strings.Cut(c.Message, "\n"); return strings.TrimSpace(s) }
+func (c Commit) Subject() string {
+	s, _, _ := strings.Cut(c.Message, "\n")
+	return strings.TrimSpace(s)
+}
 
 // Push is one move of a branch, as GitHub's repository activity records it (#76): Actor is the
 // account whose credential moved the ref from Before to After, "" when GitHub names none. Unlike
