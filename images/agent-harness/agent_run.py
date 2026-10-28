@@ -763,6 +763,38 @@ def _git_out(*args: str) -> str:
                           env=ac.git_env()).stdout.strip()
 
 
+CONTRACT_TREES = "trees"  # under CHECKS_DIR: the red check's and the hold's worktrees (F1-R3)
+
+
+def contract_module():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import test_contract
+
+    return test_contract
+
+
+def start_base() -> str:
+    """The default branch's commit as the clone has it, read before the conversation (F1-R3)."""
+    return _git_out("rev-parse", "--verify", "--quiet", "refs/remotes/origin/HEAD^{commit}")
+
+
+def contract_env(decl, prefetched=None) -> dict:
+    """The tests' environment: the toolchain the prefetch installed (F1-R13), scrubbed as a step's."""
+    ac = checks_module()
+    if prefetched is not None:
+        try:
+            prefetched.wait(timeout=ac.INSTALL_S)
+        except subprocess.TimeoutExpired:
+            pass
+    tools = ac.pins(decl.get("tools", []))
+    missing = ac.install(tools, lambda m: print("agent-run contract: " + m, file=sys.stderr, flush=True))
+    env = ac.step_env(tools, missing)
+    trees = os.path.join(CHECKS_DIR, CONTRACT_TREES)
+    os.makedirs(trees, exist_ok=True)
+    env["TMPDIR"] = trees
+    return env
+
+
 def _load(path: str) -> dict | None:
     try:
         with open(path) as f:
@@ -1509,9 +1541,11 @@ def main() -> int:
         resumed = persisted(env) or clone(env)
         disable_push(env)
         decl = declared(env)
+        base = start_base() if decl else ""
+        prefetched = None
         if decl:
             try:
-                prefetch(child_spans(provider, span))
+                prefetched = prefetch(child_spans(provider, span))
             except Exception as exc:  # noqa: BLE001 -- the run goes on without the prefetch
                 print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:

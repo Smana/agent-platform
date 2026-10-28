@@ -88,3 +88,46 @@ class TesterCloneTest(Origin, unittest.TestCase):
         p = subprocess.run(["git", "-C", self.repo, "push", "origin", "HEAD:refs/heads/agent/x"], capture_output=True, text=True)
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(git(self.repo, "remote", "get-url", "origin"), self.origin, "the fetch URL stays the harness's")
+
+
+class ToolchainTest(Origin, unittest.TestCase):
+    def test_contract_env_waits_for_the_prefetch_then_installs_once(self):
+        ac = agent_run.checks_module()
+        proc = mock.Mock()
+        order = []
+        proc.wait.side_effect = lambda timeout=None: order.append(("wait", timeout))
+        with mock.patch.object(ac, "pins", return_value={"go": "1.2"}) as pins, \
+                mock.patch.object(ac, "install", side_effect=lambda t, say: order.append("install") or []) as install, \
+                mock.patch.object(ac, "step_env", return_value={"PATH": "/x"}) as step_env:
+            env = agent_run.contract_env({"tools": ["go"]}, proc)
+        self.assertEqual(order, [("wait", ac.INSTALL_S), "install"])
+        pins.assert_called_once_with(["go"])
+        self.assertEqual(install.call_count, 1)
+        step_env.assert_called_once_with({"go": "1.2"}, [])
+        trees = os.path.join(agent_run.CHECKS_DIR, "trees")
+        self.assertEqual(env["TMPDIR"], trees)
+        self.assertTrue(os.path.isdir(trees))
+        self.assertEqual(env["PATH"], "/x")
+
+    def test_a_prefetch_that_overruns_is_not_waited_for_twice(self):
+        ac = agent_run.checks_module()
+        proc = mock.Mock()
+        proc.wait.side_effect = subprocess.TimeoutExpired("x", 1)
+        with mock.patch.object(ac, "pins", return_value={}), mock.patch.object(ac, "install", return_value=[]), \
+                mock.patch.object(ac, "step_env", return_value={}):
+            self.assertIn("TMPDIR", agent_run.contract_env({}, proc))
+
+    def test_no_prefetch_is_fine(self):
+        ac = agent_run.checks_module()
+        with mock.patch.object(ac, "pins", return_value={}), mock.patch.object(ac, "install", return_value=[]), \
+                mock.patch.object(ac, "step_env", return_value={}):
+            self.assertIn("TMPDIR", agent_run.contract_env({}, None))
+
+    def test_the_start_base_is_the_clones_default_branch_and_does_not_move(self):
+        self.assertEqual(agent_run.start_base(), self.base)
+        self.commit({"t/other.sh": "exit 0\n"})
+        other = git(self.repo, "rev-parse", "HEAD")
+        start = agent_run.start_base()
+        git(self.repo, "update-ref", "refs/remotes/origin/HEAD", other)
+        self.assertEqual(start, self.base)
+        self.assertEqual(agent_run.start_base(), other, "a later read would move: the harness reads once")
