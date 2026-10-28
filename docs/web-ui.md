@@ -25,10 +25,7 @@ A table, one row per room you can read. Rooms that need you come first, then the
 active, then by id. The whole row opens the room page: the task cell's link covers the row, so it
 stays one link for the keyboard and a screen reader. The phase shows as the room page's phase chip.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/rooms-dark.png">
-  <img alt="The room list: six factory rooms, the first with one item that needs you, with their repository, phase, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
-</picture>
+<img alt="The room list: factory rooms from two repositories, the ones that need you first, each with its repository, phase chip, PR, last activity and room id" src="assets/web-ui/rooms-light.png" width="800">
 
 | Column | Shows |
 |---|---|
@@ -62,12 +59,11 @@ A `Use roomctl from your terminal` fold under the list sets up [roomctl](roomctl
 broker in numbered steps (install, point it at this broker, sign in), each command in its own
 block with a Copy button that copies it exactly as shown.
 
+<img alt="The Use roomctl from your terminal fold: three numbered steps, install, point it at this broker and sign in, each in a code block with a Copy button" src="assets/web-ui/cli-setup-light.png" width="800">
+
 ## The room page
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/room-dark.png">
-  <img alt="A room page: the title strip with its chips and waiting line, the agent's latest claim, the conversation with a message and folded tool calls, the dock" src="assets/room-light.png" width="800">
-</picture>
+<img alt="A room page during a live review: the run chip reads reviewer, its id, the model agent-default, the effort high and its age, then the budget, PR, issue, Dashboards and the Now line; the factory brief folded under Show more; the dock" src="assets/room-light.png" width="800">
 
 From the top:
 

@@ -16,10 +16,7 @@ Maku is the product name; `agent-platform` stays the name of the repository, mod
 - **On the record:** every run streams into a room that nobody can rewrite, the agent included.
 
 <a href="https://blog.ogenki.io/agent-platform/">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/room-dark.png">
-    <img alt="A live factory room: the task's chips with its PR and the reviewer's approving verdict, the agent's latest claim, the triager's scope, its tool calls, the composer" src="docs/assets/room-light.png" width="800">
-  </picture>
+  <img alt="A live factory room during a review: the run chip with its role, model and reasoning effort, the budget, PR, issue and Dashboards chips, the Now line, the folded factory brief and the composer" src="docs/assets/room-light.png" width="800">
 </a>
 
 **[Watch a run in the live demo →](https://blog.ogenki.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
