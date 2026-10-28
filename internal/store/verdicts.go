@@ -23,7 +23,7 @@ const VerdictsClient = "broker:verdicts"
 const agentVerdicts = ` FROM events e JOIN rooms r USING (room_id)
 		WHERE e.type = 'message' AND e.actor_kind = 'agent' AND e.payload->>'kind' = 'review_verdict'
 		  AND e.origin = 'client' AND e.origin_client = 'agent:' || e.run_id || ':tools'
-		  AND e.actor_role IN ('reviewer', 'tester') AND NOT r.sealed
+		  AND e.actor_role = 'reviewer' AND NOT r.sealed
 		  AND NOT EXISTS (SELECT 1 FROM events p
 		                  WHERE p.room_id = e.room_id AND p.origin_client = $1 AND p.origin_seq = e.seq)`
 

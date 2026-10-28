@@ -211,7 +211,7 @@ func (c *card) facts(s summary.Summary) {
 	}
 	if j := s.Status.LastJudge; j != nil {
 		rows = append(rows, [2]string{"Judge", c.words(j.Verdict, judgeWords(j.Verdict), c.md()) + " " + c.quoted(j.Reason, c.md()) +
-			" (the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
+			" (reported by the run: the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
 	}
 	if s.Status.Next != "" {
 		rows = append(rows, [2]string{"Next", c.broker(s.Status.Next)})
@@ -426,7 +426,7 @@ func (c *card) runs(s summary.Summary) {
 // outcome the factory set without an end (a stopped task's last run) is that outcome, never
 // running, and has no time to count.
 func (c *card) runPhrase(r envelope.RunFact) string {
-	reviews := r.Role == "reviewer" || r.Role == "tester"
+	reviews := r.Role == "reviewer" // a tester writes tests: shown as a writer (TO1)
 	s := c.text(r.Role, false)
 	if !reviews && clean(r.Trigger) != "" {
 		s += " (" + c.words(r.Trigger, triggerWords(r.Trigger), false) + ")"

@@ -429,7 +429,9 @@ func validate(in RunRequest) string {
 		return "exactly_one_of_task_text_or_url"
 	case len(in.Task.Text) > 16384:
 		return "task_text_too_long"
-	case (in.Role == "reviewer" || in.Role == "tester") && !prURL.MatchString(in.Task.URL):
+	case in.Role == "tester":
+		return "tester_is_factory_only" // the factory starts the test writer, with its contract stage behind it (TO1)
+	case in.Role == "reviewer" && !prURL.MatchString(in.Task.URL):
 		return "reviewer_needs_a_pull_request_url"
 	case in.DataClass != "public" && in.DataClass != "internal":
 		return "bad_data_class"

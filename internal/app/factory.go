@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -106,6 +108,24 @@ func warnIgnored(log *slog.Logger, cfg *config.Config) {
 	}
 }
 
+// warnConfig logs each sentence the config loaded with (a later release refuses it) and sets the
+// gauge of a live class that declares no holdoutChecks (TO5).
+func warnConfig(log *slog.Logger, cfg *config.Config, m *fmetrics.Set) {
+	for _, w := range cfg.Warnings {
+		log.Warn("config warning", "warning", w)
+	}
+	if m == nil {
+		return
+	}
+	for _, r := range cfg.Repos() {
+		for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
+			if cl := r.Classes[name]; cl.Live && len(cl.HoldoutChecks) == 0 {
+				m.ClassWithoutHoldout(context.Background(), r.Name, name)
+			}
+		}
+	}
+}
+
 func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	cfgPath, ns, err := factoryEnv(getenv)
 	if err != nil {
@@ -156,6 +176,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	m.ListRepositories(conns.names()...)
+	warnConfig(log, cfg, m)
 	m.ChargePeople(cfg.Budgets.PerPerson.Enabled)
 	sponsors := map[string]string{}
 	for _, sp := range cfg.API.Sponsored {

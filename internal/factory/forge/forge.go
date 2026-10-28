@@ -30,6 +30,10 @@ var ErrCommitsTruncated = errors.New("forge: a pull request's commits past GitHu
 // diff cannot be judged. The merge path hands such a pull request to a human (patch_too_large).
 var ErrDiffTooLarge = errors.New("forge: a diff of a full page of files, the rest unread")
 
+// ErrNotDescendant is ChangedFiles on a head that GitHub does not call ahead of the base (behind,
+// diverged, identical): the compare's file list says nothing about what changed since the base.
+var ErrNotDescendant = errors.New("forge: the head is not a descendant of the base")
+
 // ErrActivityTruncated is BranchActivity reaching its page cap before the branch's creation: the
 // pushes before what was read are unknown.
 var ErrActivityTruncated = errors.New("forge: a branch's activity past the page cap is unread")
@@ -169,6 +173,17 @@ type Commit struct {
 	SHA     string
 	Author  string // the login GitHub matched the author's email to, "" when none: never proof
 	Message string
+	// Parents and Stats are read only by Commit (one commit by sha): its parents' shas and the files
+	// it changes against them, each with its status (added, modified, removed, renamed...). FilesTruncated is a full page of files.
+	Parents        []string
+	Stats          []FileStat
+	FilesTruncated bool
+}
+
+// Subject is the message's first line.
+func (c Commit) Subject() string {
+	s, _, _ := strings.Cut(c.Message, "\n")
+	return strings.TrimSpace(s)
 }
 
 // Push is one move of a branch, as GitHub's repository activity records it (#76): Actor is the
@@ -184,6 +199,25 @@ type Push struct {
 
 // Trailer is what the commit claims for a git trailer, as PR.Trailer reads the head's.
 func (c Commit) Trailer(key string) string { return trailer(c.Message, key) }
+
+// Trailers is every value the commit claims for a git trailer, in order: one per line of the
+// message's last paragraph, as Trailer reads it, and none from the body.
+func (c Commit) Trailers(key string) []string { return trailers(c.Message, key) }
+
+func trailers(message, key string) []string {
+	msg := strings.TrimRight(strings.ReplaceAll(message, "\r\n", "\n"), " \t\n")
+	i := strings.LastIndex(msg, "\n\n")
+	if i < 0 {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(msg[i+2:], "\n") {
+		if rest, ok := strings.CutPrefix(line, key+":"); ok {
+			out = append(out, strings.TrimSpace(rest))
+		}
+	}
+	return out
+}
 
 func trailer(message, key string) string {
 	msg := strings.TrimRight(strings.ReplaceAll(message, "\r\n", "\n"), " \t\n")
@@ -434,6 +468,10 @@ type Merger interface {
 	// the merger App held until merge.checkReruns was turned on.
 	RerunCheck(ctx context.Context, id int64) error
 	Diff(ctx context.Context, base, head string) (Diff, error)
+	// ChangedFiles is the path of every file changed between base and head, without contents
+	// (a rename lists both names). A head not ahead of base is ErrNotDescendant; a full page of
+	// files is ErrDiffTooLarge (R21: fail closed).
+	ChangedFiles(ctx context.Context, base, head string) ([]string, error)
 	Merge(ctx context.Context, nodeID, head string) error
 	EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error
 	DisableAutoMerge(ctx context.Context, nodeID string) error

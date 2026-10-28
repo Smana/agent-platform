@@ -202,6 +202,7 @@ func TestStartRunRefusals(t *testing.T) {
 	}{
 		{name: "a collaborator", who: "human:col", action: Action{Role: "implementer"}, want: "not_permitted"},
 		{name: "an unknown role", action: Action{Role: "admin"}, want: "bad_action"},
+		{name: "the factory's tester", action: Action{Role: "tester"}, want: "bad_action"},
 		{name: "a PR for an implementer", action: Action{Role: "implementer", PRURL: "https://github.com/Smana/cloud-native-ref/pull/1"}, want: "bad_action"},
 		{name: "another repository's PR", action: Action{Role: "reviewer", PRURL: "https://github.com/evil/repo/pull/1"}, want: "bad_action"},
 		{name: "a malformed egress profile", action: Action{Role: "implementer", EgressProfiles: []string{"PyPI!"}}, want: "bad_action"},

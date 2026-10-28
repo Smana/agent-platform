@@ -275,12 +275,12 @@ func TestAResumedMaintainerRevisionKeepsItsReviewAndItsCause(t *testing.T) {
 	}
 }
 
-// Review I3 (M-A): a lost tester re-runs as the tester, without a round.
-func TestALostTesterRunsAgainAsTheTester(t *testing.T) {
-	g := teamRig(t, "trio", nil) // rid(1) is the tester
+// Review I3 (M-A): a lost reviewer re-runs as the reviewer, without a round.
+func TestALostReviewerRunsAgainAsTheReviewer(t *testing.T) {
+	g := teamRig(t, "pair", nil) // rid(1) is the reviewer
 	g.lose(rid(1), runs.ReasonDisrupted)
 	tk := g.reconcile(t, "3buqdlot", 2)
-	if tk.Status.Phase != v1alpha1.PhaseReviewing || g.runs.specs[rid(2)].Role != "tester" || tk.Status.ReviewRounds != 0 || tk.Status.Resumes != 1 {
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || g.runs.specs[rid(2)].Role != "reviewer" || tk.Status.ReviewRounds != 0 || tk.Status.Resumes != 1 {
 		t.Fatalf("%s %s rounds=%d resumes=%d", tk.Status.Phase, g.runs.specs[rid(2)].Role, tk.Status.ReviewRounds, tk.Status.Resumes)
 	}
 }

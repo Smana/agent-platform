@@ -605,7 +605,7 @@ func (r Roomctl) post(ctx context.Context, c roomctl.Client, args []string) erro
 func (r Roomctl) fork(ctx context.Context, c roomctl.Client, base string, args []string) error {
 	fs := flag.NewFlagSet("fork", flag.ContinueOnError)
 	at := fs.Int64("at", 0, "the last seq to copy")
-	role := fs.String("role", "", "request a run in the new room: implementer, reviewer, tester or triager")
+	role := fs.String("role", "", "request a run in the new room: implementer, reviewer or triager")
 	pr := fs.String("pr", "", "the reviewer's pull request")
 	egress := fs.String("egress", "", "extra egress profiles for that run: pypi,npm,golang,crates")
 	note := fs.String("note", "", "why you fork")

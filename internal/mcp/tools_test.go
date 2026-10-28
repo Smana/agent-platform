@@ -365,7 +365,7 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		"room_post":     {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
 		"room_progress": {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
 		"room_handoff":  {[]string{"implementer", "tester", "triager"}, policy.Chat},
-		"room_verdict":  {[]string{"reviewer", "tester"}, policy.Chat},
+		"room_verdict":  {[]string{"reviewer"}, policy.Chat},
 		"room_judge":    {[]string{"implementer"}, policy.Chat},
 	}
 	got := tools(&memLog{})

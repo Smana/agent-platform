@@ -325,6 +325,9 @@ func (m *fakeMetrics) MergeDecision(_ context.Context, class, verdict, reason st
 func (m *fakeMetrics) LoopRun(_ context.Context, class, end string) {
 	m.add("loop_run " + class + " " + end)
 }
+func (m *fakeMetrics) ContractEnd(_ context.Context, class, end string) {
+	m.add("contract " + class + " " + end)
+}
 func (m *fakeMetrics) SteeringRead(_ context.Context, class, read string) {
 	m.add("steering " + class + " " + read)
 }

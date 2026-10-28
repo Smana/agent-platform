@@ -247,6 +247,8 @@ absent rather than 0.
 | `agent_factory_meter_last_success_timestamp_seconds` | gauge | — | When the meter last read usage and settled it in the day's ledger; set by the leader only, so alert on its max across pods. A tick whose ledger write fails sets nothing: it still revokes runs at their own caps, but the daily budgets wait and the increase is retried whole on the next tick |
 | `agent_factory_resumes_total` | counter | `reason` | Runs resumed after their pod was `Disrupted` or `PodLost` |
 | `agent_factory_loop_runs_total` | counter | `class`, `end`, `repository` | Implementer runs under the loop policy as they end: `judge_impossible`, `stalled`, `not_met`, `finished`, `other`. The wandering share is `stalled` over all |
+| `agent_factory_contracts_total` | counter | `class`, `end`, `repository` | Tester runs as their end is read: `ready`, `not_testable`, `contract_not_red`, `contract_outside_tests`, `contract_invalid`, `unreported` |
+| `agent_factory_class_without_holdout` | gauge | `repository`, `class` | 1 for a live class that declares no `holdoutChecks`, set once at start; the config is refused from the next minor |
 | `agent_factory_steering_reads_total` | counter | `class`, `read`, `repository` | Steering notes read at triage, in a mode other than `off`: `used`, `absent`, `invalid`, or `unowned` (the repository's fence does not name this factory, or its cache is stale: not read) |
 | `agent_factory_scoper_runs_total` | counter | `class`, `outcome`, `repository` | Scoper runs as they end: `ready`, `question`, `assumed`, `missing`, `failed` |
 | `agent_factory_scope_bounces_total` | counter | `class`, `exit`, `repository` | Bounced tasks leaving their wait: `relabel`, `retry`, `expired` |
