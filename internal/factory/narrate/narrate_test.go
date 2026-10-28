@@ -136,6 +136,10 @@ func TestTokensAndReasons(t *testing.T) {
 			t.Errorf("Tokens(%d) = %q, want %q", n, got, want)
 		}
 	}
+	if got := Reason("class_unarmed"); got != "the factory does not merge this class: a maintainer reviews and merges it" ||
+		strings.Contains(got, "predicted") {
+		t.Fatalf("class_unarmed is not a mismatch: %q", got)
+	}
 	if Reason("kill_switch") != "the factory's kill switch is engaged" || Reason("something_new") != "something_new" {
 		t.Fatal("known reasons read as prose; an unknown one is shown as it is")
 	}

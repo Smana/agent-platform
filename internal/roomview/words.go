@@ -89,6 +89,7 @@ var reasonPhrases = map[string]string{
 	"shadow_would_arm":          "it would merge, the gate is in shadow",
 	"split_proposed":            "a split is proposed",
 	"stalled":                   "the run made no commit",
+	"class_unarmed":             "a maintainer merges this class",
 	"steering_path":             "it changes a steering note",
 	"stuck":                     "the run showed no activity",
 	"verdict_stale":             "the approval is for an older head",

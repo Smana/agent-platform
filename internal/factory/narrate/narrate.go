@@ -255,6 +255,7 @@ func reasons() map[string]string {
 		"gate_path":                 "it touches a gate path, so an agent can never merge it; a human must re-author the change",
 		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"class_mismatch":            "the diff is not the class the triage predicted",
+		"class_unarmed":             "the factory does not merge this class: a maintainer reviews and merges it",
 		"file_not_allowed":          "it changes a file outside its class's allowed files",
 		"file_protected":            "it changes a file its class protects",
 		"file_added_or_deleted":     "it changes a file in a way other than editing its content (an add, delete, rename, copy or mode change), which its class does not allow",
