@@ -27,7 +27,7 @@ func TestReactionFlow(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.mention("C03", "1729.0001", "<@U0BOT> Smana/ai-native-ref docs(agents): the link is dead\n## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz")
 	draft := rig.lastPost()
-	if draft.meta == nil || draft.meta.EventType != "factory_draft" || !strings.Contains(draft.text, "a maintainer reacts :white_check_mark:") {
+	if draft.meta == nil || draft.meta.EventType != "factory_draft" || !strings.Contains(draft.text, "a maintainer replies :white_check_mark: or reacts :white_check_mark:") {
 		t.Fatalf("%+v", draft)
 	}
 	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
@@ -858,5 +858,63 @@ func TestLongThreadFailsClosed(t *testing.T) {
 	rig.react("C03", d.ts, "U02DEF", "white_check_mark")
 	if rig.broker.created() != 0 || len(rig.posts()) != n+2 || !strings.Contains(rig.lastPost().text, "too long") {
 		t.Fatalf("%d %q", rig.broker.created(), rig.lastPost().text)
+	}
+}
+
+// ---- a check mark typed as a reply ----
+
+func TestCheckMarkReplyFilesTheLatestDraft(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	n := len(rig.posts())
+	rig.reply("U07GHI", " :white_check_mark: ")
+	calls := rig.broker.runCreates()
+	if len(calls) != 1 || calls[0].OnBehalfOf != "slack:T01ABC/U07GHI" || calls[0].Key != "T01ABC/C03/1729.0001" ||
+		calls[0].Ref != "slack/T01ABC/C03/1729.0001" || !strings.Contains(calls[0].Body, "a see also line") {
+		t.Fatalf("%+v", calls)
+	}
+	if len(rig.posts()) != n+1 || rig.lastPost().meta == nil || rig.lastPost().meta.EventType != "factory_filed" ||
+		!strings.Contains(rig.lastPost().text, "Filed #42") {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+	for _, text := range []string{"✅", ":heavy_check_mark:"} { // on the filed thread: a duplicate, one issue
+		rig.reply("U02DEF", text)
+		if !strings.Contains(rig.lastPost().text, "Already filed") {
+			t.Fatalf("%q", rig.lastPost().text)
+		}
+	}
+	if rig.broker.newIssues() != 1 {
+		t.Fatal("a second issue was filed")
+	}
+}
+
+func TestCheckMarkReplyByANonMaintainerIsRefused(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
+	n := len(rig.posts())
+	rig.reply("U09XYZ", "✅")
+	if rig.broker.newIssues() != 0 || len(rig.posts()) != n+1 || rig.lastPost().meta != nil ||
+		!strings.Contains(rig.lastPost().text, "A maintainer reacts :white_check_mark: to file it") {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+}
+
+func TestCheckMarkReplyIsNeverDraftText(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.broker.refuse("slack:T01ABC/U02DEF", "rejected: not_linked")
+	rig.reply("U02DEF", ":white_check_mark:")
+	for _, p := range rig.posts() {
+		if p.meta != nil && p.meta.EventPayload.Rev > 1 {
+			t.Fatalf("the check mark was appended: %+v", p.meta.EventPayload)
+		}
+	}
+	// no draft in the thread: nothing at all
+	rig2 := editRig(t)
+	rig2.reply("U02DEF", "✅")
+	if len(rig2.posts()) != 0 || len(rig2.broker.all()) != 0 {
+		t.Fatal("a check mark in a thread without a draft did something")
 	}
 }
