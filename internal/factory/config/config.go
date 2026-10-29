@@ -131,7 +131,6 @@ type Config struct {
 	Resume    Resume              `json:"resume"`
 	Meter     Meter               `json:"meter"`
 	Tracing   Tracing             `json:"tracing"`
-	Metrics   Metrics             `json:"metrics,omitzero"`
 	API       API                 `json:"api"`
 	RunLore   RunLore             `json:"runlore"`
 	Sandbox   Sandbox             `json:"sandbox,omitzero"`
@@ -582,14 +581,6 @@ type Tracing struct {
 	OTLPEndpoint string `json:"otlpEndpoint"`
 }
 
-// Metrics tunes what /metrics serves beyond the §7 instruments.
-type Metrics struct {
-	// MakuNames also serves every agent_factory_* series as maku_factory_* and every rooms_* one
-	// as maku_rooms_* (metrics.MakuName; the maku rebrand, one release of both names). On unless
-	// the file sets it false.
-	MakuNames bool `json:"makuNames"`
-}
-
 // Schedule starts a task from config (§1). The config is a gate path, so its text is trusted.
 type Schedule struct {
 	Name      string `json:"name"`
@@ -996,7 +987,7 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(j))
 	dec.DisallowUnknownFields()
-	c := Config{Budgets: Budgets{EnforceTask: true}, Metrics: Metrics{MakuNames: true}} // decoding keeps a default the file omits
+	c := Config{Budgets: Budgets{EnforceTask: true}} // decoding keeps a default the file omits
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}

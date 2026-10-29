@@ -229,8 +229,6 @@ type Config struct {
 	Runs runwatch.Kind `json:"runs,omitzero"`
 	// Webhooks are the subscribers to room events (factory interfaces F6).
 	Webhooks []WebhookConfig `json:"webhooks,omitempty"`
-	// Metrics tunes /metrics (the maku rebrand, v0.30.0).
-	Metrics MetricsConfig `json:"metrics,omitzero"`
 }
 
 // WebhookConfig is one subscriber (factory interfaces F6, O7): declared here because subscribers
@@ -306,16 +304,6 @@ func (w WebhookConfig) validateInternet(at string) []error {
 	}
 	return nil
 }
-
-// MetricsConfig tunes what /metrics serves beyond the instruments themselves.
-type MetricsConfig struct {
-	// MakuNames also serves every rooms_* series as maku_rooms_* and every agent_factory_* one
-	// as maku_factory_* (metrics.MakuName; one release of both names): on unless set to false.
-	MakuNames *bool `json:"makuNames,omitempty"`
-}
-
-// MakuNamesOn reports whether MakuNames is on: unset is on.
-func (m MetricsConfig) MakuNamesOn() bool { return m.MakuNames == nil || *m.MakuNames }
 
 // SuspendConfig is the broker's suspend trigger (v2 warm-sandboxes design §6): a suspendable
 // run in an attended room whose approval waits while the room stays idle for After is

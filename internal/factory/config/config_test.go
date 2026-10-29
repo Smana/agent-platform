@@ -652,26 +652,11 @@ func TestRunLoreBlockIsOptional(t *testing.T) {
 	}
 }
 
-func TestMetricsMakuNames(t *testing.T) {
-	for _, tc := range []struct {
-		name, raw string
-		want      bool
-	}{
-		{"unset is on", good, true},
-		{"true is on", good + "metrics:\n  makuNames: true\n", true},
-		{"false is off", good + "metrics:\n  makuNames: false\n", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c, err := Parse([]byte(tc.raw))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if c.Metrics.MakuNames != tc.want {
-				t.Fatalf("Metrics.MakuNames = %v, want %v", c.Metrics.MakuNames, tc.want)
-			}
-		})
-	}
-	if _, err := Parse([]byte(good + "metrics:\n  makuName: true\n")); err == nil {
-		t.Fatal("a misspelt metrics key parsed")
+// v0.31.0 serves the maku_ names only, so the one-release switch is gone, and strict decode refuses it.
+func TestParseRefusesTheMetricsSwitch(t *testing.T) {
+	for _, raw := range []string{good + "metrics:\n  makuNames: true\n", good + "metrics:\n  makuNames: false\n"} {
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Fatalf("parsed %q", raw)
+		}
 	}
 }

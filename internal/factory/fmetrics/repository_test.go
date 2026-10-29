@@ -28,12 +28,12 @@ func TestTheRepositoryLabelIsBoundedByTheList(t *testing.T) {
 	s.Intervention(t.Context(), "retry")
 	out := scrape()
 	for _, want := range []string{
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="Smana/b"`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="other"`,
-		`agent_factory_time_to_pr_seconds_count{repository="Smana/b",source="issue",template="solo",tier="standard"}`,
-		`agent_factory_human_interventions_total{kind="stop",repository="Smana/b"`,
-		`agent_factory_human_interventions_total{kind="retry",repository="other"`,
-		`agent_factory_intake_errors_total{repository="Smana/b",source="issue"`,
+		`maku_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="Smana/b"`,
+		`maku_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="other"`,
+		`maku_factory_time_to_pr_seconds_count{repository="Smana/b",source="issue",template="solo",tier="standard"}`,
+		`maku_factory_human_interventions_total{kind="stop",repository="Smana/b"`,
+		`maku_factory_human_interventions_total{kind="retry",repository="other"`,
+		`maku_factory_intake_errors_total{repository="Smana/b",source="issue"`,
 		`predicted_class="review",principal="system:factory",repository="Smana/a"`,
 		`predicted_class="review",principal="system:factory",repository="other"`,
 	} {
@@ -58,10 +58,10 @@ func TestOwnershipAndAdmissionRefusals(t *testing.T) {
 	s.AdmissionRefused(WithRepository(t.Context(), "Smana/a"), "room_busy")
 	out := scrape()
 	for _, want := range []string{
-		`agent_factory_repository_owned{repository="Smana/a"} 1`,
-		`agent_factory_repository_owned{repository="Smana/b"} 0`,
-		`agent_factory_admission_refusals_total{principal="other",reason="repository_not_owned",repository="Smana/b"} 1`,
-		`agent_factory_admission_refusals_total{principal="other",reason="repository_permission",repository="Smana/a"} 1`,
+		`maku_factory_repository_owned{repository="Smana/a"} 1`,
+		`maku_factory_repository_owned{repository="Smana/b"} 0`,
+		`maku_factory_admission_refusals_total{principal="other",reason="repository_not_owned",repository="Smana/b"} 1`,
+		`maku_factory_admission_refusals_total{principal="other",reason="repository_permission",repository="Smana/a"} 1`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s", want)

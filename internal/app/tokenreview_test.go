@@ -235,7 +235,7 @@ func TestTokenReviewOnlyHasNoJWKSMetrics(t *testing.T) {
 	rec := httptest.NewRecorder()
 	exp.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	if strings.Contains(string(body), "rooms_authn_jwks_last_refresh_timestamp_seconds") {
+	if strings.Contains(string(body), "maku_rooms_authn_jwks_last_refresh_timestamp_seconds") {
 		t.Fatalf("a TokenReview-only broker exposes a JWKS key gauge:\n%s", body)
 	}
 }
@@ -295,11 +295,11 @@ func TestMixedIssuersNameOnlyTheJWKSIssuer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	exp.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	want := fmt.Sprintf(`rooms_authn_jwks_last_refresh_timestamp_seconds{issuer=%q}`, clusterIssuer)
+	want := fmt.Sprintf(`maku_rooms_authn_jwks_last_refresh_timestamp_seconds{issuer=%q}`, clusterIssuer)
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("the JWKS issuer's gauge is missing:\n%s", body)
 	}
-	if n := strings.Count(string(body), "rooms_authn_jwks_last_refresh_timestamp_seconds{"); n != 1 {
+	if n := strings.Count(string(body), "maku_rooms_authn_jwks_last_refresh_timestamp_seconds{"); n != 1 {
 		t.Fatalf("%d key-gauge series, want only the JWKS issuer's:\n%s", n, body)
 	}
 }

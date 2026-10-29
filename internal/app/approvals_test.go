@@ -223,13 +223,13 @@ func TestRoomPolicyHonoursTheCallersContext(t *testing.T) {
 	}
 }
 
-// rooms_approval_decision_seconds observes each human decision's wait.
+// maku_rooms_approval_decision_seconds observes each human decision's wait.
 func TestDecisionSecondsAreRecorded(t *testing.T) {
 	exp, m := newMetrics(t)
 	h := humanActorForMetrics(t, m)
 	h.OnDecided(90 * time.Second)
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_approval_decision_seconds_count 1") ||
-		!strings.Contains(body, "rooms_approval_decision_seconds_sum 90") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_rooms_approval_decision_seconds_count 1") ||
+		!strings.Contains(body, "maku_rooms_approval_decision_seconds_sum 90") {
 		t.Fatalf("the decision is not observed:\n%s", body)
 	}
 }

@@ -98,7 +98,7 @@ func TestRoomMCP(t *testing.T) {
 	scrape := httptest.NewRecorder()
 	exp.Handler().ServeHTTP(scrape, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(scrape.Body)
-	if !strings.Contains(string(body), `rooms_rejected_actions_total{reason="mcp_key"} 1`+"\n") {
+	if !strings.Contains(string(body), `maku_rooms_rejected_actions_total{reason="mcp_key"} 1`+"\n") {
 		t.Fatalf("the refusal is not counted:\n%s", body)
 	}
 

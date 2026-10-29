@@ -194,7 +194,7 @@ func TestRoomObserver(t *testing.T) {
 			}
 			roomObserver(m, watch)("3kq7x2ma", v1alpha1.RoomStatus{Phase: c.phase}, last)
 			body := scrape(t, exp.Handler())
-			if got := strings.Contains(body, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.7e+09`); got != c.series {
+			if got := strings.Contains(body, `maku_rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.7e+09`); got != c.series {
 				t.Fatalf("activity series exposed=%v, want %v:\n%s", got, c.series, body)
 			}
 			if !strings.Contains(body, `rooms{phase="`+c.phase+`"} 1`) {
@@ -303,7 +303,7 @@ func TestRefreshJWKS(t *testing.T) {
 	}
 }
 
-// rooms_participants{kind="run"} follows the watch: a live run with a roomRef
+// maku_rooms_participants{kind="run"} follows the watch: a live run with a roomRef
 // counts, and its deletion uncounts it.
 func TestCountLiveRuns(t *testing.T) {
 	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
@@ -317,16 +317,16 @@ func TestCountLiveRuns(t *testing.T) {
 	w := runwatch.New()
 	countLiveRuns(w, m)
 	w.Upsert(t.Context(), runClaim("7f3cq2xz", "3kq7x2ma", "Running"))
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_participants{kind=\"run\"} 1\n") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_rooms_participants{kind=\"run\"} 1\n") {
 		t.Fatalf("a live run is not counted:\n%s", body)
 	}
 	w.Remove(t.Context(), runClaim("7f3cq2xz", "3kq7x2ma", "Running"))
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_participants{kind=\"run\"} 0\n") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_rooms_participants{kind=\"run\"} 0\n") {
 		t.Fatalf("a deleted run is still counted:\n%s", body)
 	}
 }
 
-// rooms_run_info reads a run's model from its claim and keeps the run while it is live, or while
+// maku_rooms_run_info reads a run's model from its claim and keeps the run while it is live, or while
 // the watch has not synced and cannot tell; it drops the run once the watch knows it ended or was
 // deleted.
 func TestRunInfoReadsTheWatch(t *testing.T) {

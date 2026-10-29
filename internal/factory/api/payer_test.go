@@ -51,8 +51,8 @@ func TestARefusalNamesItsRequesterOrThePersonOverTheirDay(t *testing.T) {
 	}
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_admission_refusals_total{principal="github:alice",reason="person_budget_exhausted",repository="Smana/cloud-native-ref"} 1`,
-		`agent_factory_admission_refusals_total{principal="human:291",reason="repository_not_owned",repository="Smana/cloud-native-ref"} 1`,
+		`maku_factory_admission_refusals_total{principal="github:alice",reason="person_budget_exhausted",repository="Smana/cloud-native-ref"} 1`,
+		`maku_factory_admission_refusals_total{principal="human:291",reason="repository_not_owned",repository="Smana/cloud-native-ref"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)
