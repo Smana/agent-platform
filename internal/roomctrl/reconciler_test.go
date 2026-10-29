@@ -728,7 +728,7 @@ func TestStatusClampsPendingApprovals(t *testing.T) {
 }
 
 // A copy migrate-group has not finished (no status yet) is left alone: reconciling it would open a
-// purged log again, and add a finalizer the migration does not expect (maku rebrand, plan D2).
+// purged log again, and add a finalizer the migration does not expect (maku rebrand).
 func TestAMigratingRoomIsLeftAlone(t *testing.T) {
 	room := newRoom()
 	room.Annotations = map[string]string{v1alpha1.AnnotationMigrating: "true"}
