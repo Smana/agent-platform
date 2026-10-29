@@ -70,8 +70,8 @@ operator, as the database owner, from the `atlas-db-migrations` ConfigMap.
 | A push to a PR branch of this repo | `ghcr.io/smana/{maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack}:v<next-patch>-pr<N>.<sha8>`, for integration testing (`ci.yaml`) |
 | | The chart `oci://ghcr.io/smana/charts/maku-factory`, at `<next-patch>-pr<N>.g<sha8>` (`ci.yaml`, `chart-prerelease`) |
 | A `v*` tag on `main` | The six images `ghcr.io/smana/{maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack}:vX.Y.Z` |
-| | The chart `oci://ghcr.io/smana/charts/maku-factory`, at the tag's version, signed |
-| | On the GitHub release: `maku-{os}-{arch}` (linux and darwin, amd64 and arm64), `maku.sha256` and `crd-rooms.yaml` (the `Room` CRD) |
+| | The charts `oci://ghcr.io/smana/charts/maku-factory` and `oci://ghcr.io/smana/charts/maku` (the umbrella: broker and run controller), at the tag's version, signed |
+| | On the GitHub release: `maku-{os}-{arch}` (linux and darwin, amd64 and arm64), `maku.sha256`, `crd-rooms.yaml` (the `Room` CRD) and `crd-agentruns.yaml` (the quickstart's `AgentRun` CRD) |
 
 To release, tag a commit on `main` that passed CI and push the tag:
 
