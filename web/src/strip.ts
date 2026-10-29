@@ -49,11 +49,28 @@ function since(iso: string, now: number): string {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+// plainText reduces an agent's markdown to one line of text for a place that cannot render it
+// (the Now line): line prefixes, links, code and clear emphasis go; whitespace collapses. An
+// underscore or star counts as emphasis only at a word edge, so snake_case and "2 * 3" stay.
+export function plainText(src: string): string {
+  return src
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
+    .replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/`+([^`]+)`+/g, "$1")
+    .replace(/\*\*(?!\s)(.+?)(?<!\s)\*\*/g, "$1")
+    .replace(/(?<!\w)__(?!\s)(.+?)(?<!\s)__(?!\w)/g, "$1")
+    .replace(/(?<![\w*])\*(?![\s*])([^*]+?)(?<!\s)\*(?![\w*])/g, "$1")
+    .replace(/(?<!\w)_(?![\s_])([^_]+?)(?<!\s)_(?!\w)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // nowText is the Now line: what, its status, and how long ago; with no agent present, the
 // last activity, which no longer runs.
 function nowText(n: Latest, t: number, present: boolean): string {
-  return present ? [`Now ▸ ${n.text}`, n.status, ago(n.ts, t)].filter(Boolean).join(" · ")
-    : [`No run · last: ${n.text}`, ago(n.ts, t)].filter(Boolean).join(" · ");
+  const text = plainText(n.text);
+  return present ? [`Now ▸ ${text}`, n.status, ago(n.ts, t)].filter(Boolean).join(" · ")
+    : [`No run · last: ${text}`, ago(n.ts, t)].filter(Boolean).join(" · ");
 }
 
 // nowLine says what the agent is doing: the latest activity, a button that takes the

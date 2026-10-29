@@ -314,6 +314,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    would cover the next row's chips. */
 .page-header .chip a { position: relative; }
 .page-header .chip a::after { content: ""; position: absolute; inset: -5px -2px; }
+/* On a touch screen the link's target reaches 44 px: the row gap grows to 24 px so the taller
+   targets of two wrapped rows (19 px link + 2 x 12.5 px) do not overlap. */
+@media (pointer: coarse) {
+  .strip-chips { row-gap: 24px; }
+  .page-header .chip a::after { inset: calc((100% - 44px) / 2) -4px; }
+}
 .page-header .needs-pill { position: relative; }
 .page-header .needs-pill::after { content: ""; position: absolute; inset: -3px 0; }
 .page-header .chip {
