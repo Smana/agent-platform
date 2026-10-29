@@ -265,6 +265,35 @@ func TestRun(t *testing.T) {
 			},
 		},
 		{
+			name: "a dry run whose copy the server would prune is a failure, and nothing is written",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: pruning, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				if r[0].Err == nil {
+					t.Error("a pruned dry-run copy carries no error")
+				}
+				if _, ok := get(t, c, newG, "Room", "aaaaaaaa"); ok {
+					t.Error("a dry run created a copy")
+				}
+			},
+		},
+		{
+			name: "a dry run whose create the server rejects is a failure",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			fail: func(op, group, _ string) error {
+				if op == "create" && group == newG {
+					return boom
+				}
+				return nil
+			},
+			want: []Outcome{Failed},
+			check: func(t *testing.T, _ client.Client, r Report) {
+				if !errors.Is(r[0].Err, boom) {
+					t.Errorf("err %v, want boom", r[0].Err)
+				}
+			},
+		},
+		{
 			name: "a copy whose status the server prunes is not confirmed, and the original stays",
 			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
 			wrap: pruningStatus, apply: true, want: []Outcome{Failed},
