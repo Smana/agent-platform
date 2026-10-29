@@ -203,6 +203,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Client.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if _, migrating := t.Annotations[roomv1.AnnotationMigrating]; migrating {
+		return ctrl.Result{}, nil // a migrate-group copy without its status yet: lifting the guard requeues it
+	}
 	// v2 D10 and spend per identity SI4: the pass's series are the task's repository's and its payer's.
 	ctx, err := r.bind(fmetrics.WithPrincipal(fmetrics.WithRepository(ctx, t.Spec.Repository), r.payer(&t)), &t)
 	if err != nil {
