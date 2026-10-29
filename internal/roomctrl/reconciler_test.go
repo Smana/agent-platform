@@ -726,3 +726,25 @@ func TestStatusClampsPendingApprovals(t *testing.T) {
 		t.Fatalf("clampInt32 = %d", got)
 	}
 }
+
+// A copy migrate-group has not finished (no status yet) is left alone: reconciling it would open a
+// purged log again, and add a finalizer the migration does not expect (maku rebrand, plan D2).
+func TestAMigratingRoomIsLeftAlone(t *testing.T) {
+	room := newRoom()
+	room.Annotations = map[string]string{v1alpha1.AnnotationMigrating: "true"}
+	c := build(room)
+	ms := newStore(nil)
+	r := &Reconciler{Client: c, Store: ms, Runs: runwatch.New(), Now: clock(deletedAt)}
+	res, err := r.Reconcile(t.Context(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Fatalf("result = %+v, want none: lifting the annotation is the next event", res)
+	}
+	got, _ := getRoom(t, c)
+	if ms.ensured != 0 || len(ms.drafts) != 0 || len(got.Finalizers) != 0 || got.Status != (v1alpha1.RoomStatus{}) {
+		t.Fatalf("%d ensures, %d drafts, finalizers %v, status %+v: the migrating copy was touched",
+			ms.ensured, len(ms.drafts), got.Finalizers, got.Status)
+	}
+}

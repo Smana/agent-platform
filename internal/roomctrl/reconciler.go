@@ -102,6 +102,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if _, migrating := room.Annotations[v1alpha1.AnnotationMigrating]; migrating {
+		return ctrl.Result{}, nil // migrate-group lifts the guard, which is the next event (plan D2)
+	}
 	if !room.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, &room)
 	}
