@@ -330,7 +330,7 @@ both from oauth2-proxy.
 | ID token | Issuer is the identity provider, audience holds the `rooms-proxy` client id, not expired |
 | Access token | Same `sub`; issued for `rooms-proxy`. A web session requires it to differ from the ID token |
 | Groups | `agents-admin` or `agents-member`, else `403` |
-| User state | The ZITADEL user must be active, admins included: an inactive, locked, deleted or initial user is refused `401 user_inactive` on every route, and an open WebSocket closes `1008 user_inactive`. Read with the room-access reader, cached with its answers for at most 5 minutes; past that, a state ZITADEL cannot give fails closed (`503 access_unverified`). Counted in `rooms_rejected_actions_total{reason="user_inactive"}` |
+| User state | The ZITADEL user must be active, admins included: an inactive, locked, deleted or initial user is refused `401 user_inactive` on every route, and an open WebSocket closes `1008 user_inactive`. Read with the room-access reader, cached with its answers for at most 5 minutes; past that, a state ZITADEL cannot give fails closed (`503 access_unverified`). Counted in `maku_rooms_rejected_actions_total{reason="user_inactive"}` |
 | Room access | `agents-admin` sees every room. Anyone else sees a room only if GitHub lets the login linked to their ZITADEL user read the room's `repository`; a room with none is admins-only. Answers are cached for at most 5 minutes; past that, a check ZITADEL or GitHub cannot answer fails closed. A room you may not see answers exactly like a missing one |
 | `Origin` | Must match the room host: no cross-site WebSocket |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |
@@ -501,7 +501,7 @@ streamable HTTP on this listener (factory interfaces F2). It is off unless the b
 `human.mcp.enabled` ([integration](integration.md)); off, `/mcp` is `404`. Every check of the table
 above applies first. Then it takes tokens from the CLI's ZITADEL client (formerly `roomctl`) only, so nothing here carries the
 web UI's standing: any other token is `403 mcp_needs_roomctl`, counted in
-`rooms_rejected_actions_total`.
+`maku_rooms_rejected_actions_total`.
 
 It keeps no session: each `POST` holds one JSON-RPC message and gets its answer as JSON, so either
 replica answers any request. No `GET` stream and no `DELETE` (`405`), no batch, a body of at most
@@ -534,7 +534,7 @@ as the summary's notes do. A refused call is a tool result with `isError: true` 
 with its reason: `invalid_arguments`, `invalid_draft`, `rejected: <the act's rejection>`, `no such
 room` (a missing room and one the caller may not read alike), `access_unverified`, `rooms
 unavailable`, `log unavailable`, `room log unreadable` or `unavailable`. Each call counts in
-`rooms_human_mcp_calls_total{tool, outcome}`.
+`maku_rooms_human_mcp_calls_total{tool, outcome}`.
 
 **`room_tail` as a task** (MCP Tasks, F5). With `2025-11-25`, `initialize` declares
 `tasks.requests.tools.call` and `room_tail` lists `execution.taskSupport: optional`. A `tools/call`
@@ -654,7 +654,7 @@ is the **fix** task, whose `spec.origin` names a task the caller created. The bo
 | `404`, `409` | `no_such_task`; `not_merged`, `window_closed` (past `monitor.verification.within` after the merge), `verdict_already_recorded` (another verdict) |
 | `503` | `tasks_unavailable` |
 
-`agent_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
+`maku_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
 or internal principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
 `bad_*`, `max_cost_*`, `repository_*`, `invalid_draft`, the caps and the `503`s); any other value is
 `other`. The `unauthenticated`, `not_permitted` and `sponsored_only` refusals come before the

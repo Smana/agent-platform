@@ -20,7 +20,7 @@ the `agents` namespace is one the pod opens.
 | Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log |
 | `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons |
 | Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room |
-| `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#reference-the-room-crd)) |
+| `Room` CRD | `maku.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#reference-the-room-crd)) |
 | `Task` CRD | `charts/maku-factory`, shipped with the factory | One issue's state machine, from `Received` to `Done` ([factory](factory.md)) |
 | Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) |
 | Web UI | Embedded in the broker (`web/`, TypeScript), behind oauth2-proxy | Watch a room, post, steer, approve, fork, invite and close |
@@ -304,11 +304,11 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 
 | Binary | Runs as | Image |
 |---|---|---|
-| `maku-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/maku-broker` |
+| `maku-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`maku.ogenki.io/v1alpha1`) | `ghcr.io/smana/maku-broker` |
 | `maku-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/maku-bridge` |
 | `maku-factory` | The factory's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/maku-factory` | `ghcr.io/smana/maku-factory` |
 | `maku-harness` | Main container of every `AgentRun` pod: OpenHands agent-server plus `agent-run`, the git credential helper, `gh` with the PR footer and the trailer hook ([`images/maku-harness`](../images/maku-harness/README.md)) | `ghcr.io/smana/maku-harness` |
-| `maku-run-controller` | A Deployment, on clusters without cloud-native-ref's Crossplane runtime; reconciles `agents.ogenki.io` AgentRuns into gVisor pods | `ghcr.io/smana/maku-run-controller` |
+| `maku-run-controller` | A Deployment, on clusters without cloud-native-ref's Crossplane runtime; reconciles `maku.ogenki.io` AgentRuns into gVisor pods | `ghcr.io/smana/maku-run-controller` |
 | `maku` | A developer's CLI: list, follow, post, queue and fork rooms; `maku skill install` writes the factory-handoff Agent Skill for local coding agents; `maku token` for scripts. Never steers or approves: those stay in the web UI | Release assets `maku-{linux,darwin}-{amd64,arm64}` + `maku.sha256`; before a release, `go build ./cmd/maku` |
 
 Every image is multi-arch (`linux/amd64`, `linux/arm64`). The Go ones are static binaries on distroless `nonroot`; the harness is OpenHands' Python image, run as uid 10001.

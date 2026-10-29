@@ -15,7 +15,7 @@ flowchart LR
     fimg["ghcr.io/smana/maku-factory"]
     himg["ghcr.io/smana/maku-harness"]
     chart["oci://ghcr.io/smana/charts/maku-factory<br/>(ships the Task CRD)"]
-    crd["config/crd/agents.ogenki.io_rooms.yaml"]
+    crd["config/crd/maku.ogenki.io_rooms.yaml"]
     mig["internal/store/migrations"]
   end
   subgraph cc["Smana/crossplane-configuration"]
