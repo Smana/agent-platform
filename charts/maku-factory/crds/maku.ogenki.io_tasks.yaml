@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-  name: tasks.agents.ogenki.io
+  name: tasks.maku.ogenki.io
 spec:
-  group: agents.ogenki.io
+  group: maku.ogenki.io
   names:
     kind: Task
     listKind: TaskList

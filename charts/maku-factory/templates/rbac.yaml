@@ -6,13 +6,13 @@ metadata:
   name: agent-factory
   labels: {{- include "agent-factory.labels" . | nindent 4 }}
 rules:
-  - apiGroups: [agents.ogenki.io]
+  - apiGroups: [maku.ogenki.io]
     resources: [tasks]
     verbs: [get, list, watch, create, update, patch]
-  - apiGroups: [agents.ogenki.io]
+  - apiGroups: [maku.ogenki.io]
     resources: [tasks/status]
     verbs: [get, update, patch]
-  - apiGroups: [agents.ogenki.io]
+  - apiGroups: [maku.ogenki.io]
     resources: [rooms]
     verbs: [get, list, watch, create, delete]
   # ConfigMaps: the stop object, the meter heartbeat (agent-factory-meter), R50's day ledgers

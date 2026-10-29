@@ -15,7 +15,7 @@ import (
 // The generated CRD carries the rules §4 relies on. Tasks are runtime objects, so this CRD
 // ships in the chart, not in cloud-native-ref's validation catalog.
 func TestTaskCRDCarriesTheDesignRules(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	raw, err := os.ReadFile("../../../config/crd/maku.ogenki.io_tasks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestTaskCRDCarriesTheDesignRules(t *testing.T) {
 // Review I3: etcd stores the object and CEL costs every rule against the declared bounds, so
 // every free-form string in spec and status has a maxLength and every list a maxItems.
 func TestTaskCRDBoundsEveryStringAndList(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	raw, err := os.ReadFile("../../../config/crd/maku.ogenki.io_tasks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestAddToSchemeRegistersTaskKinds(t *testing.T) {
 
 // R46: the task's root span ids are W3C-valid, bounded, and never change once minted.
 func TestTaskCRDKeepsTheTraceIds(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	raw, err := os.ReadFile("../../../config/crd/maku.ogenki.io_tasks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestChildOfLabel(t *testing.T) {
 // RA9, R9: spec.origin is a C2 id, fixed at creation, so a task never gains, loses or changes an
 // origin after it exists; status.published records what the factory filed, bounded.
 func TestTaskCRDOrigin(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	raw, err := os.ReadFile("../../../config/crd/maku.ogenki.io_tasks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

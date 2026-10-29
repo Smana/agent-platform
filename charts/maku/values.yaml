@@ -1,7 +1,7 @@
 # The ONE source of the run kind: the broker's `runs:` and its run-issuer subPattern both render
 # from here, so they cannot disagree.
 runs:
-  group: agents.ogenki.io
+  group: maku.ogenki.io
   namespace: agents
   namePrefix: run-
 # Create the runs.namespace object. The default-deny CiliumNetworkPolicy is rendered either way:

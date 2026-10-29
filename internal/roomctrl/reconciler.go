@@ -29,7 +29,7 @@ import (
 
 const (
 	// Finalizer holds a deleted Room until its runs have ended and its log is sealed.
-	Finalizer = "agents.ogenki.io/room-log"
+	Finalizer = "maku.ogenki.io/room-log"
 	resync    = 15 * time.Second // ruling P21
 	// sealTimeout bounds how long a deleting room waits for its runs to end,
 	// from its deletionTimestamp (Ruling AH).

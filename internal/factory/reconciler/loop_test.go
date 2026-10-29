@@ -134,7 +134,7 @@ func TestARefusedSearchClaimEscalates(t *testing.T) {
 			return nil
 		}
 		creates++
-		return apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "AgentRun"}, "x", field.ErrorList{field.Invalid(field.NewPath("spec", "loop", "search"), "x", "unknown field")})
+		return apierrors.NewInvalid(schema.GroupKind{Group: "maku.ogenki.io", Kind: "AgentRun"}, "x", field.ErrorList{field.Invalid(field.NewPath("spec", "loop", "search"), "x", "unknown field")})
 	}
 	tk := g.reconcile(t, "3buqdlot", 4)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "loop_unsupported" || creates != 1 {
@@ -154,7 +154,7 @@ func TestARefusedLoopClaimEscalates(t *testing.T) {
 			return nil
 		}
 		creates++
-		return apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "AgentRun"}, "x", field.ErrorList{field.Invalid(field.NewPath("spec", "loop"), "x", "unknown field")})
+		return apierrors.NewInvalid(schema.GroupKind{Group: "maku.ogenki.io", Kind: "AgentRun"}, "x", field.ErrorList{field.Invalid(field.NewPath("spec", "loop"), "x", "unknown field")})
 	}
 	tk := g.reconcile(t, "3buqdlot", 4)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "loop_unsupported" {

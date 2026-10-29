@@ -358,7 +358,7 @@ func TestAForkWhoseRoomFailsIsClosed(t *testing.T) {
 		t.Fatalf("logged %q", l)
 	}
 	conflict := &interceptor.Funcs{Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
-		return apierrors.NewAlreadyExists(schema.GroupResource{Group: "agents.ogenki.io", Resource: "rooms"}, "x")
+		return apierrors.NewAlreadyExists(schema.GroupResource{Group: "maku.ogenki.io", Resource: "rooms"}, "x")
 	}}
 	a, _, room, _ = forkFixture(t, conflict)
 	if f := forkAs(a, room, "human:bob", false, Action{Seq: 1}); f.Rejected != "conflict" {

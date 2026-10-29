@@ -14,7 +14,7 @@ import (
 // The native CRD keeps the XRD's contract (crossplane-configuration v0.9.15,
 // apis/agentrun/definition.yaml): one run manifest suits both runtimes (3a R2).
 func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
-	raw, err := os.ReadFile("../../config/crd/agents.ogenki.io_agentruns.yaml")
+	raw, err := os.ReadFile("../../config/crd/maku.ogenki.io_agentruns.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 	if err := yaml.UnmarshalStrict(raw, &crd); err != nil {
 		t.Fatal(err)
 	}
-	if crd.Spec.Group != "agents.ogenki.io" || crd.Spec.Names.Kind != "AgentRun" || crd.Spec.Scope != apiextensionsv1.NamespaceScoped {
+	if crd.Spec.Group != "maku.ogenki.io" || crd.Spec.Names.Kind != "AgentRun" || crd.Spec.Scope != apiextensionsv1.NamespaceScoped {
 		t.Fatalf("group %q kind %q scope %q", crd.Spec.Group, crd.Spec.Names.Kind, crd.Spec.Scope)
 	}
 	v := crd.Spec.Versions[0]

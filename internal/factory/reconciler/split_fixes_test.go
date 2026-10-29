@@ -49,7 +49,7 @@ func conflictingParent(g *rig, n int) {
 	g.r.Client = interceptor.NewClient(g.c.(client.WithWatch), interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
 		if o.GetName() == "3buqdlot" && n != 0 {
 			n--
-			return apierrors.NewConflict(schema.GroupResource{Group: "agents.ogenki.io", Resource: "tasks"}, o.GetName(), nil)
+			return apierrors.NewConflict(schema.GroupResource{Group: "maku.ogenki.io", Resource: "tasks"}, o.GetName(), nil)
 		}
 		return c.SubResource(sub).Update(ctx, o, opts...)
 	}})

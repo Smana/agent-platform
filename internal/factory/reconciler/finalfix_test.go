@@ -34,7 +34,7 @@ func failRoomCreate(g *rig, err error) {
 // operator can act on, instead of retrying in Triaged for good.
 func TestAnOldRoomsCRDEscalatesTheTask(t *testing.T) {
 	g := sponsoredDayRig(t, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
-	failRoomCreate(g, apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}, "3buqdlot", nil))
+	failRoomCreate(g, apierrors.NewInvalid(schema.GroupKind{Group: "maku.ogenki.io", Kind: "Room"}, "3buqdlot", nil))
 	got := g.reconcile(t, "3buqdlot", 4)
 	if got.Status.Phase != v1alpha1.PhaseEscalated || got.Status.Reason != "rooms_crd_outdated" || len(g.runs.specs) != 0 {
 		t.Fatalf("%s %s, %d specs", got.Status.Phase, got.Status.Reason, len(g.runs.specs))

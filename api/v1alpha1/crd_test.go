@@ -5,6 +5,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 // (skipMissingSchemas: false). These are the rules the design relies on, each
 // asserted on the field that must carry it.
 func TestCRDCarriesTheDesignRules(t *testing.T) {
-	raw, err := os.ReadFile("../../config/crd/agents.ogenki.io_rooms.yaml")
+	raw, err := os.ReadFile("../../config/crd/maku.ogenki.io_rooms.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +26,7 @@ func TestCRDCarriesTheDesignRules(t *testing.T) {
 	if err := yaml.UnmarshalStrict(raw, &crd); err != nil {
 		t.Fatal(err)
 	}
-	if crd.Spec.Group != "agents.ogenki.io" || crd.Spec.Scope != apiextensionsv1.NamespaceScoped {
+	if crd.Spec.Group != "maku.ogenki.io" || crd.Spec.Scope != apiextensionsv1.NamespaceScoped {
 		t.Fatalf("group %q scope %q", crd.Spec.Group, crd.Spec.Scope)
 	}
 	if len(crd.Spec.Versions) != 1 || crd.Spec.Versions[0].Subresources == nil || crd.Spec.Versions[0].Subresources.Status == nil {
@@ -119,4 +120,35 @@ func rule(want string) func(apiextensionsv1.JSONSchemaProps) bool {
 
 func maxLength(want int64) func(apiextensionsv1.JSONSchemaProps) bool {
 	return func(p apiextensionsv1.JSONSchemaProps) bool { return p.MaxLength != nil && *p.MaxLength == want }
+}
+
+// The maku rebrand moves the group (phase 2): the types, every generated CRD and the charts' copies
+// agree on maku.ogenki.io, and no agents.ogenki.io CRD file is left to install by mistake.
+func TestEveryCRDIsUnderTheMakuGroup(t *testing.T) {
+	if GroupVersion.Group != "maku.ogenki.io" {
+		t.Fatalf("GroupVersion.Group = %q", GroupVersion.Group)
+	}
+	for _, f := range []string{
+		"../../config/crd/maku.ogenki.io_rooms.yaml", "../../config/crd/maku.ogenki.io_agentruns.yaml",
+		"../../config/crd/maku.ogenki.io_tasks.yaml", "../../charts/maku/crds/maku.ogenki.io_rooms.yaml",
+		"../../charts/maku/crds/maku.ogenki.io_agentruns.yaml", "../../charts/maku-factory/crds/maku.ogenki.io_tasks.yaml",
+	} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var crd apiextensionsv1.CustomResourceDefinition
+		if err := yaml.UnmarshalStrict(raw, &crd); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		if crd.Spec.Group != "maku.ogenki.io" || !strings.HasSuffix(crd.Name, ".maku.ogenki.io") {
+			t.Errorf("%s: group %q, name %q", f, crd.Spec.Group, crd.Name)
+		}
+	}
+	for _, dir := range []string{"../../config/crd", "../../charts/maku/crds", "../../charts/maku-factory/crds"} {
+		old, err := filepath.Glob(filepath.Join(dir, "agents.ogenki.io_*.yaml"))
+		if err != nil || len(old) != 0 {
+			t.Errorf("%s still holds %v", dir, old)
+		}
+	}
 }

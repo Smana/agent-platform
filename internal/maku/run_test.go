@@ -23,7 +23,7 @@ import (
 	"github.com/Smana/maku/internal/wire"
 )
 
-const testClaim = `{"apiVersion":"agents.ogenki.io/v1alpha1","kind":"AgentRun","metadata":{"name":"run-a2b3c4d5","namespace":"agents"},"spec":{"role":"implementer"}}`
+const testClaim = `{"apiVersion":"maku.ogenki.io/v1alpha1","kind":"AgentRun","metadata":{"name":"run-a2b3c4d5","namespace":"agents"},"spec":{"role":"implementer"}}`
 
 // runBroker is a local broker for maku run: plain http, no token, one room, one run.
 type runBroker struct {

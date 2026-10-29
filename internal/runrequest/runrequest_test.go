@@ -128,7 +128,7 @@ func TestManifestDedupesOnTheKey(t *testing.T) {
 // One rendered manifest is a run to either runtime's reader (adoption 3a, R2).
 func TestManifestReadsBackUnderBothKinds(t *testing.T) {
 	t.Cleanup(func() { _ = runwatch.Configure(runwatch.DefaultKind) })
-	for _, k := range []runwatch.Kind{runwatch.DefaultKind, {Group: "agents.ogenki.io", NamePrefix: "run-"}} {
+	for _, k := range []runwatch.Kind{runwatch.DefaultKind, {Group: "maku.ogenki.io", NamePrefix: "run-"}} {
 		if err := runwatch.Configure(k); err != nil {
 			t.Fatal(err)
 		}

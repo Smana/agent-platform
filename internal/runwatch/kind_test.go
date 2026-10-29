@@ -34,16 +34,16 @@ func TestDefaultKindIsCloudNativeRefs(t *testing.T) {
 
 func TestConfigureNativeKind(t *testing.T) {
 	restore(t)
-	if err := Configure(Kind{Group: "agents.ogenki.io", NamePrefix: "run-"}); err != nil {
+	if err := Configure(Kind{Group: "maku.ogenki.io", NamePrefix: "run-"}); err != nil {
 		t.Fatal(err)
 	}
-	if Current() != (Kind{Group: "agents.ogenki.io", Namespace: "agents", NamePrefix: "run-"}) {
+	if Current() != (Kind{Group: "maku.ogenki.io", Namespace: "agents", NamePrefix: "run-"}) {
 		t.Fatalf("an empty field takes the default: %+v", Current())
 	}
-	if r, ok := FromUnstructured(kindClaim("agents.ogenki.io/v1alpha1", "agents", "run-abcdefgh")); !ok || r.ID != "abcdefgh" {
+	if r, ok := FromUnstructured(kindClaim("maku.ogenki.io/v1alpha1", "agents", "run-abcdefgh")); !ok || r.ID != "abcdefgh" {
 		t.Fatalf("native claim: ok=%v id=%q", ok, r.ID)
 	}
-	if _, ok := FromUnstructured(kindClaim("agents.ogenki.io/v1alpha1", "agents", "xplane-run-abcdefgh")); ok {
+	if _, ok := FromUnstructured(kindClaim("maku.ogenki.io/v1alpha1", "agents", "xplane-run-abcdefgh")); ok {
 		t.Fatal("the old prefix must not parse once configured")
 	}
 	if RunSubject().MatchString("system:serviceaccount:agents:xplane-run-abcdefgh") {
