@@ -11,6 +11,7 @@ on:
       - cmd/**
       - internal/**
       - api/**
+      - config/crd/**
       - images/**
       - go.mod
       - go.sum

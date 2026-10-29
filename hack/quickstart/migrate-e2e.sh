@@ -61,6 +61,14 @@ spec:
   dataClass: public
 EOF
 kubectl -n "$NS" patch "tasks.$OLD/$TASK" --subresource=status --type=merge -p "{\"status\":{\"phase\":\"Done\",\"roomRef\":\"${ROOMS[0]}\"}}"
+# A status field no controller recomputes: roomctrl keeps status.task as it is when the log holds no task
+# event, so on the new Room it can only be there if migrate-group copied it (lastSeq, phase and the
+# rest are re-projected from the store and prove nothing about the copy).
+kubectl -n "$NS" patch "rooms.$OLD/${ROOMS[0]}" --subresource=status --type=merge \
+  -p '{"status":{"task":{"phase":"Implementing","issue":7,"issueTitle":"migrate-group e2e","labelledBy":"e2e"}}}'
+task_status='{.status.task.phase}/{.status.task.issue}/{.status.task.issueTitle}/{.status.task.labelledBy}'
+[[ $(kubectl -n "$NS" get "rooms.$OLD/${ROOMS[0]}" -o jsonpath="$task_status") == "Implementing/7/migrate-group e2e/e2e" ]] || fail "the old room lost its status.task before the upgrade"
+# The Postgres-backed checks below guard the store (a move writes no event, seals nothing), not the copy.
 before=$(sql "select count(*) || '/' || max(seq) from events where room_id in ('${ROOMS[0]}','${ROOMS[1]}')")
 uid0=$(kubectl -n "$NS" get "rooms.$OLD/${ROOMS[0]}" -o jsonpath='{.metadata.uid}')
 
@@ -89,6 +97,8 @@ mg --from "$OLD" --to "$NEW" --apply >.quickstart/e2e/migrate-apply.json
 [[ $(grep -c '"outcome":"migrated"' .quickstart/e2e/migrate-apply.json) == 3 ]] || fail "--apply did not migrate 3 objects"
 [[ -z $(kubectl get "rooms.$OLD,tasks.$OLD" -A -o name) ]] || fail "originals are left under $OLD"
 
+[[ $(kubectl -n "$NS" get "rooms.$NEW/${ROOMS[0]}" -o jsonpath="$task_status") == "Implementing/7/migrate-group e2e/e2e" ]] || fail "the copy's status.task is not the original's: migrate-group did not copy the Room status"
+
 step "the logs came through, and the broker serves them"
 for r in "${ROOMS[@]}"; do
   kubectl -n "$NS" wait "rooms.$NEW/$r" --for=jsonpath='{.status.lastSeq}'=1 --timeout=60s
@@ -116,7 +126,15 @@ grep -q '"msg":"migrate-group done".*"wouldCopy":0.*"wouldResume":0' .quickstart
 step "the rollback path: reverse, then forward again; nothing sealed"
 mg --from "$NEW" --to "$OLD" --apply >.quickstart/e2e/migrate-reverse.json
 [[ $(kubectl get "rooms.$OLD" -n "$NS" -o name | wc -l) == 2 && -z $(kubectl get "rooms.$NEW" -n "$NS" -o name) ]] || fail "the reverse did not move both rooms back"
+[[ $(kubectl get "tasks.$OLD" -n "$NS" -o name | wc -l) == 1 && -z $(kubectl get "tasks.$NEW" -n "$NS" -o name) ]] || fail "the reverse did not move the task back"
 mg --from "$OLD" --to "$NEW" --apply >.quickstart/e2e/migrate-forward.json
-[[ $(sql "select count(*) from rooms where room_id in ('${ROOMS[0]}','${ROOMS[1]}') and sealed") == 0 ]] || fail "a round trip sealed a log"
+[[ $(kubectl get "rooms.$NEW" -n "$NS" -o name | wc -l) == 2 && -z $(kubectl get "rooms.$OLD,tasks.$OLD" -n "$NS" -o name) ]] || fail "the forward leg did not leave 2 rooms under $NEW and nothing under $OLD"
+[[ $(kubectl -n "$NS" get "tasks.$NEW/$TASK" -o jsonpath='{.status.phase}/{.status.roomRef}/{.metadata.labels.agents\.ogenki\.io/issue}') == "Done/${ROOMS[0]}/7" ]] || fail "the task did not survive the round trip"
+[[ $(kubectl -n "$NS" get "rooms.$NEW/${ROOMS[0]}" -o jsonpath="$task_status") == "Implementing/7/migrate-group e2e/e2e" ]] || fail "the room status did not survive the round trip"
+# A seal would come from the controller, asynchronously: watch for 60 s rather than look once.
+for _ in $(seq 30); do
+  [[ $(sql "select count(*) from rooms where room_id in ('${ROOMS[0]}','${ROOMS[1]}') and sealed") == 0 ]] || fail "a round trip sealed a log"
+  sleep 2
+done
 [[ $(sql "select count(*) || '/' || max(seq) from events where room_id in ('${ROOMS[0]}','${ROOMS[1]}')") == "$before" ]] || fail "a round trip wrote an event"
 echo "migrate-e2e OK: ${#ROOMS[@]} rooms and 1 task moved $OLD -> $NEW and back and forth, logs unchanged ($before)"
