@@ -358,6 +358,14 @@ func PublishRefused(n int, reason string, at time.Time) Event {
 		Body: fmt.Sprintf("The agent factory did not publish #%d's proposal: %s.", n, why)}
 }
 
+// PublishRejected answers a factory/publish on an issue whose task was rejected at admission: no run
+// ran, so there is no proposal, and the rejection's reason is what the maintainer needs.
+func PublishRejected(n int, task, reason string, at time.Time) Event {
+	return Event{Key: fmt.Sprintf("publish-refused-rejected-%s-%d", reason, at.Unix()),
+		Body: fmt.Sprintf("The agent factory did not publish #%d's proposal: its task `%s` was not accepted, so no run made one: %s.",
+			n, task, Reason(reason))}
+}
+
 // NeedsAuthor is the bounce (scoper design SC8, "The bounce, on the issue"): one comment naming the
 // issue's author and the maintainers. A public task's question and first assumption are an agent's
 // text, quoted as an inert code block (ruling TE); an internal task's stay in the room (C7).

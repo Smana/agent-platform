@@ -113,6 +113,7 @@ func TestNoSilentCheckMark(t *testing.T) {
 		"not_a_maintainer":           "<@U02DEF>'s GitHub account is not a maintainer of Smana/ai-native-ref; a maintainer must react.",
 		"repository_not_allowed":     "ask an operator to add it to the Slack App's repositories",
 		"principal_budget_exhausted": "budget for today is spent",
+		"daily_task_cap":             "the factory's daily task cap is reached; react again after 00:00 UTC.",
 	} {
 		rig.broker.runErr = Refused("rejected: " + code)
 		rig.react("C03", draft.ts, "U02DEF", "white_check_mark")

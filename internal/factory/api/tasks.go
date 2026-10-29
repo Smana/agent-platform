@@ -191,6 +191,14 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{"task": t.Name, "room": t.Name, "issue": t.Spec.Issue, "duplicate": true})
 		return
 	}
+	switch capped, err := s.dailyCapReached(ctx); {
+	case err != nil:
+		fail(http.StatusServiceUnavailable, "tasks_unavailable", err)
+		return
+	case capped:
+		out(http.StatusTooManyRequests, "daily_task_cap")
+		return
+	}
 	switch n, err := s.openTasks(ctx, sp.Principal()); {
 	case err != nil:
 		fail(http.StatusServiceUnavailable, "tasks_unavailable", err)

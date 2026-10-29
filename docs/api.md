@@ -613,7 +613,7 @@ limits: [sponsored principals](factory.md#sponsored-principals).
 | `400` | `bad_json`, `idempotency_key_required`, `bad_data_class`, `bad_ref`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class`, `invalid_draft`, `bad_text` |
 | `401`, `403` | `unauthenticated`; `not_permitted`, `sponsored_only`, `repository_not_allowed`, `not_linked`, `not_a_maintainer` |
 | `503` (link) | `link_unverified`: a [self-serve link](factory.md#sponsored-principals) the broker or ZITADEL could not answer for; retry |
-| `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
+| `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `daily_task_cap` (the factory's `caps.tasksPerDay` is spent for this UTC day, counted as the reconciler counts it: refused before any Task or issue exists), `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
 | `503` | `kill_switch`, `meter_unpriced`, `tasks_unavailable`, `ledger_unavailable`, `intake_failed` |
 
 #### An internal principal's request
@@ -631,7 +631,7 @@ required). `Idempotency-Key` is the incident's trigger key.
 | `202` | `{accepted: false, reason: below_threshold}`: the verdict is not `action_required` or `action_suggested`, or `confidence` is under `minConfidence` |
 | `400` | `bad_json`, `idempotency_key_required`, `title_not_allowed`, `on_behalf_of_not_allowed`, `bad_ref`, `bad_data_class` (anything but `internal`), `incident_required`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class` |
 | `403`, `409` | `repository_not_allowed`, `repository_not_owned` |
-| `429` | `principal_daily_tasks` (the principal's tasks created this UTC day, whatever their kind), `principal_task_cap`, `principal_budget_exhausted` |
+| `429` | `daily_task_cap` (as above: no Task and no stub issue, so no stub claims an investigation the reconciler would reject; two racing requests can still pass, and the second's rejection is narrated on its stub), `principal_daily_tasks` (the principal's tasks created this UTC day, whatever their kind), `principal_task_cap`, `principal_budget_exhausted` |
 | `503` | as above |
 
 A sponsored principal's request refuses an `incident` (`bad_json`), and an internal principal's refuses

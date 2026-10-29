@@ -5,6 +5,7 @@ package v1alpha1
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Task phases, the §4 state diagram.
@@ -85,4 +86,12 @@ func ActivePhase(p string) bool {
 		return true
 	}
 	return false
+}
+
+// SpendsDailyCap reports whether t counts against the factory's daily task cap (§6.2) on now's UTC day:
+// created that day, past its first reconcile (a phase is set) and not rejected, and not an adopted pull
+// request (R39), which starts no run. The reconciler's admission and the API's refusal both read it.
+func SpendsDailyCap(t *Task, now time.Time) bool {
+	return t.Spec.Source.Kind != "adopt" && t.Status.Phase != "" && t.Status.Phase != PhaseRejected &&
+		t.CreationTimestamp.UTC().Format(time.DateOnly) == now.UTC().Format(time.DateOnly)
 }

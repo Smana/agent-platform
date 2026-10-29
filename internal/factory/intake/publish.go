@@ -49,7 +49,12 @@ func (p *IssuePoller) publishes(ctx context.Context) error {
 
 // refusePublish answers the label once, keyed by its time, then consumes it. Nothing is created.
 func (p *IssuePoller) refusePublish(ctx context.Context, n int, last forge.LabelEvent, reason string) error {
-	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n), narrate.PublishRefused(n, reason, last.At)); err != nil {
+	return p.refuseWith(ctx, n, narrate.PublishRefused(n, reason, last.At))
+}
+
+// refuseWith posts a refusal's event once, then consumes the label.
+func (p *IssuePoller) refuseWith(ctx context.Context, n int, e narrate.Event) error {
+	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n), e); err != nil {
 		return err
 	}
 	return p.Forge.RemoveLabel(ctx, n, LabelPublish)
@@ -84,6 +89,8 @@ func (p *IssuePoller) publishOne(ctx context.Context, n int) error {
 			return err
 		}
 		return p.Forge.RemoveLabel(ctx, n, LabelPublish)
+	case t.Status.Phase == v1alpha1.PhaseRejected: // never admitted, so no run made a proposal: say why (task 2d5ch27g)
+		return p.refuseWith(ctx, n, narrate.PublishRejected(n, t.Name, t.Status.Reason, last.At))
 	case !v1alpha1.TerminalPhase(t.Status.Phase):
 		return p.refusePublish(ctx, n, last, "task_not_ended")
 	case t.Status.Phase != v1alpha1.PhaseDone: // a stopped, closed or empty task's handoff is no proposal
@@ -146,7 +153,10 @@ func (p *IssuePoller) investigateOf(ctx context.Context, n int) (*v1alpha1.Task,
 	var found *v1alpha1.Task
 	for i := range l.Items {
 		t := &l.Items[i]
-		if t.Spec.Template != "investigate" || t.Spec.Issue != n || !p.owns(t) {
+		// A task rejected at admission was never triaged, so it has no template yet: it is still the
+		// issue's task, and its rejection is the refusal's reason.
+		rejected := t.Spec.Template == "" && t.Status.Phase == v1alpha1.PhaseRejected
+		if (t.Spec.Template != "investigate" && !rejected) || t.Spec.Issue != n || !p.owns(t) {
 			continue
 		}
 		if found == nil || t.CreationTimestamp.After(found.CreationTimestamp.Time) {
