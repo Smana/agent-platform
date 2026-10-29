@@ -749,7 +749,11 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	t.Spec.Budget = triage.Ceiling(d.Budget, t.Spec.MaxMicroUSD) // F4: a task without a ceiling keeps its class budget, byte for byte
 	t.Spec.Loop = nil
 	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
-		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
+		judge := p.JudgeModel
+		if d.DataClass != "public" && config.PublicOnly(judge) { // a provider judge is public tasks' only (v3 F15, F4)
+			judge = config.DefaultJudge
+		}
+		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: judge}
 	}
 	t.Spec.Search = r.Cfg.SearchFor(d.PredictedClass)
 	if err := r.scopeAtTriage(ctx, t); err != nil {

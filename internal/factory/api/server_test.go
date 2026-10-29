@@ -269,6 +269,48 @@ func TestATesterRunIsFactoryOnly(t *testing.T) {
 	}
 }
 
+// v3 F15, F4: a provider alias (Moonshot processes in China, Mistral in the EU) is public data
+// only; an internal run naming one is refused before anything is reserved.
+func TestProviderAliasesArePublicOnly(t *testing.T) {
+	for name, c := range map[string]struct{ class, model, want string }{
+		"public kimi-frontier":      {"public", "kimi-frontier", ""},
+		"public mistral-standard":   {"public", "mistral-standard", ""},
+		"public mistral-light":      {"public", "mistral-light", ""},
+		"internal kimi-frontier":    {"internal", "kimi-frontier", "provider_alias_is_public_only"},
+		"internal mistral-standard": {"internal", "mistral-standard", "provider_alias_is_public_only"},
+		"internal mistral-light":    {"internal", "mistral-light", "provider_alias_is_public_only"},
+		"internal tier-frontier":    {"internal", "tier-frontier", ""},
+		"an unknown model":          {"public", "mistral-large", "bad_model"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := RunRequest{Role: "implementer", DataClass: c.class, Model: c.model}
+			in.Task.Text = "x"
+			if got := validate(in); got != c.want {
+				t.Fatalf("%q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// The same refusal over HTTP: an admin's run in an internal room, on a provider alias, is 400 and
+// creates nothing; the same run on its tier's name is created.
+func TestAnInternalRoomsRunOnAProviderAliasIs400(t *testing.T) {
+	for model, want := range map[string]int{"kimi-frontier": http.StatusBadRequest, "mistral-light": http.StatusBadRequest, "tier-frontier": http.StatusCreated} {
+		t.Run(model, func(t *testing.T) {
+			room := aliceRoom()
+			room.Spec.DataClass = "internal"
+			body := base()
+			body["dataClass"], body["roomRef"], body["model"] = "internal", room.Name, model
+			st := &store{}
+			c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(room).Build()
+			w := post(mkServer(t, st, c, false, false, "7f3cq2xz", 5_000_000).Handler(), "admin", body)
+			if w.Code != want || (want == http.StatusBadRequest && (!strings.Contains(w.Body.String(), "provider_alias_is_public_only") || len(st.created) != 0)) {
+				t.Fatalf("%d %s, %d created", w.Code, w.Body, len(st.created))
+			}
+		})
+	}
+}
+
 func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
 	for name, c := range map[string]struct {
 		class    string

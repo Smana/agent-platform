@@ -917,8 +917,62 @@ var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // the claim's logical model.
 func (m Meter) ByModel() bool { return strings.Contains(m.Query, "gen_ai_request_model") }
 
+// models are C5's logical names: the only names a tier's model or a template's reviewerModel may
+// take, since both reach internal tasks too.
 func models() []string {
 	return []string{"agent-default", "tier-light", "tier-standard", "tier-frontier"}
+}
+
+// providerModel is a provider alias's one tier (v3 F15, F2: the run caps stay the tier's, and the
+// gateway's local limit holds only at that tier) and the model its gateway backend pins
+// (ai-native-ref's agent-gateway moonshot.yaml and mistral.yaml), which a by-model meter prices.
+type providerModel struct{ tier, served string }
+
+// providerModels are the provider aliases (v3 F15, D9). Moonshot processes in China and Mistral
+// in the EU: both serve public data only, so only loops.<class>.models and a judge name them,
+// and only a public task is given one.
+func providerModels() map[string]providerModel {
+	// The served ids are ai-native-ref's infrastructure/base/agent-gateway/{moonshot,mistral}.yaml
+	// modelAliases, copied: when a backend pins another model, change both together.
+	return map[string]providerModel{
+		"kimi-frontier":    {"frontier", "k3.1-pro"},
+		"mistral-standard": {"standard", "mistral-medium-2604"},
+		"mistral-light":    {"light", "mistral-small-2603"},
+	}
+}
+
+// PublicOnly reports whether model is a provider alias, which only a public run may name.
+func PublicOnly(model string) bool {
+	_, ok := providerModels()[model]
+	return ok
+}
+
+// judges are the names loops.<class>.judge may take: C5's, or a light provider alias (F3).
+func judges() []string {
+	j := models()
+	for _, alias := range slices.Sorted(maps.Keys(providerModels())) {
+		if providerModels()[alias].tier == "light" {
+			j = append(j, alias)
+		}
+	}
+	return j
+}
+
+// needsPrice: with meter.prices set, a provider alias must be priced: under the model its backend
+// pins for a meter that prices by served model, else under its own name. An unpriced run would
+// fall back to its token caps (F3, F8).
+func (c *Config) needsPrice(bad func(string, ...any), key, alias string) {
+	if len(c.Meter.Prices) == 0 {
+		return
+	}
+	// A by-model meter reads the served model's row only: a row under the alias never prices a run.
+	want := alias
+	if c.Meter.ByModel() {
+		want = providerModels()[alias].served
+	}
+	if _, ok := c.Meter.Prices[want]; !ok {
+		bad("%s: %s needs meter.prices.%s", key, alias, want)
+	}
 }
 func tiers() []string { return []string{"light", "standard", "frontier"} }
 
@@ -1171,7 +1225,7 @@ func (c *Config) Validate() error {
 		switch {
 		case !modelRE.MatchString(model):
 			bad("meter.prices: %q is not a model name", model)
-		case !slices.Contains(models(), model) && !c.Meter.ByModel():
+		case !slices.Contains(models(), model) && !PublicOnly(model) && !c.Meter.ByModel():
 			bad("meter.prices.%s: a served model's price needs meter.query grouped by gen_ai_request_model", model)
 		case !finite(p.Input) || !finite(p.CacheRead) || !finite(p.Output) || !finite(p.CacheWrite) ||
 			p.Input <= 0 || p.CacheRead <= 0 || p.Output <= 0 || p.CacheWrite < 0:
@@ -1494,6 +1548,24 @@ type Loop struct {
 	// Split offers the scoper a split of the class's hard tasks (splitter design SL3): absent, off.
 	// It needs scope: scoper on the same row, and never switches the loop on.
 	Split *SplitPolicy `json:"split,omitempty"`
+	// Models is role → tier → the provider alias that role runs on for a public task of that tier
+	// (v3 F15, F3); a role or tier without an entry, and every internal task, keep today's model.
+	// It never switches the loop on.
+	Models map[string]map[string]string `json:"models,omitempty"`
+}
+
+// ModelFor is the provider alias class's row names for role on tier, "" for today's model: always
+// "" unless dataClass is public (F4). A row is whole: a class row without models is none, whatever
+// default's says.
+func (c *Config) ModelFor(class, dataClass, role, tier string) string {
+	if dataClass != "public" {
+		return ""
+	}
+	row, ok := c.Loops[class]
+	if !ok {
+		row = c.Loops["default"]
+	}
+	return row.Models[role][tier]
 }
 
 // ScopeMode is a row's scope. The config is YAML 1.1, where a bare off is the boolean false: it
@@ -1656,6 +1728,31 @@ func (c *Config) LoopFor(class string) *LoopPolicy {
 	return p
 }
 
+// validateModels: each role is SP1's, each tier is one of the three, and each alias is a provider
+// alias of that very tier (F2), priced while meter.prices is set (F3).
+func (c *Config) validateModels(bad func(string, ...any), name string, byRole map[string]map[string]string) {
+	for _, role := range slices.Sorted(maps.Keys(byRole)) {
+		if !slices.Contains(roles(), role) {
+			bad("loops.%s.models: unknown role %q", name, role)
+			continue
+		}
+		for _, tier := range slices.Sorted(maps.Keys(byRole[role])) {
+			alias, key := byRole[role][tier], "loops."+name+".models."+role+"."+tier
+			p, ok := providerModels()[alias]
+			switch {
+			case !slices.Contains(tiers(), tier):
+				bad("loops.%s.models.%s: %q is light, standard or frontier", name, role, tier)
+			case !ok:
+				bad("%s: %q is not a provider alias (%v)", key, alias, slices.Sorted(maps.Keys(providerModels())))
+			case p.tier != tier:
+				bad("%s: %s serves the %s tier only", key, alias, p.tier)
+			default:
+				c.needsPrice(bad, key, alias)
+			}
+		}
+	}
+}
+
 // validateLoops: a row's key is default, review or a class some repository declares; its values
 // are within the harness's bounds; and only cloud-native-ref's AgentRun carries spec.loop.
 func (c *Config) validateLoops(bad func(string, ...any)) {
@@ -1673,9 +1770,14 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 		if n := row.Continuations; n != nil && (*n < 0 || *n > MaxContinuations) {
 			bad("loops.%s.continuations must be 0..%d", name, MaxContinuations)
 		}
-		if j := row.Judge; j != "" && j != NoJudge && !slices.Contains(models(), j) {
-			bad("loops.%s.judge %q is none or one of %v", name, j, models())
+		switch j := row.Judge; {
+		case j == "" || j == NoJudge:
+		case !slices.Contains(judges(), j):
+			bad("loops.%s.judge %q is none or one of %v", name, j, judges())
+		case PublicOnly(j):
+			c.needsPrice(bad, "loops."+name+".judge", j)
 		}
+		c.validateModels(bad, name, row.Models)
 		switch m := row.Scope; {
 		case m == "" || slices.Contains(scopeModes(), m):
 		default:

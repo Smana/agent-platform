@@ -517,3 +517,31 @@ func TestAnUnreadableMaxMicroUSDIsNotAnAbsentOne(t *testing.T) {
 		}
 	}
 }
+
+// v3 F15, F4: the one choke point every claim passes. An internal run never names a provider
+// alias, as its model or its judge's; a public one may.
+func TestProviderAliasesArePublicRunsOnly(t *testing.T) {
+	for name, c := range map[string]struct {
+		dataClass, model, judge string
+		refused                 bool
+	}{
+		"public on kimi-frontier":         {"public", "kimi-frontier", "", false},
+		"public, a mistral-light judge":   {"public", "agent-default", "mistral-light", false},
+		"internal on kimi-frontier":       {"internal", "kimi-frontier", "", true},
+		"internal on mistral-standard":    {"internal", "mistral-standard", "", true},
+		"internal, a mistral-light judge": {"internal", "tier-frontier", "mistral-light", true},
+		"internal on its tier":            {"internal", "tier-frontier", "tier-light", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := spec()
+			s.DataClass, s.Model = c.dataClass, c.model
+			if c.judge != "" {
+				s.Loop = &Loop{StallSteps: 80, Continuations: 2, JudgeModel: c.judge}
+			}
+			err := s.Validate()
+			if (err != nil) != c.refused || (err != nil && !strings.Contains(err.Error(), "public runs only")) {
+				t.Fatalf("err = %v, want refused %v", err, c.refused)
+			}
+		})
+	}
+}

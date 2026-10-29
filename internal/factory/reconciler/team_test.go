@@ -48,10 +48,18 @@ func pr12At(head string) forge.PR {
 // template's first verifier, rid(1), is started.
 func teamRig(t *testing.T, template string, c client.Client) *rig {
 	t.Helper()
-	g := newRig(t, issueTask("3buqdlot", 7, "x"))
-	if c != nil {
-		g.c, g.r.Client = c, c
-	}
+	return teamRigFor(t, template, issueTask("3buqdlot", 7, "x"), func(g *rig) {
+		if c != nil {
+			g.c, g.r.Client = c, c
+		}
+	})
+}
+
+// teamRigFor is teamRig on task tk, with edit applied to the rig before the first reconcile.
+func teamRigFor(t *testing.T, template string, tk *v1alpha1.Task, edit func(*rig)) *rig {
+	t.Helper()
+	g := newRig(t, tk)
+	edit(g)
 	g.r.Triage = staticWith(template)
 	g.reconcile(t, "3buqdlot", 3)
 	g.f.SetBranch("agent/3buqdlot", 12)

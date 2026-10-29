@@ -147,6 +147,15 @@ func (s Spec) Validate() error {
 	if s.Tier != "" && !slices.Contains([]string{"light", "standard", "frontier"}, s.Tier) {
 		errs = append(errs, fmt.Errorf("tier %q is not light, standard or frontier", s.Tier))
 	}
+	// v3 F15, F4: Moonshot processes in China and Mistral in the EU. Every claim, the factory's and
+	// the API's, passes here, so no internal run names a provider alias, as its model or its judge's.
+	judge := ""
+	if s.Loop != nil {
+		judge = s.Loop.JudgeModel
+	}
+	if s.DataClass != "public" && (config.PublicOnly(s.Model) || config.PublicOnly(judge)) {
+		errs = append(errs, fmt.Errorf("a provider alias (model %q, judge %q) is for public runs only, not a %q one", s.Model, judge, s.DataClass))
+	}
 	return errors.Join(errs...)
 }
 

@@ -158,12 +158,15 @@ spec:
                     minimum: 0
                     type: integer
                   judgeModel:
-                    description: 'The judge''s alias; empty: no judge.'
+                    description: |-
+                      The judge's alias; empty: no judge. mistral-light, the one provider alias a judge may take
+                      (v3 F15, F3), is a public task's only.
                     enum:
                     - agent-default
                     - tier-light
                     - tier-standard
                     - tier-frontier
+                    - mistral-light
                     type: string
                   stallSteps:
                     format: int32
@@ -469,6 +472,9 @@ spec:
                 && (!has(self.budget.runMicroUSD) || self.budget.runMicroUSD <= self.maxMicroUSD)
                 && (!has(self.budget.taskMicroUSD) || self.budget.taskMicroUSD <=
                 self.maxMicroUSD))
+            - message: a provider judgeModel is a public task's only
+              rule: '!has(self.loop) || !has(self.loop.judgeModel) || self.loop.judgeModel
+                != ''mistral-light'' || self.dataClass == ''public'''
           status:
             description: |-
               TaskStatus is the task's audit record: the whole §4 record, including the fields later
@@ -1010,6 +1016,15 @@ spec:
                             The harness container's imageID, <repository>@sha256:<digest>, as the composition read it
                             from the run's pod.
                           maxLength: 320
+                          type: string
+                        modelSource:
+                          description: |-
+                            Which config chose the run's model (v3 F15, F3): the tier's model, the template's
+                            reviewerModel, or the class's loops.<class>.models (a public task only), set at creation.
+                          enum:
+                          - tier
+                          - reviewerModel
+                          - classModels
                           type: string
                         servedModels:
                           description: The models that served the run, as the meter

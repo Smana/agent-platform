@@ -133,8 +133,9 @@ type WriteChecker interface {
 }
 
 var (
-	roles  = []string{"implementer", "reviewer", "tester", "triager"}
-	models = []string{"agent-default", "tier-light", "tier-standard", "tier-frontier"}
+	roles = []string{"implementer", "reviewer", "tester", "triager"}
+	// C5's names and the provider aliases (v3 F15), which validate refuses an internal run.
+	models = []string{"agent-default", "tier-light", "tier-standard", "tier-frontier", "kimi-frontier", "mistral-standard", "mistral-light"}
 
 	prURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`)
 )
@@ -460,6 +461,8 @@ func validate(in RunRequest) string {
 		return "a_room_already_names_its_branch"
 	case in.Model != "" && !slices.Contains(models, in.Model):
 		return "bad_model"
+	case in.DataClass == "internal" && config.PublicOnly(in.Model): // Moonshot processes in China, Mistral in the EU (F4)
+		return "provider_alias_is_public_only"
 	case in.MaxTokens < 0 || in.MaxTokens > config.RunTokenCeiling:
 		return "max_tokens_out_of_range"
 	case len(in.EgressProfiles) > 4:

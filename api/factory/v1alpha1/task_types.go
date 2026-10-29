@@ -55,6 +55,7 @@ type TaskList struct {
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
 // +kubebuilder:validation:XValidation:rule="self.source.kind != 'api' || (has(self.maxMicroUSD) && self.maxMicroUSD > 0)",message="an api task carries maxMicroUSD"
 // +kubebuilder:validation:XValidation:rule="self.source.kind != 'api' || !has(self.budget) || (has(self.maxMicroUSD) && (!has(self.budget.runMicroUSD) || self.budget.runMicroUSD <= self.maxMicroUSD) && (!has(self.budget.taskMicroUSD) || self.budget.taskMicroUSD <= self.maxMicroUSD))",message="an api task's budget stays under its ceiling"
+// +kubebuilder:validation:XValidation:rule="!has(self.loop) || !has(self.loop.judgeModel) || self.loop.judgeModel != 'mistral-light' || self.dataClass == 'public'",message="a provider judgeModel is a public task's only"
 type TaskSpec struct {
 	Source Source `json:"source"`
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`
@@ -194,8 +195,9 @@ type Loop struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=5
 	Continuations int32 `json:"continuations"`
-	// The judge's alias; empty: no judge.
-	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier
+	// The judge's alias; empty: no judge. mistral-light, the one provider alias a judge may take
+	// (v3 F15, F3), is a public task's only.
+	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier;mistral-light
 	// +optional
 	JudgeModel string `json:"judgeModel,omitempty"`
 }
@@ -667,9 +669,22 @@ type RunProvenance struct {
 	// +kubebuilder:validation:items:MaxLength=64
 	// +optional
 	ServedModels []string `json:"servedModels,omitempty"`
+	// Which config chose the run's model (v3 F15, F3): the tier's model, the template's
+	// reviewerModel, or the class's loops.<class>.models (a public task only), set at creation.
+	// +kubebuilder:validation:Enum=tier;reviewerModel;classModels
+	// +optional
+	ModelSource string `json:"modelSource,omitempty"`
 }
 
-// IsZero reports whether no fact is known yet.
+// The sources of a run's model (RunProvenance.ModelSource).
+const (
+	ModelSourceTier          = "tier"
+	ModelSourceReviewerModel = "reviewerModel"
+	ModelSourceClassModels   = "classModels"
+)
+
+// IsZero reports whether no fact the room shows is known yet: ModelSource is the factory's own
+// record, set at creation, and never makes a run's provenance a room fact on its own.
 func (p RunProvenance) IsZero() bool {
 	return p.FactoryVersion == "" && p.CompositionRevision == "" && p.HarnessImage == "" && len(p.ServedModels) == 0
 }
