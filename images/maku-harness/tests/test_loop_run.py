@@ -492,6 +492,78 @@ class DriveTest(unittest.TestCase):
         self.assertEqual(state.sent, 1)
 
 
+class ContinuationBoxTest(unittest.TestCase):
+    """A continuation is boxed in time (gcp-0, 2026-10-29, task xlcx2775): the judge said not_yet on a failing
+    check:validate whose log the sandbox could not fetch, and continuation 1 of 2 ran 36 minutes with no commit
+    and no finish, into the run's wall clock, which escalated as `deadline`."""
+
+    def drive(self, polls, answers, commits=0, deadline=45 * 60, state=None):
+        self.now, self.sent, self.interrupted = [0.0], [], []
+        state = state or lp.State(start="s", committed=True)
+        polls = iter(polls)
+
+        def poll(cid, on_tick=None):
+            p = next(polls)
+            if p == "forever":  # the conversation never finishes: only a tick can end it
+                while True:
+                    self.now[0] += agent_run.POLL_INTERVAL_S
+                    on_tick()
+            return p
+
+        def http(method, path_, body=None, timeout=30):
+            if path_.endswith("/interrupt"):
+                self.interrupted.append(self.now[0])
+            return {}
+
+        with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http), \
+                mock.patch("agent_run.evidence", return_value=("e", {"diff"})), \
+                mock.patch("agent_run.ask_judge", side_effect=answers), \
+                mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            return agent_run.drive({}, "cid", Steps(0), POLICY, state, "task",
+                                   os.path.join(tempfile.mkdtemp(), "loop.json"),
+                                   deadline=deadline, clock=lambda: self.now[0])
+
+    def answer(self, verdict, reason="check:validate failed"):
+        return json.dumps({"verdict": verdict, "reason": reason, "evidence": ["diff"]}), "glm-5.3-flash"
+
+    def test_drill_xlcx2775_a_commitless_continuation_ends_stalled_at_its_box(self):
+        result = self.drive([0, "forever"], [self.answer("not_yet")])
+        self.assertEqual(result, (1, "stalled", "continuation 1 of 2 added no commit in 15 minutes"))
+        [at] = self.interrupted
+        self.assertLessEqual(at, agent_run.CONTINUATION_S + agent_run.POLL_INTERVAL_S)
+        [text] = self.sent
+        self.assertIn("You have 15 minutes for this continuation", text)
+        self.assertIn("cannot see or fix from the sandbox", text)
+
+    def test_a_continuation_that_committed_but_never_finished_ends_not_met(self):
+        result = self.drive([0, "forever"], [self.answer("not_yet")], commits=1)
+        self.assertEqual(result, (1, "not_met",
+                                  "continuation 1 of 2 did not finish within 15 minutes; it was sent for: "
+                                  "check:validate failed"))
+
+    def test_the_box_never_runs_into_the_runs_deadline(self):
+        # 10 minutes left: the box is what is left less the margin the end needs.
+        result = self.drive([0, "forever"], [self.answer("not_yet")], deadline=10 * 60)
+        self.assertEqual(result[:2], (1, "stalled"))
+        [at] = self.interrupted
+        self.assertLessEqual(at, 10 * 60 - agent_run.CONTINUATION_MARGIN_S + agent_run.POLL_INTERVAL_S)
+        self.assertIn("You have 7 minutes for this continuation", self.sent[0])
+
+    def test_too_little_time_left_sends_no_continuation(self):
+        result = self.drive([0], [self.answer("not_yet")], deadline=agent_run.CONTINUATION_MARGIN_S + 60)
+        self.assertEqual(result, (1, "not_met", "check:validate failed; too little of the run's time was left for a continuation"))
+        self.assertEqual(self.sent, [])
+
+    def test_a_continuation_that_finishes_inside_its_box_is_judged_as_before(self):
+        self.assertEqual(self.drive([0, 0], [self.answer("not_yet"), self.answer("met")]), (0, None, ""))
+
+    def test_no_deadline_still_boxes_a_continuation(self):
+        result = self.drive([0, "forever"], [self.answer("not_yet")], deadline=None)
+        self.assertEqual(result, (1, "stalled", "continuation 1 of 2 added no commit in 15 minutes"))
+
+
 class FakeBridge(http.server.BaseHTTPRequestHandler):
     bodies = []
 

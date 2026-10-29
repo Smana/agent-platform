@@ -1293,6 +1293,27 @@ class Stalled(Exception):
     """No commit by the policy's stallSteps steps (loops L3)."""
 
 
+class BoxSpent(Exception):
+    """A continuation outlasted its time box: its conversation never finished again."""
+
+
+# A continuation's time box (gcp-0, 2026-10-29, task xlcx2775). The stall rule is spent at the first commit, so
+# a continuation was bounded only by the run's wall clock: one ran 36 minutes with no commit, retrying a CI log
+# the sandbox could not reach, and the task escalated as `deadline`. The box is at most CONTINUATION_S, and ends
+# CONTINUATION_MARGIN_S before the run's deadline, so the loop, not the wall clock, names the end; a box shorter
+# than CONTINUATION_MIN_S is no continuation.
+CONTINUATION_S = 15 * 60
+CONTINUATION_MARGIN_S = CHECKS_MARGIN_S + MIN_NOTE_GAP_S
+CONTINUATION_MIN_S = 5 * 60
+TOO_LATE = "%s; too little of the run's time was left for a continuation"
+
+
+def box_for(deadline: float | None, clock=time.monotonic) -> int | None:
+    """The next continuation's time box in seconds, or None when too little of the run is left for one."""
+    left = CONTINUATION_S if deadline is None else min(CONTINUATION_S, deadline - clock() - CONTINUATION_MARGIN_S)
+    return int(left) if left >= CONTINUATION_MIN_S else None
+
+
 def _git(*args) -> str | None:
     """git's stdout in the clone, or None when it fails: the loop never acts on a guess."""
     try:
@@ -1481,9 +1502,11 @@ def hold_verdict(res: dict):
     return None
 
 
-def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path: str | None = LOOP_STATE):
+def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path: str | None = LOOP_STATE,
+               box: int | None = 0):
     """A finished conversation's contract hold (F1-R11): None when the contract is not red (the caller goes on
-    to its judge or its end), a loop_policy.End when the continuations are spent, True once one was sent."""
+    to its judge or its end), a loop_policy.End when the continuations are spent or box is None (too little
+    time left for one), its reason once one was sent. box is the continuation's time box in seconds, 0 for none."""
     res = hold()
     v = hold_verdict(res)
     if v is None:
@@ -1492,6 +1515,9 @@ def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path
         return None
     n = commits_since(env, state.mark) if state.sent else None
     d = loop_policy.decide(policy, state, v, n is None or n > 0)
+    if isinstance(d, loop_policy.Continue) and box is None:
+        state.sent -= 1
+        d = loop_policy.End("not_met", TOO_LATE % d.reason)
     if isinstance(d, loop_policy.End):
         if path:
             save_state(state, path)
@@ -1499,8 +1525,9 @@ def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path
     state.mark = head()
     if path:
         save_state(state, path)
-    continue_conversation(cid, loop_policy.contract_continuation(res.get("failing", []), state.sent, policy.continuations, fence))
-    return True
+    continue_conversation(cid, loop_policy.contract_continuation(res.get("failing", []), state.sent, policy.continuations, fence,
+                                                                 (box or 0) // 60))
+    return d.reason
 
 
 def contract_loop(env: dict, cid: str, steps, hold, notes=None) -> int:
@@ -1538,26 +1565,58 @@ def make_hold(env: dict, base: str, contract: dict, decl, prefetched):
     return run
 
 
-def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None, hold=None) -> tuple[int, str | None, str]:
+def interrupt(cid: str) -> None:
+    """Stops the agent; the run ends with the loop's reason whether or not the agent heard."""
+    try:
+        http("POST", "/api/conversations/%s/interrupt" % cid, timeout=INTERRUPT_TIMEOUT_S)
+    except (OSError, ValueError, HTTPException) as exc:
+        print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+
+
+def box_end(env: dict, state, policy, minutes: int, reason: str) -> tuple[int, str, str]:
+    """A spent box's end: stalled when the continuation added no commit, else not_met with the reason it was sent for."""
+    n = commits_since(env, state.mark)
+    which = "continuation %d of %d" % (state.sent, policy.continuations)
+    if n == 0:
+        return 1, "stalled", "%s added no commit in %d minutes" % (which, minutes)
+    return 1, "not_met", "%s did not finish within %d minutes; it was sent for: %s" % (which, minutes, reason)
+
+
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None, hold=None,
+          deadline: float | None = None, clock=time.monotonic) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
-    stuck conversation does, so a bridge that drops the reason still has the task escalated."""
-    tick = stall_watch(env, steps, policy, state, path)
+    stuck conversation does, so a bridge that drops the reason still has the task escalated. deadline is
+    the run's end on clock; each continuation is boxed by box_for, so none runs into it."""
+    watch = stall_watch(env, steps, policy, state, path)
+    box = {"until": None, "minutes": 0, "reason": ""}  # the continuation in flight, if any
+
+    def tick():
+        watch()
+        if box["until"] is not None and clock() >= box["until"]:
+            raise BoxSpent()
+
+    def boxed(seconds: int, reason: str) -> None:
+        box.update(until=clock() + seconds, minutes=seconds // 60, reason=reason)
+
     rounds, fence = 0, "JUDGE-" + secrets.token_hex(4)  # one per run: the judge's reason stays data
     cfence = "CONTRACT-" + secrets.token_hex(4)  # the contract hold's ids, likewise
     while True:
         try:
             code = poll(cid, on_tick=tick)
         except Stalled:
-            try:
-                http("POST", "/api/conversations/%s/interrupt" % cid, timeout=INTERRUPT_TIMEOUT_S)
-            except (OSError, ValueError, HTTPException) as exc:  # the run ends stalled whether or not the agent heard
-                print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            interrupt(cid)
             return 1, "stalled", "no commit after %d steps" % policy.stall_steps
+        except BoxSpent:
+            interrupt(cid)
+            return box_end(env, state, policy, box["minutes"], box["reason"])
+        box["until"] = None  # the conversation finished: the judge round is not the agent's time
         if code == 0 and hold is not None:
-            done = hold_round(env, cid, hold, policy, state, notes, cfence, path)
+            seconds = box_for(deadline, clock)
+            done = hold_round(env, cid, hold, policy, state, notes, cfence, path, seconds)
             if isinstance(done, loop_policy.End):
                 return (0 if done.reason is None else 1), done.reason, done.note
             if done:
+                boxed(seconds, done)
                 continue
         if code or policy.judge_model is None:
             return code, None, ""
@@ -1586,6 +1645,10 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
+            seconds = box_for(deadline, clock)
+            if isinstance(d, loop_policy.Continue) and seconds is None:
+                state.sent -= 1
+                d = loop_policy.End("not_met", TOO_LATE % d.reason)
             if isinstance(d, loop_policy.End):
                 save_state(state, path)
                 return (0 if d.reason is None else 1), d.reason, d.note
@@ -1593,7 +1656,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             save_state(state, path)
             sent = d.reason
             continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
-                                                                policy.continuations, fence))
+                                                                policy.continuations, fence, seconds // 60))
+            boxed(seconds, _short(d.reason, loop_policy.REASON_MAX))
         except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
             print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
             if sent is None:
@@ -1868,7 +1932,9 @@ def main() -> int:
                        nudge_steps(env) if search else 0)
         hold = make_hold(env, base, contract, decl, prefetched) if contract else None
         if policy:
-            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes, hold=hold)
+            limit = env.get("AGENT_RUN_SECONDS", "")
+            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes, hold=hold,
+                                    deadline=started + int(limit) if limit.isdigit() else None)
         elif hold:
             code = contract_loop(env, cid, steps, hold, notes)
         else:
