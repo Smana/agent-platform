@@ -145,10 +145,10 @@ func moveOne(ctx context.Context, c client.Client, o Options, kind string, old *
 	err := c.Get(ctx, client.ObjectKeyFromObject(old), cp)
 	switch {
 	case apierrors.IsNotFound(err):
-		if !o.Apply {
-			return WouldCopy, nil
-		}
 		cp = copyOf(old, gvk(o.To, kind))
+		if !o.Apply {
+			return dryCreate(ctx, c, old, cp)
+		}
 		if err := c.Create(ctx, cp); err != nil {
 			return Failed, fmt.Errorf("create the copy: %w", err)
 		}
@@ -161,6 +161,19 @@ func moveOne(ctx context.Context, c client.Client, o Options, kind string, old *
 		return WouldResume, nil
 	}
 	return finish(ctx, c, old, cp, Resumed)
+}
+
+// dryCreate asks the API server to create the copy without storing it, so the target schema's
+// validation and pruning surface in the dry run. cp is overwritten with the server's answer, which
+// goes through the comparison the apply path makes before it lifts the guard.
+func dryCreate(ctx context.Context, c client.Client, old, cp *unstructured.Unstructured) (Outcome, error) {
+	if err := c.Create(ctx, cp, client.DryRunAll); err != nil {
+		return Failed, fmt.Errorf("dry-run create the copy: %w", err)
+	}
+	if err := same(old, cp, false); err != nil {
+		return Failed, fmt.Errorf("the server would not keep the copy as it is: %w", err)
+	}
+	return WouldCopy, nil
 }
 
 // copyOf is the copy's first write: spec, labels and annotations, the original's uid and the guard.
