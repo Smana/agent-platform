@@ -39,8 +39,17 @@ says why on stderr.
 |---|---|---|---|
 | the judge answers `met`, `judgeModel` is `none`, or no judge answers | 0 | none | none |
 | the judge answers `impossible`, or a second verdict in the run is discarded | 1 | `judge_impossible` | the judge's reason |
-| the agent has made no commit by `stallSteps` steps, or two continuations in a row end with no new commit | 1 | `stalled` | which of the two |
-| the judge answers `not_yet` and the continuations are spent | 1 | `not_met` | the last reason |
+| the agent has made no commit by `stallSteps` steps, a continuation adds no commit within its time box, or two continuations in a row end with no new commit | 1 | `stalled` | which of the three |
+| the judge answers `not_yet` and the continuations are spent, a continuation that committed does not finish within its time box, or too little of the run is left for one | 1 | `not_met` | the last reason |
+
+- **A continuation is boxed in time**: at most 15 minutes, ending 3 minutes before `AGENT_RUN_SECONDS`
+  runs out, and the message names the box. A conversation that has not finished again by then is
+  interrupted, read for up to 30 s until it settles (so a push in flight can land), and the run ends
+  with the loop's reason, not the wall clock's; a `not_met` note says whether its commits are pushed.
+  The box is timed after the contract hold, and a finish read on the poll that crosses it is a finish.
+  Under 5 minutes left, no continuation is sent. The stall rule is spent at the first commit, so before the box a continuation
+  was bounded only by the run's deadline (gcp-0, task `xlcx2775`: 36 minutes retrying a CI log the
+  sandbox could not reach, escalated as `deadline`).
 
 - **The judge** is called when the conversation ends `finished`: one call to the identity proxy's
   `/judge/v1`, beside `LLM_BASE_URL`'s `/v1`, on the run's token, so the gateway meters it against the

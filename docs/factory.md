@@ -290,7 +290,7 @@ every maintainer.
 | `stuck` | The run showed no room activity for 10 minutes |
 | `deadline` | The run hit its wall-clock limit (`tiers.<tier>.runMinutes`) |
 | `agent_error`, `agent_stuck` | The agent stopped on an error, or said it was stuck |
-| `judge_impossible`, `stalled`, `not_met` | Under the [loop policy](#the-config-file) (`loops`): the completion judge found the task impossible, the run made no commit within its step limit, or the judge still found the acceptance checks unmet after the last continuation. The issue gets the category; the judge's text stays in the room |
+| `judge_impossible`, `stalled`, `not_met` | Under the [loop policy](#the-config-file) (`loops`): the completion judge found the task impossible, the run made no commit within its step limit (or a judge continuation added none within its 15-minute time box), or the judge still found the acceptance checks unmet after the last continuation (or a continuation did not finish within its time box). The harness ends a continuation before the run's wall clock, so a continuation ends with the loop's reason, not `deadline`; its note in the room names which continuation and why. The issue gets the category; the judge's text stays in the room |
 | `pod_lost`, `Disrupted`, `PodLost`, `PodFailed` | The sandbox failed or was lost and was not resumed. A sandbox lost to its node is resumed by itself, up to `resume.maxPerTask` times |
 | `resumes_exhausted`, `resume_budget` | The sandbox was lost again, and no resume or no budget is left |
 | `run_unschedulable` | The cluster did not admit the run within `caps.maxPendingMinutes` |

@@ -145,6 +145,17 @@ func TestTokensAndReasons(t *testing.T) {
 	}
 }
 
+// gcp-0, 2026-10-29, task xlcx2775: a judge continuation ran into the wall clock and escalated as
+// "the run hit its wall-clock limit". The harness now ends a continuation at its time box, as stalled
+// or not_met, and the escalation says that a continuation's box is one way there.
+func TestALoopEndNamesTheContinuationsTimeBox(t *testing.T) {
+	for _, r := range []string{"stalled", "not_met"} {
+		if got := Reason(r); !strings.Contains(got, "continuation") || !strings.Contains(got, "time box") {
+			t.Errorf("Reason(%q) = %q, want it to name a continuation's time box", r, got)
+		}
+	}
+}
+
 // R22: one comment per event, even across a crash between posting and recording.
 func TestPostIsIdempotent(t *testing.T) {
 	f := forgetest.NewFake()
