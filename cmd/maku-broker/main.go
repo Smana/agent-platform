@@ -4,7 +4,9 @@
 // API, the Room controller and, from phase 2, its viewers. `maku-broker serve`
 // (the default) runs it; `maku-broker retention` is the daily purge and `maku-broker migrate`
 // applies the embedded schema as rooms_owner, from ROOMS_MIGRATION_DATABASE_URL (an init
-// container, or a one-off outside the Atlas operator). Its wiring is app.RunBroker.
+// container, or a one-off outside the Atlas operator). `maku-broker migrate-group --from <group>
+// --to <group> [--apply]` moves Rooms and Tasks between API groups (dry run without `--apply`).
+// Its wiring is app.RunBroker.
 package main
 
 import (
