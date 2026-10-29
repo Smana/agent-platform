@@ -217,7 +217,7 @@ func TestAwaitingCIForZeroOrOmittedIsOff(t *testing.T) {
 
 // The template names are exactly the Task CRD's enum: a config can name no template a Task refuses.
 func TestTemplatesAreTheTaskCRDEnum(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	raw, err := os.ReadFile("../../../config/crd/maku.ogenki.io_tasks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,8 +613,8 @@ func TestRunsKind(t *testing.T) {
 	if c.Runs != runwatch.DefaultKind {
 		t.Fatalf("no runs block: %+v", c.Runs)
 	}
-	c, err = Parse([]byte(good + "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"))
-	if err != nil || c.Runs.Group != "agents.ogenki.io" || c.Runs.Namespace != "agents" {
+	c, err = Parse([]byte(good + "runs:\n  group: maku.ogenki.io\n  namePrefix: run-\n"))
+	if err != nil || c.Runs.Group != "maku.ogenki.io" || c.Runs.Namespace != "agents" {
 		t.Fatalf("runs %+v err %v", c.Runs, err)
 	}
 	if _, err := Parse([]byte(good + "runs:\n  group: nodot\n")); err == nil {

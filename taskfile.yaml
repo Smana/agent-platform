@@ -82,10 +82,10 @@ tasks:
           { printf '// SPDX-License-Identifier: Apache-2.0\n\n'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
         done
       # The factory chart ships the Task CRD: Tasks are runtime objects, never in Git.
-      - cp config/crd/agents.ogenki.io_tasks.yaml charts/maku-factory/crds/
+      - cp config/crd/maku.ogenki.io_tasks.yaml charts/maku-factory/crds/
       # The umbrella chart ships the broker's two: Rooms and the AgentRuns it watches.
       - mkdir -p charts/maku/crds
-      - cp config/crd/agents.ogenki.io_rooms.yaml config/crd/agents.ogenki.io_agentruns.yaml charts/maku/crds/
+      - cp config/crd/maku.ogenki.io_rooms.yaml config/crd/maku.ogenki.io_agentruns.yaml charts/maku/crds/
 
   crd:check:
     desc: The committed CRD is exactly what the types generate.

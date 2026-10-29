@@ -53,7 +53,7 @@ func TestLoopsAreRefused(t *testing.T) {
 		"continuations 6":       {"{docs: {continuations: 6}}", "loops.docs.continuations must be 0..5"},
 		"a model, not an alias": {"{docs: {judge: claude-haiku-5-5}}", `loops.docs.judge "claude-haiku-5-5" is none or one of`},
 		"an unknown key":        {"{docs: {owner: me}}", `unknown field "owner"`},
-		"the native runtime":    {"{docs: {judge: none}}\nruns: {group: agents.ogenki.io}", "this runtime's has no spec.loop"},
+		"the native runtime":    {"{docs: {judge: none}}\nruns: {group: maku.ogenki.io}", "this runtime's has no spec.loop"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(good + "loops: " + c.loops + "\n"))

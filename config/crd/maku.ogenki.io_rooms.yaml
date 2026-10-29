@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-  name: rooms.agents.ogenki.io
+  name: rooms.maku.ogenki.io
 spec:
-  group: agents.ogenki.io
+  group: maku.ogenki.io
   names:
     kind: Room
     listKind: RoomList

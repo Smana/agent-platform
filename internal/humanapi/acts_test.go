@@ -739,7 +739,7 @@ func TestASealedRoomTakesNoAction(t *testing.T) {
 
 // Review 4.2 M3: only a conflict asks for a retry.
 func TestInviteUpdateErrors(t *testing.T) {
-	gk := schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}
+	gk := schema.GroupKind{Group: "maku.ogenki.io", Kind: "Room"}
 	for _, c := range []struct {
 		err  error
 		want string

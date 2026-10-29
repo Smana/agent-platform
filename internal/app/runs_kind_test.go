@@ -15,9 +15,9 @@ import (
 // Deleting runwatch.Configure from a startup path silently reverts a native deployment to
 // the Crossplane XR. Both paths are driven until they fail later for want of a TLS pair (broker)
 // or a CA file (factory), and the kind is read back.
-const runsBlock = "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"
+const runsBlock = "runs:\n  group: maku.ogenki.io\n  namePrefix: run-\n"
 
-var wantKind = runwatch.Kind{Group: "agents.ogenki.io", Namespace: "agents", NamePrefix: "run-"}
+var wantKind = runwatch.Kind{Group: "maku.ogenki.io", Namespace: "agents", NamePrefix: "run-"}
 
 func writeCfg(t *testing.T, body string) string {
 	t.Helper()

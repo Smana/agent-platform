@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Command maku-run-controller reconciles agents.ogenki.io AgentRuns into gVisor pods (adoption 3a),
+// Command maku-run-controller reconciles maku.ogenki.io AgentRuns into gVisor pods (adoption 3a),
 // on clusters without cloud-native-ref's Crossplane runtime. Its wiring is app.RunController.
 package main
 

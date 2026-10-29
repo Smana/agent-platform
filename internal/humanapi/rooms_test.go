@@ -87,7 +87,7 @@ func TestCreateRoom(t *testing.T) {
 		{"a principal the CRD would refuse", "a b", public, nil, http.StatusBadRequest},
 		{"too large", "alice", `{"dataClass":"public","repository":"` + strings.Repeat("a", 5<<10) + `"}`, nil, http.StatusBadRequest},
 		{"refused as invalid", "alice", public,
-			apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}, "x", field.ErrorList{}), http.StatusBadRequest},
+			apierrors.NewInvalid(schema.GroupKind{Group: "maku.ogenki.io", Kind: "Room"}, "x", field.ErrorList{}), http.StatusBadRequest},
 		{"the API server is down", "alice", public, &net.OpError{Op: "dial", Err: errors.New("connection refused")}, http.StatusServiceUnavailable},
 	} {
 		createErr = c.err
@@ -120,7 +120,7 @@ func TestCreateRoomErrorsAreLoggedAndMapped(t *testing.T) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	rooms := schema.GroupResource{Group: "agents.ogenki.io", Resource: "rooms"}
+	rooms := schema.GroupResource{Group: "maku.ogenki.io", Resource: "rooms"}
 	for _, c := range []struct {
 		name string
 		err  error

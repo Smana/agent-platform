@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package runctl is the run-controller (adoption 3a): it reconciles agents.ogenki.io AgentRuns
+// Package runctl is the run-controller (adoption 3a): it reconciles maku.ogenki.io AgentRuns
 // into the pod, ServiceAccount, ConfigMaps and CiliumNetworkPolicy that cloud-native-ref's
 // Crossplane composition builds, minus the gateway, octo-sts, traces, Kueue and suspend.
 package runctl

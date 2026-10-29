@@ -194,7 +194,7 @@ func TestLoadRuns(t *testing.T) {
 	if c.Runs != runwatch.DefaultKind {
 		t.Fatalf("no runs block: %+v", c.Runs)
 	}
-	const native = "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"
+	const native = "runs:\n  group: maku.ogenki.io\n  namePrefix: run-\n"
 	// The xplane-run- issuer cannot authenticate a run-<id> ServiceAccount: refused at start.
 	if _, err := Load(write(t, valid+native)); err == nil || !strings.Contains(err.Error(), "runs") || !strings.Contains(err.Error(), "runIssuers") {
 		t.Fatalf("want a runs/runIssuers error, got %v", err)
@@ -203,7 +203,7 @@ func TestLoadRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Runs != (runwatch.Kind{Group: "agents.ogenki.io", Namespace: "agents", NamePrefix: "run-"}) {
+	if c.Runs != (runwatch.Kind{Group: "maku.ogenki.io", Namespace: "agents", NamePrefix: "run-"}) {
 		t.Fatalf("runs %+v", c.Runs)
 	}
 	if _, err := Load(write(t, valid+"runs:\n  namePrefix: run\n")); err == nil || !strings.Contains(err.Error(), "runs:") {

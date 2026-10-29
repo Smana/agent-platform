@@ -430,7 +430,7 @@ func TestInvalidRetentionIsTerminal(t *testing.T) {
 func TestConflictRequeuesWithoutError(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(newRoom()).WithStatusSubresource(&v1alpha1.Room{}).
 		WithInterceptorFuncs(interceptor.Funcs{Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
-			return apierrors.NewConflict(schema.GroupResource{Group: "agents.ogenki.io", Resource: "rooms"}, roomID, nil)
+			return apierrors.NewConflict(schema.GroupResource{Group: "maku.ogenki.io", Resource: "rooms"}, roomID, nil)
 		}}).Build()
 	r := &Reconciler{Client: c, Store: newStore(nil), Runs: runwatch.New()}
 	res, err := r.Reconcile(t.Context(), request())
