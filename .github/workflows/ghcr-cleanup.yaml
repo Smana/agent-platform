@@ -1,0 +1,51 @@
+name: ghcr-cleanup
+
+# Prunes this repository's GHCR packages: pull-request pre-releases older than two weeks, then
+# what nothing references any more (untagged manifests no index points to, signatures and
+# attestations whose image is gone, half-pushed multi-arch images). Release tags (vX.Y.Z on
+# images, X.Y.Z on charts) are never touched. The action walks multi-arch indexes and cosign
+# referrers, so a platform manifest a release still points to is kept.
+#
+# A dry run unless the repository variable GHCR_CLEANUP_APPLY is "true" (schedule) or the
+# dispatch input says apply. The old-name packages stay listed until they are deleted by hand.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete for real (otherwise a dry run that only logs)
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          owner: Smana
+          packages: >-
+            maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack,
+            charts/maku-factory,charts/maku,
+            room-broker,room-bridge,agent-factory,run-controller,factory-slack-app,
+            charts/agent-factory,charts/agent-platform
+          use-regex: true
+          delete-tags: '^.*-pr[0-9]+[.-].*$'
+          exclude-tags: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+          older-than: 14 days
+          delete-untagged: true
+          delete-ghost-images: true
+          delete-partial-images: true
+          delete-orphaned-images: true
+          validate: true
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && !inputs.apply || github.event_name != 'workflow_dispatch' && vars.GHCR_CLEANUP_APPLY != 'true' }}
