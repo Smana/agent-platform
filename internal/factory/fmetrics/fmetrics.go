@@ -796,7 +796,7 @@ func (s *Set) SteeringRead(ctx context.Context, class, read string) {
 // ScoperRun counts a scoper run's outcome once it ends.
 func (s *Set) ScoperRun(ctx context.Context, class, outcome string) {
 	s.scoperRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed"})), s.repoOf(ctx)))
+		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed", "budget"})), s.repoOf(ctx)))
 }
 
 // Split counts a split handoff's outcome once.

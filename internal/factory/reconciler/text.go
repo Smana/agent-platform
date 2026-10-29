@@ -222,7 +222,13 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 // scoperHandoff is SC6's one binding call. Offered a split, it names split as an argument of that same
 // call: drill ziawgisq's scoper wrote its split in room_post and the summary only, and the task ran whole.
 func scoperHandoff(split bool) string {
-	s := "End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
+	// Drill 6ysg5vvt: 72 tool calls, the same files re-read, and the run cap before any handoff. Every turn
+	// re-sends the whole context, so exploration is what a scoper's budget buys least of.
+	s := "Call room_handoff as soon as you have the scope, then finish: exploring further only spends your budget. " +
+		"Explore in at most 25 tool calls. If you are unsure past them, hand off what you have, with state ready and your " +
+		"guesses as assumptions, or state question. Never re-read a file you already read: the whole conversation is " +
+		"re-sent each turn, so one read is enough. " +
+		"End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
 		"read (git rev-parse HEAD), and scope {state, task, touches, leave, plan, assumptions, acceptance, question}: state " +
 		"ready, or question with the question"
 	if split {

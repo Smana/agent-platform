@@ -361,3 +361,57 @@ func TestOnlyAMaintainersRetryProceeds(t *testing.T) {
 		t.Fatalf("%s %+v %v", tk.Status.Phase, tk.Status.Scope, g.f.Removed(7))
 	}
 }
+
+// Drill 6ysg5vvt (cnref #2666, v0.30.2): the scoper made 72 tool calls, re-read the same files and was
+// revoked budget-run before any room_handoff. The brief orders the hand-off before more exploration.
+func TestTheScoperBriefHandsOffBeforeItExplores(t *testing.T) {
+	b := ScoperBrief(issueTask("3buqdlot", 7, parentText), "n0nce234")
+	for _, want := range []string{"Call room_handoff as soon as you have the scope", "at most 25 tool calls",
+		"hand off what you have", "Never re-read a file you already read"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the brief lacks %q", want)
+		}
+	}
+}
+
+// Drill 6ysg5vvt: a scoper offered a split was charged the light tier's $0.51, which cache reads of a
+// 21 k context per turn spend in about 70 turns. Offered a split, it runs at the task's own tier.
+func TestAScoperOfferedASplitRunsAtTheTasksTier(t *testing.T) {
+	g := splitRig(t, "frontier", false)
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if tk.Spec.Split == nil {
+		t.Fatal("the rig offers a split")
+	}
+	s := g.runs.specs[rid(0)]
+	if s.Role != "triager" || s.Tier != tk.Spec.Budget.Tier || s.MaxTokens != tk.Spec.Budget.RunTokens ||
+		s.MaxMinutes != tk.Spec.Budget.RunMinutes || s.Tier == "light" {
+		t.Fatalf("the scoper's claim %+v, the task's budget %+v", s, tk.Spec.Budget)
+	}
+}
+
+// Drill 6ysg5vvt: the run cap ended the scoper before any handoff and the task went on unscoped,
+// silently. It still fails open, and the room says why; the metric tells budget from other failures.
+func TestAScoperOutOfBudgetBeforeItsHandoffIsSaid(t *testing.T) {
+	for name, c := range map[string]struct{ phase, reason, note, outcome string }{
+		"its run cap":    {"BudgetExhausted", "budget-run", "the scoper ran out of budget before handing off", "budget"},
+		"an agent error": {"Failed", "agent_error", "the scoper's run ended before handing off", "failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := scoperRig(t)
+			tk := endScoper(t, g, c.phase, c.reason)
+			if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != "failed" {
+				t.Fatalf("fails open: %s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+			var note string
+			for _, s := range g.log.states {
+				if strings.Contains(s, "before handing off") {
+					note = s
+				}
+			}
+			if !strings.Contains(note, c.note) || !strings.Contains(note, "no scope or split") ||
+				!slices.Contains(g.metrics.recorded, "scoper review "+c.outcome) {
+				t.Fatalf("note %q, metrics %v", note, g.metrics.recorded)
+			}
+		})
+	}
+}
