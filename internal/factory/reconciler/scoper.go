@@ -67,9 +67,12 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	if slices.Contains(escalatesScoper, reason) {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
 	}
-	sc, split, seq, err := r.lastScope(ctx, t)
+	sc, split, seq, summary, err := r.lastScope(ctx, t)
 	if err != nil {
 		return err
+	}
+	if t.Spec.Split != nil && split == nil && sc != nil && sc.State == envelope.ScopeReady && mentionsSplit(summary) {
+		r.unstatedSplit(ctx, t)
 	}
 	if sc != nil && sc.State == envelope.ScopeReady && t.Spec.Issue > 0 && t.Spec.Parent == nil && !statesAcceptance(t.Spec.Text) {
 		// The owner's rule (2026-10-27, drill B): the scoper asks when the issue states no
@@ -135,22 +138,42 @@ func askForAcceptance(sc *envelope.Scope) *envelope.Scope {
 // lastScope is the scoper run's scope and split: the last handoff of the current run that carries
 // a valid scope, after the run's start seq, its split if any, and that handoff's seq. The factory
 // checks the scope again here and the split where it is used: the broker stored them redacted.
-func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope.Scope, *envelope.Split, int64, error) {
+func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope.Scope, *envelope.Split, int64, string, error) {
 	cur := current(t)
 	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
 		return e.Type == envelope.Handoff && e.RunID == cur.ID
 	})
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, "", err
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		var p envelope.HandoffPayload
 		// Only the handoff to the implementer carries a scope the factory uses.
 		if json.Unmarshal(evs[i].Payload, &p) == nil && p.ToRole == "implementer" && p.Scope != nil && p.Scope.Validate() == nil {
-			return p.Scope, p.Split, evs[i].Seq, nil
+			return p.Scope, p.Split, evs[i].Seq, p.Summary, nil
 		}
 	}
-	return nil, nil, 0, nil
+	return nil, nil, 0, "", nil
+}
+
+// mentionsSplit: the handoff's summary speaks of splitting the task.
+func mentionsSplit(summary string) bool { return strings.Contains(strings.ToLower(summary), "split") }
+
+// SplitUnstated is a split the scoper described but did not hand off: its handoff carries no split.
+const SplitUnstated = "unstated"
+
+// unstatedSplit makes drill ziawgisq's silent case visible: offered a split, the scoper wrote one in its
+// summary and handed off none, so the task runs whole. Logged, counted, and said in the room; best effort.
+func (r *Reconciler) unstatedSplit(ctx context.Context, t *v1alpha1.Task) {
+	class := t.Spec.PredictedClass
+	r.log().Warn("the scoper's summary describes a split its handoff does not carry; the task runs whole", "task.id", t.Name)
+	record(ctx, func(ctx context.Context) { r.Metrics.Split(ctx, class, SplitUnstated) })
+	text := "The scoper's summary describes a split, but its room_handoff carried no split {why, children}, so no split " +
+		"is proposed and the task runs whole on its scope."
+	if err := narrate.Room(ctx, r.Rooms, t, "split-unstated", text,
+		func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) }); err != nil {
+		r.log().Warn("the unstated split's room note not posted", "task.id", t.Name, "err", err)
+	}
 }
 
 // scopeEnd records the scoper's outcome and queues the implementer's first run.
