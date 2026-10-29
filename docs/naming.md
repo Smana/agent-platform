@@ -150,8 +150,8 @@ Wordmark: Space Grotesk 700, lowercase `maku`, tracking −3%. Body: Space Grote
 ## Technical names
 
 Since v0.30.0 every artifact carries the name; identities that other systems key on keep theirs.
-The technical renames come in two phases: phase 1, the artifacts below, is done; phase 2, the CRD
-group, is pending.
+The technical renames came in two phases: phase 1 (v0.30.0), the artifacts below; phase 2 (v0.31.0),
+the CRD group.
 
 | What | Before v0.30.0 | Since v0.30.0 |
 |---|---|---|

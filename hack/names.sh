@@ -33,11 +33,15 @@ while IFS= read -r n; do
   for s in '' _bucket _sum _count; do metric_args+=(-e "$n$s"); done
 done < <(git grep --untracked -hoE '"(rooms|agent_factory)_[a-z_]+"' -- \
   internal/metrics internal/factory/fmetrics internal/bridge ':!*_test.go' 2>/dev/null | tr -d '"' | sort -u)
+if [ ${#metric_args[@]} -eq 0 ]; then
+  echo "FAIL: no instrument name found in internal/metrics, internal/factory/fmetrics or internal/bridge: if they moved, point hack/names.sh at them" >&2
+  exit 1
+fi
 
 hits="$( { git grep --untracked -nIE "$artifacts" -- . "${allow[@]}" | grep -vF "$history" || true
           git grep --untracked -nIw roomctl -- . "${allow[@]}" | grep -vE "$legacy" || true
           git grep --untracked -nIE "$group" -- . "${allow[@]}" "${group_allow[@]}" || true
-          [ ${#metric_args[@]} -eq 0 ] || git grep --untracked -nIwF "${metric_args[@]}" -- . ':!*.go' "${allow[@]}" || true; } )"
+          git grep --untracked -nIwF "${metric_args[@]}" -- . ':!*.go' "${allow[@]}" || true; } )"
 if [ -n "$hits" ]; then
   printf '%s\n' "$hits" >&2
   echo "FAIL: an old name (above): rename it, or, for an identity that keeps its name, add it to hack/names.sh's legacy set with its reason" >&2
