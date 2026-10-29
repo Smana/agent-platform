@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fmtTokens, mountStrip, shortPrincipal, type StripInput } from "../src/strip";
+import { fmtTokens, mountStrip, plainText, shortPrincipal, type StripInput } from "../src/strip";
 import type { Summary } from "../src/summary";
 
 const summary = (over: Partial<Summary["status"]> = {}): Summary => ({
@@ -538,5 +538,25 @@ describe("the approvals banner", () => {
     expect(banner(h)).toBeNull();
     strip.update(input({ approvals: { total: 1, mine: 1 }, sealed: true }));
     expect(banner(h)).toBeNull();
+  });
+});
+
+describe("plainText", () => {
+  it.each([
+    ["bold", "Waiting for you to **approve** the plan", "Waiting for you to approve the plan"],
+    ["bold underscores", "this is __bold__ text", "this is bold text"],
+    ["italic star", "an *important* step", "an important step"],
+    ["italic underscore", "an _important_ step", "an important step"],
+    ["code", "run `task check` now", "run task check now"],
+    ["link", "see [the PR](https://example.com/pull/1) now", "see the PR now"],
+    ["heading", "## Plan\nstep one", "Plan step one"],
+    ["list markers", "- one\n* two\n1. three", "one two three"],
+    ["blockquote", "> quoted line", "quoted line"],
+    ["snake_case kept", "edit my_var_name and snake_case_id", "edit my_var_name and snake_case_id"],
+    ["lone star kept", "compute 2 * 3 first", "compute 2 * 3 first"],
+    ["whitespace collapsed", "  a \n\n  b\t c  ", "a b c"],
+    ["plain unchanged", "Waiting for approval", "Waiting for approval"],
+  ])("%s", (_n, src, want) => {
+    expect(plainText(src)).toBe(want);
   });
 });
