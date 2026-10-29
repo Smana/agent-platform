@@ -14,9 +14,7 @@ allow=(':!docs/superpowers' ':!web/test/fixtures' ':!docs/naming.md' ':!hack/nam
   ':!internal/app/maku_import_test.go' ':!internal/humanapi/ui/dist'
   # web/src/strip.ts:38's comment names roomctl's tokens(); the file is frozen by another branch,
   # which renames it. Drop this entry once that lands.
-  ':!web/src/strip.ts'
-  # The GHCR cleanup prunes the old-name packages until they are deleted by hand.
-  ':!.github/workflows/ghcr-cleanup.yaml')
+  ':!web/src/strip.ts')
 # roomctl's identifiers that stay on the wire or in config (plan D1).
 legacy='/api/roomctl|/\.well-known/roomctl|mcp_needs_roomctl|ViaRoomctl|roomctlClientIDFile|RoomctlClient|roomctl-client-id|room-broker-roomctl|/etc/room-broker/roomctl|roomctl-version|machine-sent via roomctl|formerly `?roomctl|still runs? roomctl|roomctl.s config|isRoomctl'
 # The signer identity releases before v0.30.0 carry, which the cosign examples still accept.

@@ -185,6 +185,10 @@ $K -n agent-system scale deploy/room-broker deploy/agent-factory --replicas=0
 zero() { $K -n agent-system get deploy room-broker agent-factory -o json |
   jq -e 'all(.items[]; .spec.replicas == 0 and (.status.replicas // 0) == 0 and (.status.readyReplicas // 0) == 0)' >/dev/null; }
 until zero; do sleep 5; done
+for d in room-broker agent-factory; do   # zero reads Deployment status; also wait out pods in their grace period
+  sel=$($K -n agent-system get deploy "$d" -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}')
+  $K -n agent-system wait --for=delete pod -l "${sel%,}" --timeout=2m
+done
 ```
 
 The `App` is a Crossplane v2 namespaced composite that renders the Deployment itself, so pausing it
@@ -200,12 +204,14 @@ $SCRATCH/maku-broker migrate-group --from maku.ogenki.io --to agents.ogenki.io  
 ```
 
 Then merge the pin revert, and only then lift the pauses, so Flux applies v0.30.x rather than
-v0.31.0 again:
+v0.31.0 again. Resume the Kustomization first and wait for it to be Ready: until Flux has applied the
+revert, the `App` still names the v0.31.0 image, and unpausing it would bring a v0.31.0 broker back.
+Flux's server-side apply leaves the `paused` annotation alone, so the `App` stays paused meanwhile:
 
 ```bash
-$K -n agent-system annotate apps.cloud.ogenki.io room-broker crossplane.io/paused-
+flux --context "$CTX" resume kustomization room-broker -n flux-system     # waits until Ready
 flux --context "$CTX" resume helmrelease agent-factory -n agent-system
-flux --context "$CTX" resume kustomization room-broker -n flux-system
+$K -n agent-system annotate apps.cloud.ogenki.io room-broker crossplane.io/paused-
 ```
 
 The v0.30.x pods return at their replica counts and take the originals back. The room pages and the
