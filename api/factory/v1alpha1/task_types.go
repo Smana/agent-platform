@@ -194,8 +194,8 @@ type Loop struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=5
 	Continuations int32 `json:"continuations"`
-	// The judge's alias; empty: no judge.
-	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier
+	// The judge's alias; empty: no judge. The provider aliases (v3 F15) are public tasks' only.
+	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier;kimi-frontier;mistral-standard;mistral-light
 	// +optional
 	JudgeModel string `json:"judgeModel,omitempty"`
 }
@@ -667,9 +667,22 @@ type RunProvenance struct {
 	// +kubebuilder:validation:items:MaxLength=64
 	// +optional
 	ServedModels []string `json:"servedModels,omitempty"`
+	// Which config chose the run's model (v3 F15, F3): the tier's model, the template's
+	// reviewerModel, or the class's loops.<class>.models (a public task only), set at creation.
+	// +kubebuilder:validation:Enum=tier;reviewerModel;classModels
+	// +optional
+	ModelSource string `json:"modelSource,omitempty"`
 }
 
-// IsZero reports whether no fact is known yet.
+// The sources of a run's model (RunProvenance.ModelSource).
+const (
+	ModelSourceTier          = "tier"
+	ModelSourceReviewerModel = "reviewerModel"
+	ModelSourceClassModels   = "classModels"
+)
+
+// IsZero reports whether no fact the room shows is known yet: ModelSource is the factory's own
+// record, set at creation, and never makes a run's provenance a room fact on its own.
 func (p RunProvenance) IsZero() bool {
 	return p.FactoryVersion == "" && p.CompositionRevision == "" && p.HarnessImage == "" && len(p.ServedModels) == 0
 }

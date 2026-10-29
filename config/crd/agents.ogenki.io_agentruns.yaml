@@ -144,13 +144,17 @@ spec:
                 type: object
               model:
                 default: agent-default
-                description: A gateway tier on cloud-native-ref; the run-controller
-                  ignores it (3a R7).
+                description: |-
+                  A gateway alias on cloud-native-ref: a C5 tier name, or a provider alias (v3 F15), which the
+                  gateway serves public runs only; the run-controller ignores it (3a R7).
                 enum:
                 - agent-default
                 - tier-light
                 - tier-standard
                 - tier-frontier
+                - kimi-frontier
+                - mistral-standard
+                - mistral-light
                 type: string
                 x-kubernetes-validations:
                 - message: model is immutable

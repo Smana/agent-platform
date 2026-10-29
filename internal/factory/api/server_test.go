@@ -269,6 +269,29 @@ func TestATesterRunIsFactoryOnly(t *testing.T) {
 	}
 }
 
+// v3 F15, F4: a provider alias (Moonshot processes in China, Mistral in the EU) is public data
+// only; an internal run naming one is refused before anything is reserved.
+func TestProviderAliasesArePublicOnly(t *testing.T) {
+	for name, c := range map[string]struct{ class, model, want string }{
+		"public kimi-frontier":      {"public", "kimi-frontier", ""},
+		"public mistral-standard":   {"public", "mistral-standard", ""},
+		"public mistral-light":      {"public", "mistral-light", ""},
+		"internal kimi-frontier":    {"internal", "kimi-frontier", "provider_alias_is_public_only"},
+		"internal mistral-standard": {"internal", "mistral-standard", "provider_alias_is_public_only"},
+		"internal mistral-light":    {"internal", "mistral-light", "provider_alias_is_public_only"},
+		"internal tier-frontier":    {"internal", "tier-frontier", ""},
+		"an unknown model":          {"public", "mistral-large", "bad_model"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := RunRequest{Role: "implementer", DataClass: c.class, Model: c.model}
+			in.Task.Text = "x"
+			if got := validate(in); got != c.want {
+				t.Fatalf("%q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
 	for name, c := range map[string]struct {
 		class    string

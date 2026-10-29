@@ -62,8 +62,9 @@ type AgentRunSpec struct {
 	// +kubebuilder:validation:Pattern=`^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="principal is immutable"
 	Principal string `json:"principal"`
-	// A gateway tier on cloud-native-ref; the run-controller ignores it (3a R7).
-	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier
+	// A gateway alias on cloud-native-ref: a C5 tier name, or a provider alias (v3 F15), which the
+	// gateway serves public runs only; the run-controller ignores it (3a R7).
+	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier;kimi-frontier;mistral-standard;mistral-light
 	// +kubebuilder:default=agent-default
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="model is immutable"
 	// +optional

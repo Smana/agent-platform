@@ -158,12 +158,16 @@ spec:
                     minimum: 0
                     type: integer
                   judgeModel:
-                    description: 'The judge''s alias; empty: no judge.'
+                    description: 'The judge''s alias; empty: no judge. The provider
+                      aliases (v3 F15) are public tasks'' only.'
                     enum:
                     - agent-default
                     - tier-light
                     - tier-standard
                     - tier-frontier
+                    - kimi-frontier
+                    - mistral-standard
+                    - mistral-light
                     type: string
                   stallSteps:
                     format: int32
@@ -1010,6 +1014,15 @@ spec:
                             The harness container's imageID, <repository>@sha256:<digest>, as the composition read it
                             from the run's pod.
                           maxLength: 320
+                          type: string
+                        modelSource:
+                          description: |-
+                            Which config chose the run's model (v3 F15, F3): the tier's model, the template's
+                            reviewerModel, or the class's loops.<class>.models (a public task only), set at creation.
+                          enum:
+                          - tier
+                          - reviewerModel
+                          - classModels
                           type: string
                         servedModels:
                           description: The models that served the run, as the meter

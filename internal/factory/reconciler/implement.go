@@ -230,6 +230,7 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	// Search rides every implementer claim of a task triaged with it (v3 feature 5, ST9), the loop's
 	// keys only when its loop is on.
 	s.Search = t.Spec.Search && s.Role == "implementer"
+	source := r.pinModel(t, &s)
 	if err := r.Runs.Create(ctx, s); err != nil {
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
@@ -253,11 +254,27 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	}
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
-		Round: t.Status.ReviewRounds, StartSeq: last, HeadSHA: s.Head, Started: &now, ChargedTo: s.ChargedTo})
+		Round: t.Status.ReviewRounds, StartSeq: last, HeadSHA: s.Head, Started: &now, ChargedTo: s.ChargedTo,
+		Provenance: v1alpha1.RunProvenance{ModelSource: source}})
 	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
 	return nil
+}
+
+// pinModel puts a public run on the provider alias its class's loops.<class>.models names for its
+// role and the tier it runs on (v3 F15, F3), and returns which config chose the run's model, for its
+// provenance. ModelFor is "" unless the claim's data class is public: an internal run keeps its
+// tier's model, or the template's reviewerModel, whatever the row says (F4).
+func (r *Reconciler) pinModel(t *v1alpha1.Task, s *runs.Spec) string {
+	if m := r.Cfg.ModelFor(t.Spec.PredictedClass, s.DataClass, s.Role, s.Tier); m != "" {
+		s.Model = m
+		return v1alpha1.ModelSourceClassModels
+	}
+	if s.Role == "reviewer" && r.Cfg.Templates[t.Spec.Template].ReviewerModel != "" {
+		return v1alpha1.ModelSourceReviewerModel
+	}
+	return v1alpha1.ModelSourceTier
 }
 
 // current is the task's last run record.
