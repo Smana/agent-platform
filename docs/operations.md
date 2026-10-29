@@ -28,7 +28,7 @@ over 60 s; it never depends on the broker.
 Scraped from `:9090/metrics` by a `VMServiceScrape`. The broker records them through the
 OpenTelemetry metric API with a Prometheus exporter that adds no suffix, so the names below are
 exposed byte for byte.
-`rooms`, `rooms_approvals_pending` and `rooms_last_event_timestamp_seconds` come from the Room
+`rooms`, `maku_rooms_approvals_pending` and `maku_rooms_last_event_timestamp_seconds` come from the Room
 controller, which runs on the leader only. A room keeps its last values until its next successful
 reconcile, so a database outage freezes them rather than emptying them, and it leaves them once its
 `Room` is gone. The append counters see every writer: the bridge API, the controller and the run
@@ -36,29 +36,29 @@ events.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|--- |
-| `rooms_build_info` | gauge | `version` | Always 1; carries the running version |
+| `maku_rooms_build_info` | gauge | `version` | Always 1; carries the running version |
 | `rooms` | gauge | `phase` | Rooms per phase |
-| `rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended |
-| `rooms_append_seconds` | histogram | — | Append latency |
-| `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease |
-| `rooms_redactions_total` | counter | `rule` | Secrets redacted |
-| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip |
-| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it. Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive; a failed refresh leaves it, so it ages only while the issuer is unreachable. The human issuer has no series until its first fetch: the broker starts without it |
-| `rooms_connections` | gauge | `kind` | Open connections |
-| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable`, `protocol` (a malformed or oversize frame, or a first frame that is not `hello`, or none within 10 s), `access_revoked` and `access_unverified` (the room-access re-check on an open socket) |
-| `rooms_run_info` | gauge | `run`, `model`, `effort` | 1 for each live run whose bridge reported a `harness_status` with an effort (an older harness reports none, and has no series). Each label's source: `run` is the `AgentRun` the broker's watch holds; `model` is that claim's `spec.model`, read from the watch and bounded to 1 to 64 of `A-Za-z0-9._:/@+-`, never the sandbox's; `effort` is the run's harness, which the agent can rewrite, so it is a label only as one of the seven `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and the broker strips any other. It is the one payload field among the broker's labels, accepted because that set bounds it. The replica that appended the status holds the series until its `AgentRun` watch sees the run end; a bridge that reconnects to another replica moves it, so aggregate with `max by (run, model, effort)`. A replica that restarts has none until the run's next status change. At most 1024 runs per replica: at the cap, ended runs make room first. Join it on `run` with the factory's `agent_factory_run_charge_info` or the gateway's series |
-| `rooms_run_info_dropped_total` | counter | — | Runs `rooms_run_info` left out because its 1024 places held only live runs. Anything above 0 is a fault |
-| `rooms_participants` | gauge | `kind` | Live participants. `kind="run"`: live runs naming a room, counted by every replica's `AgentRun` watch, so aggregate with `max`, never `sum`. `kind="human"`: open viewer WebSockets on this replica, so `sum` across replicas |
-| `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; the target is p95 < 0.5 s |
-| `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose |
-| `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, `approval_expired`, `mcp_needs_roomctl`, …) |
-| `rooms_human_mcp_calls_total` | counter | `tool`, `outcome` | `POST /mcp` tool calls: `ok`, `refused` (the tool's own refusal or a room read's) or `error`. A `room_tail` task counts `ok` when it is created and `error` when a read of it fails |
-| `rooms_slack_links_total` | counter | `outcome` | The [Slack self-serve link](slack.md#self-serve-link): `link_code`, `linked`, `unlinked`, and the refusals `code_invalid`, `not_linked_github`, `wrong_team`, `too_many_links`, `too_many_codes`, `already_linked`, `not_web` (a maku or MCP token on the page), `bad_origin`, `error` |
-| `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` |
-| `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries |
-| `rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` |
-| `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval in an open room, set by the leader's approval sweep every 30 s; 0 on a replica that stopped leading |
-| `rooms_approval_decision_seconds` | histogram | — | Request to decision |
+| `maku_rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended |
+| `maku_rooms_append_seconds` | histogram | — | Append latency |
+| `maku_rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease |
+| `maku_rooms_redactions_total` | counter | `rule` | Secrets redacted |
+| `maku_rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip |
+| `maku_rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it. Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive; a failed refresh leaves it, so it ages only while the issuer is unreachable. The human issuer has no series until its first fetch: the broker starts without it |
+| `maku_rooms_connections` | gauge | `kind` | Open connections |
+| `maku_rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable`, `protocol` (a malformed or oversize frame, or a first frame that is not `hello`, or none within 10 s), `access_revoked` and `access_unverified` (the room-access re-check on an open socket) |
+| `maku_rooms_run_info` | gauge | `run`, `model`, `effort` | 1 for each live run whose bridge reported a `harness_status` with an effort (an older harness reports none, and has no series). Each label's source: `run` is the `AgentRun` the broker's watch holds; `model` is that claim's `spec.model`, read from the watch and bounded to 1 to 64 of `A-Za-z0-9._:/@+-`, never the sandbox's; `effort` is the run's harness, which the agent can rewrite, so it is a label only as one of the seven `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and the broker strips any other. It is the one payload field among the broker's labels, accepted because that set bounds it. The replica that appended the status holds the series until its `AgentRun` watch sees the run end; a bridge that reconnects to another replica moves it, so aggregate with `max by (run, model, effort)`. A replica that restarts has none until the run's next status change. At most 1024 runs per replica: at the cap, ended runs make room first. Join it on `run` with the factory's `maku_factory_run_charge_info` or the gateway's series |
+| `maku_rooms_run_info_dropped_total` | counter | — | Runs `maku_rooms_run_info` left out because its 1024 places held only live runs. Anything above 0 is a fault |
+| `maku_rooms_participants` | gauge | `kind` | Live participants. `kind="run"`: live runs naming a room, counted by every replica's `AgentRun` watch, so aggregate with `max`, never `sum`. `kind="human"`: open viewer WebSockets on this replica, so `sum` across replicas |
+| `maku_rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; the target is p95 < 0.5 s |
+| `maku_rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose |
+| `maku_rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, `approval_expired`, `mcp_needs_roomctl`, …) |
+| `maku_rooms_human_mcp_calls_total` | counter | `tool`, `outcome` | `POST /mcp` tool calls: `ok`, `refused` (the tool's own refusal or a room read's) or `error`. A `room_tail` task counts `ok` when it is created and `error` when a read of it fails |
+| `maku_rooms_slack_links_total` | counter | `outcome` | The [Slack self-serve link](slack.md#self-serve-link): `link_code`, `linked`, `unlinked`, and the refusals `code_invalid`, `not_linked_github`, `wrong_team`, `too_many_links`, `too_many_codes`, `already_linked`, `not_web` (a maku or MCP token on the page), `bad_origin`, `error` |
+| `maku_rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` |
+| `maku_rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries |
+| `maku_rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` |
+| `maku_rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval in an open room, set by the leader's approval sweep every 30 s; 0 on a replica that stopped leading |
+| `maku_rooms_approval_decision_seconds` | histogram | — | Request to decision |
 
 Two more count what bridges tell their rooms. Nothing dials into a sandbox, so the bridge serves
 no metrics: the broker counts these events as it appends them, and exports them on `:9090` with the
@@ -66,8 +66,8 @@ rest. Neither carries a run or room label.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|--- |
-| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way |
+| `maku_rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not |
+| `maku_rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way |
 
 ## Alerts
 
@@ -182,7 +182,7 @@ the harnesses still hold.
 | Duplicate harness events after a bridge restart | The harness skipped an unreadable event file | A known limit, confined to that run; nothing to repair |
 | `RoomStalled` | The run is silent: a stuck harness, or a bridge that lost the broker | Bridge logs; the harness's step log in VictoriaLogs |
 | A migration that builds an index `CONCURRENTLY` failed (`20260929120000_verdicts`, `20261001130000_delivery_indexes`, `20261001140000_brief_index`, `20261005130000_approval_indexes`, `20261008120000_task_facts_index`), or `\d events` in `psql` shows the index `INVALID` | `CREATE INDEX CONCURRENTLY` runs outside a transaction: a failure leaves an `INVALID` index behind, and the re-run refuses with "already exists" | Drop it by hand before the migration is retried: as `rooms_owner`, `DROP INDEX CONCURRENTLY <index>;` (`events_agent_verdicts`, `events_deliveries`, `events_acks`, `events_brief`, `approvals_pending`, `events_decisions`, `events_decision_acks`, `events_tool_results` or `events_task_facts`), then let the Atlas operator re-run it |
-| Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key: each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
+| Verdicts stay in the room, `maku_rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key: each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
 
 ## Upgrades
 
@@ -194,6 +194,7 @@ the harnesses still hold.
 | Config | Edit `room-broker-config`, then `kubectl rollout restart deployment/room-broker -n agent-system`: the broker reads it once |
 | Factory run-request API port | The chart serves `POST /v1/runs` on `:8082` (Service and container port `api`), plaintext inside the mesh; the RunLore intake stays on `:8080`, and the broker's `:8443` is the only TLS listener. Releases before it served the API on `:8443`: move the factory config's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do |
 | Factory | Pin the chart's version and digest in `ocirepo-agent-factory.yaml` and the image in the factory's values, from the same release. The `HelmRelease` sets `crds: CreateReplace`, since Helm alone never upgrades the `Task` CRD in the chart's `crds/` |
+| CRD group (v0.31.0) | `Room` and `Task` move to `maku.ogenki.io` in one quiet window, with `maku-broker migrate-group`; metrics are served as `maku_*` only. Follow [the group move](maku-group-migration.md) |
 | Run provenance (R10) | Release the factory and the room broker in the same change, broker first. The factory's task facts carry `run.provenance`, and an old broker decodes `POST /v1/rooms/{id}/task` strictly, so it answers **400** to that field. Nothing is lost: the factory retries the same facts with the same `clientSeq` once the broker rolls. Until then, unfinished tasks lose their poll requeue and fall to error backoff (up to about 16 minutes), and finished tasks' room close and settle requeues stall, the close cap included. Keep the window to minutes by shipping both together |
 | Run history and spend in the task facts | Roll the broker before the factory: a broker older than its factory refuses the new task facts (`runs`, `spend`, a run's `endedAt`, `outcome`, `verdict`, `microUSD`) with a 400, and the factory retries them under the same `clientSeq`, as for run provenance. The facts key changes for every task at the upgrade, so every task with a room, finished ones included, posts its facts once: expect a one-time burst of posts and Info logs. A sealed or closed room answers 410 and its facts stay due, as for any post after the seal; the factory logs it at Info and does not back off |
 | Factory v0.16.0 (daily caps in USD) | Set `budgets.factoryDailyUSD`, `humanDailyUSD` and `perPerson.dailyUSD`; move alerts and dashboards to the `_usd` gauges in the same change as the pin. **Breaking:** the gauges `agent_factory_budget_{remaining,cap}_tokens` are replaced by `agent_factory_budget_{remaining,cap}_usd`. The ledger is now `agent-factory-ledger-usd-<YYYYMMDD>` (the token ledgers are no longer read or written, and are pruned after 35 days). The `Reservation` JSON `maxTokens` is now `maxMicroUSD`. The token day keys (`factoryDaily`, `humanDaily`, `perPerson.dailyTokens`) are accepted, ignored and warned about for one release, **not converted**: a non-default value silently falls back to $42.50 / $8.50. **Rollback:** v0.15.x refuses the USD keys and `meter.prices` `source`/`checkedAt` once a host sets them, so rolling back below v0.16.0 needs the token keys back and no `source`/`checkedAt`; the token ledger then misses the day's USD-settled spend |
@@ -209,60 +210,60 @@ metrics on `:9090` (the chart's `metrics` port), next to its probes.
 
 ### Factory metrics
 
-Defined in `internal/factory/fmetrics` (and `agent_factory_build_info` in `internal/metrics`). The
-leader alone reports `agent_factory_tasks`, `agent_factory_kill_switch_engaged` and
-`agent_factory_task_phase_seconds`, read from its cache at scrape time; a failed read leaves them
+Defined in `internal/factory/fmetrics` (and `maku_factory_build_info` in `internal/metrics`). The
+leader alone reports `maku_factory_tasks`, `maku_factory_kill_switch_engaged` and
+`maku_factory_task_phase_seconds`, read from its cache at scrape time; a failed read leaves them
 absent rather than 0.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `agent_factory_build_info` | gauge | `version` | Always 1; carries the running version |
-| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier`, `repository`, `principal` | Tasks by state and payer ([spend per identity](#spend-per-identity)) |
-| `agent_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
-| `agent_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
-| `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
-| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository`, `principal` | `auto_merged`, `human_merged`, `closed`, `reverted` |
-| `agent_factory_prs_opened_total` | counter | `principal`, `repository` | Task pull requests opened, where `agent_factory_time_to_pr_seconds` records |
-| `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
-| `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
-| `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
-| `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
-| `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve`, `split` |
-| `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
-| `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
-| `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
-| `agent_factory_intake_errors_total` | counter | `source`, `repository` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
-| `agent_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
-| `agent_factory_run_revocations_total` | counter | `reason`, `limit`, `principal` | Runs the factory revoked; `limit` when the run meter did it (below); `principal` the run's payer, or the key over for `budget-principal-shadow` |
-| `agent_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
-| `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost, reported two minutes after it ended (below) |
-| `agent_factory_run_spend_usd` | gauge | `run`, `model` | A priced run's USD spend so far, until its cost is reported |
-| `agent_factory_run_settled_usd` | gauge | `run` | A run's USD as the day ledgers settled it: the sum of its `settled.<runId>` entries |
-| `agent_factory_model_cost_usd_total` | counter | `model` | USD the runs spent, by served model, added as each run's cost is reported |
-| `agent_factory_charged_usd_total` | counter | `principal`, `kind` | USD the day ledgers charged, by the run's payer and `kind` (`task`, `room`), added when the write that settles it succeeds ([spend per identity](#spend-per-identity)) |
-| `agent_factory_run_charge_info` | gauge | `run`, `principal`, `task`, `room` | 1 for each run not ended, and each ended one for two minutes after its `finishedAt`; leader only. `task` is absent for a room's run |
-| `agent_factory_human_wait_seconds_total` | counter | `principal`, `phase` | Seconds tasks waited in `AwaitingHuman` or `Escalated`, added as each leaves the phase, under the task's payer |
-| `agent_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
-| `agent_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
-| `agent_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
-| `agent_factory_meter_input_excludes_cache_runs_total` | counter | `model` | Runs whose `input` a model reported without its cache tokens (below) |
-| `agent_factory_meter_usage_read_errors_total` | counter | — | Meter ticks whose usage read failed: no cap was checked on them |
-| `agent_factory_meter_last_success_timestamp_seconds` | gauge | — | When the meter last read usage and settled it in the day's ledger; set by the leader only, so alert on its max across pods. A tick whose ledger write fails sets nothing: it still revokes runs at their own caps, but the daily budgets wait and the increase is retried whole on the next tick |
-| `agent_factory_resumes_total` | counter | `reason` | Runs resumed after their pod was `Disrupted` or `PodLost` |
-| `agent_factory_loop_runs_total` | counter | `class`, `end`, `repository` | Implementer runs under the loop policy as they end: `judge_impossible`, `stalled`, `not_met`, `finished`, `other`. The wandering share is `stalled` over all |
-| `agent_factory_contracts_total` | counter | `class`, `end`, `repository` | Tester runs as their end is read: `ready`, `not_testable`, `contract_not_red`, `contract_outside_tests`, `contract_invalid`, `unreported` |
-| `agent_factory_class_without_holdout` | gauge | `repository`, `class` | 1 for a live class that declares no `holdoutChecks`, set once at start; the config is refused from the next minor |
-| `agent_factory_steering_reads_total` | counter | `class`, `read`, `repository` | Steering notes read at triage, in a mode other than `off`: `used`, `absent`, `invalid`, or `unowned` (the repository's fence does not name this factory, or its cache is stale: not read) |
-| `agent_factory_scoper_runs_total` | counter | `class`, `outcome`, `repository` | Scoper runs as they end: `ready`, `question`, `assumed`, `missing`, `failed`, `budget` (the run cap ended it before any handoff; its `status.scope` is `failed`). A scoper that ends without a handoff says so in the room |
-| `agent_factory_scope_bounces_total` | counter | `class`, `exit`, `repository` | Bounced tasks leaving their wait: `relabel`, `retry`, `expired` |
-| `agent_factory_splits_total` | counter | `class`, `outcome`, `repository` | Split handoffs, once each: `approved`, `declined`, `superseded`, `expired`, `ignored`, and `unstated` (offered a split, the scoper's handoff summary describes one but its `room_handoff` carries no `split`: the task runs whole, and a room note says so) |
-| `agent_factory_split_children_total` | counter | `class`, `outcome`, `repository` | Parts of a split, once each when their parent ends: `landed`, `dropped`, `reverted` |
-| `agent_factory_rooms_closed_at_cap_total` | counter | `reason` | Rooms closed at the cap (below): `human_driver`, `facts_due` |
-| `agent_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |
-| `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
-| `agent_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
-| `agent_factory_repository_owned` | gauge | `repository` | 1 while the repository's `.github/agent-factory.yaml` names this factory (`factory` in the config), per replica; 0 means no intake, schedules, API runs or merges there |
-| `agent_factory_admission_refusals_total` | counter | `repository`, `reason`, `principal` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned`; and `person_budget_exhausted`, an API run or a label refused on its person's day ([per-person caps](factory.md#per-person-caps)) |
+| `maku_factory_build_info` | gauge | `version` | Always 1; carries the running version |
+| `maku_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier`, `repository`, `principal` | Tasks by state and payer ([spend per identity](#spend-per-identity)) |
+| `maku_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
+| `maku_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
+| `maku_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
+| `maku_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository`, `principal` | `auto_merged`, `human_merged`, `closed`, `reverted` |
+| `maku_factory_prs_opened_total` | counter | `principal`, `repository` | Task pull requests opened, where `maku_factory_time_to_pr_seconds` records |
+| `maku_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
+| `maku_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
+| `maku_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
+| `maku_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
+| `maku_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve`, `split` |
+| `maku_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
+| `maku_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
+| `maku_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
+| `maku_factory_intake_errors_total` | counter | `source`, `repository` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
+| `maku_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
+| `maku_factory_run_revocations_total` | counter | `reason`, `limit`, `principal` | Runs the factory revoked; `limit` when the run meter did it (below); `principal` the run's payer, or the key over for `budget-principal-shadow` |
+| `maku_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
+| `maku_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost, reported two minutes after it ended (below) |
+| `maku_factory_run_spend_usd` | gauge | `run`, `model` | A priced run's USD spend so far, until its cost is reported |
+| `maku_factory_run_settled_usd` | gauge | `run` | A run's USD as the day ledgers settled it: the sum of its `settled.<runId>` entries |
+| `maku_factory_model_cost_usd_total` | counter | `model` | USD the runs spent, by served model, added as each run's cost is reported |
+| `maku_factory_charged_usd_total` | counter | `principal`, `kind` | USD the day ledgers charged, by the run's payer and `kind` (`task`, `room`), added when the write that settles it succeeds ([spend per identity](#spend-per-identity)) |
+| `maku_factory_run_charge_info` | gauge | `run`, `principal`, `task`, `room` | 1 for each run not ended, and each ended one for two minutes after its `finishedAt`; leader only. `task` is absent for a room's run |
+| `maku_factory_human_wait_seconds_total` | counter | `principal`, `phase` | Seconds tasks waited in `AwaitingHuman` or `Escalated`, added as each leaves the phase, under the task's payer |
+| `maku_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
+| `maku_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
+| `maku_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
+| `maku_factory_meter_input_excludes_cache_runs_total` | counter | `model` | Runs whose `input` a model reported without its cache tokens (below) |
+| `maku_factory_meter_usage_read_errors_total` | counter | — | Meter ticks whose usage read failed: no cap was checked on them |
+| `maku_factory_meter_last_success_timestamp_seconds` | gauge | — | When the meter last read usage and settled it in the day's ledger; set by the leader only, so alert on its max across pods. A tick whose ledger write fails sets nothing: it still revokes runs at their own caps, but the daily budgets wait and the increase is retried whole on the next tick |
+| `maku_factory_resumes_total` | counter | `reason` | Runs resumed after their pod was `Disrupted` or `PodLost` |
+| `maku_factory_loop_runs_total` | counter | `class`, `end`, `repository` | Implementer runs under the loop policy as they end: `judge_impossible`, `stalled`, `not_met`, `finished`, `other`. The wandering share is `stalled` over all |
+| `maku_factory_contracts_total` | counter | `class`, `end`, `repository` | Tester runs as their end is read: `ready`, `not_testable`, `contract_not_red`, `contract_outside_tests`, `contract_invalid`, `unreported` |
+| `maku_factory_class_without_holdout` | gauge | `repository`, `class` | 1 for a live class that declares no `holdoutChecks`, set once at start; the config is refused from the next minor |
+| `maku_factory_steering_reads_total` | counter | `class`, `read`, `repository` | Steering notes read at triage, in a mode other than `off`: `used`, `absent`, `invalid`, or `unowned` (the repository's fence does not name this factory, or its cache is stale: not read) |
+| `maku_factory_scoper_runs_total` | counter | `class`, `outcome`, `repository` | Scoper runs as they end: `ready`, `question`, `assumed`, `missing`, `failed`, `budget` (the run cap ended it before any handoff; its `status.scope` is `failed`). A scoper that ends without a handoff says so in the room |
+| `maku_factory_scope_bounces_total` | counter | `class`, `exit`, `repository` | Bounced tasks leaving their wait: `relabel`, `retry`, `expired` |
+| `maku_factory_splits_total` | counter | `class`, `outcome`, `repository` | Split handoffs, once each: `approved`, `declined`, `superseded`, `expired`, `ignored`, and `unstated` (offered a split, the scoper's handoff summary describes one but its `room_handoff` carries no `split`: the task runs whole, and a room note says so) |
+| `maku_factory_split_children_total` | counter | `class`, `outcome`, `repository` | Parts of a split, once each when their parent ends: `landed`, `dropped`, `reverted` |
+| `maku_factory_rooms_closed_at_cap_total` | counter | `reason` | Rooms closed at the cap (below): `human_driver`, `facts_due` |
+| `maku_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |
+| `maku_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
+| `maku_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
+| `maku_factory_repository_owned` | gauge | `repository` | 1 while the repository's `.github/agent-factory.yaml` names this factory (`factory` in the config), per replica; 0 means no intake, schedules, API runs or merges there |
+| `maku_factory_admission_refusals_total` | counter | `repository`, `reason`, `principal` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned`; and `person_budget_exhausted`, an API run or a label refused on its person's day ([per-person caps](factory.md#per-person-caps)) |
 
 A label value outside its known set is recorded as `other`; `repository` takes only the configured repositories' names.
 
@@ -270,8 +271,8 @@ A label value outside its known set is recorded as `other`; `repository` takes o
 
 | Alert | Fires when | For | First step |
 |---|---|---|---|
-| `FactoryGitHubUnreachable` | `agent_factory_github_up == 0` | 10 min | GitHub's status and the App key (`agent-factory-github`): [below](#factory-failures) |
-| `FactoryRepositoryNotOwned` | `max by (repository) (agent_factory_repository_owned) == 0` | 20 min | The repository's `.github/agent-factory.yaml` on its default branch: absent, unparsable, or naming another factory. A read that fails turns the gauge 0 after 15 min |
+| `FactoryGitHubUnreachable` | `maku_factory_github_up == 0` | 10 min | GitHub's status and the App key (`agent-factory-github`): [below](#factory-failures) |
+| `FactoryRepositoryNotOwned` | `max by (repository) (maku_factory_repository_owned) == 0` | 20 min | The repository's `.github/agent-factory.yaml` on its default branch: absent, unparsable, or naming another factory. A read that fails turns the gauge 0 after 15 min |
 
 No series, no alert: on a release without the gauge the expression is empty, so the rule is safe to ship ahead of it.
 
@@ -279,11 +280,11 @@ No series, no alert: on a release without the gauge the expression is empty, so 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `agent_factory_github_up` is 0; factory loops log GitHub errors and no task advances, while the replicas stay `Ready` | GitHub is down, or the App key is refused. Readiness ignores GitHub on purpose: unready replicas would serve nothing more, and the PDB's `unhealthyPodEvictionPolicy: AlwaysAllow` (Kubernetes 1.27+) never blocks a drain either way. The gauge is 1 while any GitHub call succeeded in the last 3 minutes, on each replica, and `FactoryGitHubUnreachable` (`agent_factory_github_up == 0` for 10m) pages on it | Check GitHub's status and the App key (`agent-factory-github`); the loops recover by themselves when GitHub returns |
+| `maku_factory_github_up` is 0; factory loops log GitHub errors and no task advances, while the replicas stay `Ready` | GitHub is down, or the App key is refused. Readiness ignores GitHub on purpose: unready replicas would serve nothing more, and the PDB's `unhealthyPodEvictionPolicy: AlwaysAllow` (Kubernetes 1.27+) never blocks a drain either way. The gauge is 1 while any GitHub call succeeded in the last 3 minutes, on each replica, and `FactoryGitHubUnreachable` (`maku_factory_github_up == 0` for 10m) pages on it | Check GitHub's status and the App key (`agent-factory-github`); the loops recover by themselves when GitHub returns |
 | Factory `CrashLoopBackOff`; the log says `merger App key ... is missing` | The Secrets are hard prerequisites whenever any merge class is `live` or `shadow` (deciding it reads checks through the merger): the optional mount lets the pod start, and the binary then refuses, so a missing key is a crash loop with a clear log line, no longer `ContainerCreating` | Create the `agent-factory-merger` Secret (keys `app_id`, `private_key`), or turn every class off: with none live or in shadow the key is optional and the merger fails closed. A task at the merge gate then waits for a maintainer (`merge_gate_off`) |
-| `agent_factory_intake_errors_total{source="dead-links"}` rises and no dead-links task starts | The detector's `findings.json` was malformed, out of shape (a path or URL the task may not hold, an archive that is no snapshot of its URL), or over 1 MiB and up to 4 MiB: the run pair is refused once, logged and counted. An artifact over 4 MiB is a plain read error instead: retried every minute and not counted | Fix the detector workflow; the next run pair is weighed. A run pair is weighed once, so a maintainer's re-run of a run (a new attempt) also forces a new look |
+| `maku_factory_intake_errors_total{source="dead-links"}` rises and no dead-links task starts | The detector's `findings.json` was malformed, out of shape (a path or URL the task may not hold, an archive that is no snapshot of its URL), or over 1 MiB and up to 4 MiB: the run pair is refused once, logged and counted. An artifact over 4 MiB is a plain read error instead: retried every minute and not counted | Fix the detector workflow; the next run pair is weighed. A run pair is weighed once, so a maintainer's re-run of a run (a new attempt) also forces a new look |
 | The factory logs `has no artifact "findings"` every minute for the dead-links schedule | The detector run uploaded no `findings` artifact, or it expired, or the merger App lacks `actions: read` or egress to `productionresultssa*.blob.core.windows.net` | The workflow must upload `findings.json` on every run, `[]` when clean; grant the merger App `actions: read`; allow the egress host |
-| Factory `POST /intake/runlore` answers `503 intake_unconfigured`; `agent_factory_intake_errors_total{source="runlore"}` rises and the log warns once a minute | The `agent-factory-intake` Secret is absent or empty (the mount is optional): the intake refuses everything instead of running open. It is a hard prerequisite whenever RunLore is meant to feed the factory | Create the Secret (key `token`); the token is re-read per request, no restart |
+| Factory `POST /intake/runlore` answers `503 intake_unconfigured`; `maku_factory_intake_errors_total{source="runlore"}` rises and the log warns once a minute | The `agent-factory-intake` Secret is absent or empty (the mount is optional): the intake refuses everything instead of running open. It is a hard prerequisite whenever RunLore is meant to feed the factory | Create the Secret (key `token`); the token is re-read per request, no restart |
 
 ### Budget signals
 
@@ -292,19 +293,19 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | Signal | Meaning |
 |---|---|
 | A tier sets `runUSD` or `taskUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
-| `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A model that served the run has no price (or, without `gen_ai_request_model` in `meter.query`, its claim's model has none). The run is capped at `runTokens`. The log says `run capped in tokens` |
-| `agent_factory_meter_unpriced_model_runs_total{model}` | Runs served by `model`, which has no `meter.prices` row: a backend pins a model the price table lacks. Counted once per run and model, whatever the tier caps in. Alert on any increase |
-| `agent_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input`, and the meter priced all of `input` as fresh. Every path the platform runs today counts the cache inside `input`, streamed calls included, so any increase means a gateway, a provider or the harness changed |
-| `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
-| `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
-| `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
-| `agent_factory_run_cost_usd{tier}` | A priced run's cost, reported two minutes after the meter first sees it ended, or when its claim is deleted first. `agent_factory_run_budget_usd{tier}` is the run cap |
-| `agent_factory_run_spend_usd{run, model}` | A priced run's spend so far, by the model that served it, from its first reading until its cost is reported. Only runs not yet reported carry the series, so its cardinality is the live runs times their models. One run's final price: `max_over_time(agent_factory_run_spend_usd{run="<id>"}[1d])` |
-| `agent_factory_run_settled_usd{run}` | The run's total in the day ledgers: the sum of its `settled.<runId>` entries over the days, taken from the ledger objects the meter read (a new run, a failover, a write in doubt) and from each settle write's returned object, never from the meter's own account. It is what the gateway's cost for the run is checked against, and it shows a double charge the meter's memory and `agent_factory_charged_usd_total` hide. Kept an hour after the run ends, then deleted. Only the leader exports it; run ids outside C2 are left out |
-| `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
-| `agent_factory_run_revocations_total{reason="budget-principal-shadow", principal}` | A run admitted past a day's cap while `enforcePrincipal` is off; `principal` is the key over: `system:factory`, or a person with per-person caps on. Zero false refusals for a week is the bar for enforcing |
-| `agent_factory_run_revocations_total{reason="budget-person"}` | A task escalated at Queued because its person's day is spent |
-| `agent_factory_budget_spent_usd{principal="github:<login>"}` | A person's spend today, once per-person caps are on; `agent_factory_budget_cap_usd` is their day |
+| `maku_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A model that served the run has no price (or, without `gen_ai_request_model` in `meter.query`, its claim's model has none). The run is capped at `runTokens`. The log says `run capped in tokens` |
+| `maku_factory_meter_unpriced_model_runs_total{model}` | Runs served by `model`, which has no `meter.prices` row: a backend pins a model the price table lacks. Counted once per run and model, whatever the tier caps in. Alert on any increase |
+| `maku_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input`, and the meter priced all of `input` as fresh. Every path the platform runs today counts the cache inside `input`, streamed calls included, so any increase means a gateway, a provider or the harness changed |
+| `maku_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
+| `maku_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
+| `maku_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
+| `maku_factory_run_cost_usd{tier}` | A priced run's cost, reported two minutes after the meter first sees it ended, or when its claim is deleted first. `maku_factory_run_budget_usd{tier}` is the run cap |
+| `maku_factory_run_spend_usd{run, model}` | A priced run's spend so far, by the model that served it, from its first reading until its cost is reported. Only runs not yet reported carry the series, so its cardinality is the live runs times their models. One run's final price: `max_over_time(maku_factory_run_spend_usd{run="<id>"}[1d])` |
+| `maku_factory_run_settled_usd{run}` | The run's total in the day ledgers: the sum of its `settled.<runId>` entries over the days, taken from the ledger objects the meter read (a new run, a failover, a write in doubt) and from each settle write's returned object, never from the meter's own account. It is what the gateway's cost for the run is checked against, and it shows a double charge the meter's memory and `maku_factory_charged_usd_total` hide. Kept an hour after the run ends, then deleted. Only the leader exports it; run ids outside C2 are left out |
+| `maku_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
+| `maku_factory_run_revocations_total{reason="budget-principal-shadow", principal}` | A run admitted past a day's cap while `enforcePrincipal` is off; `principal` is the key over: `system:factory`, or a person with per-person caps on. Zero false refusals for a week is the bar for enforcing |
+| `maku_factory_run_revocations_total{reason="budget-person"}` | A task escalated at Queued because its person's day is spent |
+| `maku_factory_budget_spent_usd{principal="github:<login>"}` | A person's spend today, once per-person caps are on; `maku_factory_budget_cap_usd` is their day |
 
 A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
 after they happen, so the first tick that sees a run ended can read it short. On
@@ -316,7 +317,7 @@ and the log says `a run spent after its cost was reported`.
 A run's USD total survives a leader failover: the new leader reads what the day ledgers settled
 for the run (`settled.<runId>`, summed over the retained days) and starts the run there when its
 counters read lower, after a gateway counter reset. Its cost by served model still starts from the
-counters, so `agent_factory_model_cost_usd_total` can miss what a run spent before such a reset.
+counters, so `maku_factory_model_cost_usd_total` can miss what a run spent before such a reset.
 
 ### Spend per identity
 
@@ -328,9 +329,9 @@ the key its next run is charged to: `system:factory` with per-person caps off.
 
 | Series | What it answers |
 |---|---|
-| `agent_factory_charged_usd_total{principal, kind}` | What the ledgers charged for the work a principal caused. Per person key, a day's increase is that day's `spent`; summed over payers, the fleet's `spent` with per-person caps on. R10's lift reaches a run's `settled.<runId>`, never `spent`, and is never counted. A leader that exits loses the charges of its last scrape interval from its counter, never from the ledger, nor does it count a landed write still in doubt when leadership changes: the counter can read low, never high (it never counts twice). Read it with `increase_pure` on VictoriaMetrics: a payer's series is born at its first charge |
-| `agent_factory_run_charge_info{run, principal, task, room}` | Which runs, tasks and rooms a principal paid for: join a run's gateway series (`ar_agent` ends in `xplane-run-<run>`) or kube-state-metrics' `agentrun_*{run_id}` on it |
-| `principal` on outcomes, openings, refusals, revocations, waits and `agent_factory_tasks` | The payer the series is recorded under. An API refusal names the caller as authenticated (`human:<sub>`), and a refusal on a person's day that person. The shadow keeps the key over |
+| `maku_factory_charged_usd_total{principal, kind}` | What the ledgers charged for the work a principal caused. Per person key, a day's increase is that day's `spent`; summed over payers, the fleet's `spent` with per-person caps on. R10's lift reaches a run's `settled.<runId>`, never `spent`, and is never counted. A leader that exits loses the charges of its last scrape interval from its counter, never from the ledger, nor does it count a landed write still in doubt when leadership changes: the counter can read low, never high (it never counts twice). Read it with `increase_pure` on VictoriaMetrics: a payer's series is born at its first charge |
+| `maku_factory_run_charge_info{run, principal, task, room}` | Which runs, tasks and rooms a principal paid for: join a run's gateway series (`ar_agent` ends in `xplane-run-<run>`) or kube-state-metrics' `agentrun_*{run_id}` on it |
+| `principal` on outcomes, openings, refusals, revocations, waits and `maku_factory_tasks` | The payer the series is recorded under. An API refusal names the caller as authenticated (`human:<sub>`), and a refusal on a person's day that person. The shadow keeps the key over |
 
 `principal` takes a ledger key's shape (`system:<name>`, `github:<login>`, `human:<sub>`), else
 `other`. `run`, `task` and `room` appear only on the per-live-run series.
@@ -341,9 +342,9 @@ Off until `api.sponsored` is written. The series:
 
 | Series | What it answers |
 |---|---|
-| `agent_factory_api_intake_total{principal, outcome}` | `POST /v1/tasks` requests by outcome: `admitted`, `duplicate`, or a refusal's code ([API](api.md#post-v1tasks)); `other` for anything else |
-| `agent_factory_max_cost_usd_total{principal}` | The `max_cost` the intake admitted: what principals asked to be allowed, not what they spent (`agent_factory_charged_usd_total{principal="system:<name>"}`) |
-| `agent_factory_principal_sponsor_info{principal, sponsor}` | 1 per declared principal, naming the maintainer accountable for it |
+| `maku_factory_api_intake_total{principal, outcome}` | `POST /v1/tasks` requests by outcome: `admitted`, `duplicate`, or a refusal's code ([API](api.md#post-v1tasks)); `other` for anything else |
+| `maku_factory_max_cost_usd_total{principal}` | The `max_cost` the intake admitted: what principals asked to be allowed, not what they spent (`maku_factory_charged_usd_total{principal="system:<name>"}`) |
+| `maku_factory_principal_sponsor_info{principal, sponsor}` | 1 per declared principal, naming the maintainer accountable for it |
 
 **Declaring a principal**, in order:
 
@@ -371,12 +372,12 @@ that needs another run escalates `principal_unknown`. A refused later run escala
 possibly with a pull request open. A maintainer's `/factory retry` is paid by the retrier.
 
 A `run.` task that stays `failed` with `no such room` was never triaged (the grace is two minutes:
-see [the API](api.md#sponsored-principals-on-mcp)); check `agent_factory_api_intake_total` and the Task.
+see [the API](api.md#sponsored-principals-on-mcp)); check `maku_factory_api_intake_total` and the Task.
 
 ### Internal principals and `factory/publish`
 
 Off until `api.internalPrincipals` is written (same prerequisites as a sponsored principal:
-`api.projectIDFile`, `meter.prices`, the client id file). `agent_factory_api_intake_total` counts its
+`api.projectIDFile`, `meter.prices`, the client id file). `maku_factory_api_intake_total` counts its
 requests under `principal="system:<name>"`. The `factory/publish` label must exist on each
 repository the factory serves, as `factory/ready` does; the factory removes it once it has answered.
 An issue the factory filed from a proposal carries no label: the maintainer applies `factory/ready`.
@@ -384,7 +385,7 @@ An issue the factory filed from a proposal carries no label: the maintainer appl
 **RunLore's verdict.** Off until an internal principal has `verification: true` and a class declares
 `monitor.verification.within`; the route is a `404` before. The `runlore:` block (the old
 `/intake/runlore`) is optional: leave it out and the intake and its port are not started. Watch
-`agent_factory_monitor_verifications_total{verdict="none"}`: a verdict that never arrives.
+`maku_factory_monitor_verifications_total{verdict="none"}`: a verdict that never arrives.
 
 **Roll the broker first.** The broker decodes task facts strictly: the factory posts `origin` in
 them only for a fix started from a published issue, and an older broker refuses such facts. Upgrade
@@ -449,17 +450,17 @@ Other things to know:
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `rooms_webhook_deliveries_total` | counter | `subscriber`, `outcome` | Attempts: `delivered`, `retried`, `failed` (given up), `no_key` (the key file is unreadable: the room is held, counted once per sweep, and nothing is dropped or counted against the subscriber), `unresolved`, `mismatch` (the log and the Room name different repositories) |
-| `rooms_webhook_disabled` | gauge | `subscriber` | 1 while the subscriber is disabled |
+| `maku_rooms_webhook_deliveries_total` | counter | `subscriber`, `outcome` | Attempts: `delivered`, `retried`, `failed` (given up), `no_key` (the key file is unreadable: the room is held, counted once per sweep, and nothing is dropped or counted against the subscriber), `unresolved`, `mismatch` (the log and the Room name different repositories) |
+| `maku_rooms_webhook_disabled` | gauge | `subscriber` | 1 while the subscriber is disabled |
 
-`RoomWebhookDisabled` fires on `max by (subscriber) (rooms_webhook_disabled) == 1`. The rule lives in
+`RoomWebhookDisabled` fires on `max by (subscriber) (maku_rooms_webhook_disabled) == 1`. The rule lives in
 ai-native-ref's `vmrule-agent-factory.yaml`, which comes with ai-native-ref's PR F: until it merges, nothing alerts.
 
 ### Finished rooms close
 
 A finished task's room closes once its outbox, settle, facts and revert window are done, and while
 no person drives it. The last two waits are capped a day after the task ended: past that the room
-closes anyway, a person still driving it included, and `agent_factory_rooms_closed_at_cap_total`
+closes anyway, a person still driving it included, and `maku_factory_rooms_closed_at_cap_total`
 counts it.
 
 ### Escalated tasks and the kill switch

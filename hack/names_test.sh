@@ -21,4 +21,16 @@ for f in docs/bad-image.md docs/bad-cli.md bad.go docs/bad-path.md; do
 done
 grep -q 'FAIL: an old name' <<<"$out"
 if grep -qE 'superpowers|humanapi|ok\.md|history\.md' <<<"$out"; then echo "unexpected match: $out"; exit 1; fi
+# Phase 2: the group as a group fails; a label or annotation key and the lease pass (plan D1, D12).
+printf 'apiVersion: agents.ogenki.io/v1alpha1\n' > "$tmp/docs/bad-group.md"
+printf '  - apiGroups: [agents.ogenki.io]\n' > "$tmp/bad-rbac.yaml"
+printf 'kubectl get rooms.agents.ogenki.io\n' > "$tmp/docs/bad-plural.md"
+printf 'the `rooms_events_appended_total` counter\n' > "$tmp/docs/bad-metric.md"
+printf 'kubectl annotate task x agents.ogenki.io/stop=true; lease `agent-factory.agents.ogenki.io`; maku_rooms_events_appended_total\n' > "$tmp/docs/ok-keys.md"
+mkdir -p "$tmp/internal/metrics" && printf 'const x = "rooms_events_appended_total"\n' > "$tmp/internal/metrics/m.go"
+out=$(bash "$here/names.sh" "$tmp" 2>&1 || true)
+for f in docs/bad-group.md bad-rbac.yaml docs/bad-plural.md docs/bad-metric.md; do
+  grep -q "^$f:1:" <<<"$out" || { echo "names.sh missed $f"; exit 1; }
+done
+if grep -q 'ok-keys\.md' <<<"$out"; then echo "a key, the lease or a maku_ name was refused: $out"; exit 1; fi
 echo "==> names_test: ok"

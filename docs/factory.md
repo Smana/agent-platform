@@ -159,7 +159,7 @@ or ids, or one longer than 512 bytes, is `contract_too_large`: the Task records 
 never a truncated contract.
 
 The tester's end note only names a category (`contract_ready`, `not_testable`, `contract_not_red`,
-`contract_outside_tests`), a hint counted in `agent_factory_contracts_total`. With no push recorded
+`contract_outside_tests`), a hint counted in `maku_factory_contracts_total`. With no push recorded
 the task has no contract: a `contract_ready` note waits up to five minutes for GitHub to record the
 push, and any other end (or a failed run) lets the implementer start without one. A lost sandbox
 resumes the tester; a person's stop or an exhausted budget escalates as for any run.
@@ -244,7 +244,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
 | `not_agent_authored` | The pull request is not from `agentsLogin` |
-| `class_unarmed` | The predicted class is neither live nor shadow (such as `docs` or `review`): the factory does not merge it, a maintainer reviews and merges it. Not counted in `agent_factory_class_mismatch_total` |
+| `class_unarmed` | The predicted class is neither live nor shadow (such as `docs` or `review`): the factory does not merge it, a maintainer reviews and merges it. Not counted in `maku_factory_class_mismatch_total` |
 | `class_mismatch` | The predicted class's `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
 | `file_not_allowed` | It changes a file outside its class's allowed files |
 | `file_protected` | It changes a file its class protects |
@@ -405,9 +405,9 @@ Every gateway path the platform runs counts the cache tokens inside `input`: age
 Chat Completions to Messages translation, streamed or not, and Z.ai's `prompt_tokens`. A model
 whose `input` is below `cached_input + cache_creation_input` comes from a gateway that leaves them
 out: it is priced with all of `input` as fresh, and
-`agent_factory_meter_input_excludes_cache_runs_total{model}` counts the run.
+`maku_factory_meter_input_excludes_cache_runs_total{model}` counts the run.
 A run served by a model with no price is never $0: it is held to its token caps, and
-`agent_factory_meter_unpriced_model_runs_total{model}` names the model.
+`maku_factory_meter_unpriced_model_runs_total{model}` names the model.
 
 At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
 
@@ -903,7 +903,7 @@ merge. `persisting` is a `regression` at once: the factory labels the pull reque
 for the breaker, and files one follow-up issue, labelled `factory/proposed`, titled
 `RunLore: the fix in #<pr> did not hold (<alert>)` (recorded in `status.monitor.followUpIssue`, never
 twice). It names the pull request, the alert and the origin room; the evidence stays on the origin
-task. `agent_factory_monitor_verifications_total{class, verdict}` counts the verdicts read
+task. `maku_factory_monitor_verifications_total{class, verdict}` counts the verdicts read
 (`resolved`, `persisting`, `none`).
 
 The detector signal reads each scheduled run after the merge (or a maintainer's `workflow_dispatch`),
@@ -935,7 +935,7 @@ watch goes on to the end of the window to count follow-ups; any other verdict is
 window ends. The comment ends `<!-- agent-factory … event=monitor-<n> verdict=<v> -->` and lists
 what it read, with `follow_ups=N`. A regression, and each follow-up found, are also posted on the
 control issue (under their own keys), when it lives on the task's repository.
-`agent_factory_monitor_verdicts_total{class,verdict,repository}` counts each verdict once.
+`maku_factory_monitor_verdicts_total{class,verdict,repository}` counts each verdict once.
 
 **The labels** the merger writes (it asks for `issues: write` while any class is `live` or has a
 `monitor`):
@@ -1059,7 +1059,7 @@ lifts it. One task stops with the annotation `agents.ogenki.io/stop: "true"` on 
 
 ### The Task CRD
 
-`tasks.agents.ogenki.io/v1alpha1`, namespaced, created by the factory at runtime and never
+`tasks.maku.ogenki.io/v1alpha1`, namespaced, created by the factory at runtime and never
 committed to Git. Its name is an 8-character id (`[a-z2-7]{8}`) derived from the source's key, so
 creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 
@@ -1189,7 +1189,7 @@ gets no trigger-label or revert intake, no orphan scan, no schedules, no RunLore
 (`409 repository_not_owned`), no API runs (`409 repository_not_owned`) and no merges (gate step
 `not_owned`, a human merges). Stop labels and the control issue still work. A read that fails keeps
 the last answer for 15 minutes, then the repository counts as not owned until a read succeeds.
-`agent_factory_repository_owned{repository}` shows the state.
+`maku_factory_repository_owned{repository}` shows the state.
 
 #### Who may start work on a repository
 
@@ -1237,14 +1237,14 @@ change, the files, the paths to leave alone, a plan, its assumptions and its acc
 Every implementer brief carries it after the steering note. The brief asks for the handoff as soon
 as the scope is known, within about 25 tool calls. A scoper that leaves none starts the
 implementer unscoped, and the room says so (a run cap counts as `budget` in
-`agent_factory_scoper_runs_total`); a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
+`maku_factory_scoper_runs_total`); a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
 (`run_unschedulable`), no budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
 default answers bounces the task to the issue's author (`needs_author`); a task without an issue
 takes the scoper's first assumption instead.
 
 - **Read-only at the token level, on cloud-native-ref's AgentRun.** There the triager role maps to
   the host's octo-sts trust policy, which grants `contents: read` only: the run cannot push or open
-  anything, whatever its brief says. The portable `agents.ogenki.io` AgentRun gives every role the
+  anything, whatever its brief says. The portable `maku.ogenki.io` AgentRun gives every role the
   same token, so `scope: scoper` is refused when `runs.group` names it (as the loop policy is).
 - **The scope has one source.** The factory takes it only from the triager's handoff to the
   implementer, on the current scoper run, and validates it again (the broker stored it redacted).

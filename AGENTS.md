@@ -110,19 +110,18 @@ packages that need a newer one.
 
 ### Observability
 
-- **Metrics:** the OpenTelemetry metric API with the Prometheus exporter on `:9090`. Every name
-  starts `rooms_` (the SP2 §9 set, e.g. `rooms_events_appended_total`), or `agent_factory_` in
-  the factory (SP3 §7, `internal/factory/fmetrics`); counters end `_total`,
-  durations `_seconds`.
-  Until `v0.31.0` drops them, the exporter also serves each `rooms_*` and `agent_factory_*` family as
-  `maku_rooms_*` and `maku_factory_*` (`metrics.MakuName`, `metrics.makuNames` in each config, on by
-  default). A new instrument still takes the old prefix, and its twin follows on its own.
-  Buckets per histogram family sit on real thresholds (SC-12: fan-out p95
-  under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
-  Label values are bounded: never a payload field; `room` only on the per-Active-room gauge and
-  on per-live-run series such as `agent_factory_run_charge_info`, whose `run` label already makes
-  one series per run.
-- **`rooms_build_info{version}` = 1** from the first metric; `agent_factory_build_info{version}`
+- **Metrics:** the OpenTelemetry metric API with the Prometheus exporter on `:9090`. Scrapes carry
+  `maku_rooms_*` (the SP2 §9 set, e.g. `maku_rooms_events_appended_total`; the bridge's
+  `maku_rooms_bridge_*` counters are served by the broker, the bridge serves none), and
+  `maku_factory_*` in the factory (SP3 §7, `internal/factory/fmetrics`); counters end `_total`,
+  durations `_seconds`. Instruments are still created as `rooms_*` and `agent_factory_*` in Go: the
+  exporter renames every family on scrape (`metrics.MakuName`), so a new instrument takes the old
+  prefix and is served under `maku_`; `hack/names.sh` refuses the old names outside Go. Buckets per
+  histogram family sit on real thresholds (SC-12: fan-out p95 under 0.5 s). Instruments hang off an
+  injected set that works with a no-op provider in tests. Label values are bounded: never a payload
+  field; `room` only on the per-Active-room gauge and on per-live-run series such as
+  `maku_factory_run_charge_info`, whose `run` label already makes one series per run.
+- **`maku_rooms_build_info{version}` = 1** from the first metric; `maku_factory_build_info{version}`
   in the factory.
 - **Traces: the factory has them, the rooms side does not yet.** The factory emits one root span
   per task, and its spans reach the trace router with no allowlist (O-1 M3): ids, tier, phase and

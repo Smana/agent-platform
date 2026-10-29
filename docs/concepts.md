@@ -30,7 +30,7 @@ the broker assigns. The rest of this page names the parts.
 
 | Term | Meaning | Where it lives |
 |---|---|---|
-| **Task** | One labelled issue's journey: a `Task` CR the intake creates, with its room, runs, PR and end, narrated on the issue | `Task` CR (`agents.ogenki.io`), kept by `internal/factory/reconciler` |
+| **Task** | One labelled issue's journey: a `Task` CR the intake creates, with its room, runs, PR and end, narrated on the issue | `Task` CR (`maku.ogenki.io`), kept by `internal/factory/reconciler` |
 | **Trigger** | What starts or stops a task: the labels `factory/ready`, `factory/stop` and `factory/revert`; `/factory retry`; the control issue; a schedule; a RunLore finding | Issue labels and comments; `control` and each repository's `schedules` in the factory config |
 | **Tier** | `light`, `standard`, `frontier`: a run's model, deadline and budget, chosen once per task. The model is a logical name on the agent gateway (`tier-light`, `tier-standard`, `tier-frontier`). Rooms do not carry or change it: escalating a task means a new run, never a switch inside one | `tiers` in the factory config; `AgentRun.spec.model` |
 | **Template** | `solo`, `pair`, `trio`, `investigate`: which roles run in which order | The `Task` CRD's template enum |
@@ -45,7 +45,7 @@ the broker assigns. The rest of this page names the parts.
 
 | Term | Meaning | Where it lives |
 |---|---|---|
-| **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by the factory, the broker or the owner, never committed to Git | `Room` CR (`agents.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id (8 lowercase base32 characters; [reference](#reference-the-room-crd)); its log in Postgres |
+| **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by the factory, the broker or the owner, never committed to Git | `Room` CR (`maku.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id (8 lowercase base32 characters; [reference](#reference-the-room-crd)); its log in Postgres |
 | **Run** | One agent, one role, one task, one branch, with a deadline. It joins a room by naming it in `spec.roomRef`. One run is `Running` per room at a time | `AgentRun` claim (`cloud.ogenki.io`) in `agents` |
 | **Harness** | The agent loop inside the sandbox: the OpenHands agent-server on `127.0.0.1:8000` | The run's pod |
 | **Bridge** | `maku-bridge`, a native sidecar (container `room-bridge`) in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` |
@@ -98,7 +98,7 @@ stateDiagram-v2
 ```
 
 `AwaitingHuman` comes from a pending approval or from a stall. Deleting a
-`Room` runs the finalizer `agents.ogenki.io/room-log`, which deletes the room's runs and seals the
+`Room` runs the finalizer `maku.ogenki.io/room-log`, which deletes the room's runs and seals the
 log. The log keeps its own retention clock after the CR is gone.
 
 ## Who does what
@@ -119,8 +119,8 @@ The full permission matrix is in [Security](security.md#authorization).
 
 ## Reference: the Room CRD
 
-`Room` (`agents.ogenki.io/v1alpha1`), namespaced, with a `status` subresource
-(`api/v1alpha1`, generated into `config/crd/agents.ogenki.io_rooms.yaml`). `kubectl get rooms`
+`Room` (`maku.ogenki.io/v1alpha1`), namespaced, with a `status` subresource
+(`api/v1alpha1`, generated into `config/crd/maku.ogenki.io_rooms.yaml`). `kubectl get rooms`
 prints `Phase`, `Driver`, `Seq`, `Pending` and `Class`.
 
 **Name.** A CEL rule requires a C2 id: `self.metadata.name.matches('^[a-z2-7]{8}$')`, message
@@ -155,7 +155,7 @@ prints `Phase`, `Driver`, `Seq`, `Pending` and `Class`.
 The broker's leader writes `status` from the log. A minimal room:
 
 ```yaml
-apiVersion: agents.ogenki.io/v1alpha1
+apiVersion: maku.ogenki.io/v1alpha1
 kind: Room
 metadata: {name: 3kq7x2ma, namespace: agent-system}
 spec: {owner: "system:factory", driver: "system:factory", dataClass: public}

@@ -142,7 +142,7 @@ document, at any depth, object keys included: an env dump puts secrets in keys. 
 are stripped first, since `jsonb` refuses them. Two keys that are one once redacted cannot keep
 both values, so that item is stored as a `key_collision` stub. It uses gitleaks' `detect` package with its
 default rule set. A match becomes `[REDACTED:<rule>]`, the rule id is listed in the event's
-`redactions`, and `rooms_redactions_total{rule}` counts it. Broker logs carry envelope metadata only,
+`redactions`, and `maku_rooms_redactions_total{rule}` counts it. Broker logs carry envelope metadata only,
 never payloads (`internal/redact`).
 
 A unit test pins the four rules the design names:

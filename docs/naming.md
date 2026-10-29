@@ -159,14 +159,14 @@ group, is pending.
 | Binaries and images | `room-broker`, `room-bridge`, `agent-factory`, `run-controller`, `factory-slack-app`, `agent-harness` | `maku-broker`, `maku-bridge`, `maku-factory`, `maku-run-controller`, `maku-slack`, `maku-harness` |
 | CLI | `roomctl` | `maku` (formerly `roomctl`; its config directory is imported once) |
 | Charts | `agent-platform`, `agent-factory` | `maku`, `maku-factory` |
-| Metrics | `rooms_*`, `agent_factory_*` | `maku_rooms_*`, `maku_factory_*`; v0.30.0 serves both |
+| Metrics | `rooms_*`, `agent_factory_*` | `maku_rooms_*`, `maku_factory_*`; v0.30.0 serves both, v0.31.0 the `maku_` names only |
 | Signer | `Smana/agent-platform/.github/workflows/release.yaml` | `Smana/maku/.github/workflows/release.yaml` |
 | Live demo | `blog.ogenki.io/agent-platform/` | `blog.ogenki.io/maku/` |
 
 Unchanged, because issuers, allowlists, network policies or older clients key on them: the
 ServiceAccounts, Deployments and Services (`room-broker`, `agent-factory`), the JWT audiences
 `room-broker`, `rooms-system` and `agent-factory`, the leader-election leases, the routes
-`/api/roomctl` and `/.well-known/roomctl`, the config key `human.roomctlClientIDFile`, the CRD group
-`agents.ogenki.io`, the `room.*` event types and the web host `rooms.<domain>`. The
-[rebrand design](superpowers/specs/2026-10-28-maku-rebrand-design.md) schedules the CRD group
-for phase 2.
+`/api/roomctl` and `/.well-known/roomctl`, the config key `human.roomctlClientIDFile`, the `room.*`
+event types and the web host `rooms.<domain>`. Since v0.31.0 the CRD group is `maku.ogenki.io`;
+Kubernetes label and annotation keys keep the `agents.ogenki.io/` prefix that other repositories
+select on ([the group move](maku-group-migration.md)).
