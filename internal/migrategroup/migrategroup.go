@@ -187,12 +187,15 @@ func copyOf(old *unstructured.Unstructured, to schema.GroupVersionKind) *unstruc
 // finish confirms a guarded copy, then releases and deletes the original. Each step is idempotent,
 // so a run stopped half way is finished by the next. An unguarded copy was confirmed before its
 // guard came off and is live under the target group's controller: its status is that controller's
-// now, so it is neither rewritten nor compared, and moveOne has already matched its migrated-from.
+// now, so it is neither rewritten nor compared. Its spec, labels and annotations still have to match
+// the original's, which may have been edited since.
 func finish(ctx context.Context, c client.Client, old, cp *unstructured.Unstructured, done Outcome) (Outcome, error) {
 	if _, guarded := cp.GetAnnotations()[v1alpha1.AnnotationMigrating]; guarded {
 		if err := confirm(ctx, c, old, cp); err != nil {
 			return Failed, err
 		}
+	} else if err := same(old, cp, false); err != nil {
+		return Failed, fmt.Errorf("the live copy differs, so the original is kept: %w", err)
 	}
 	return release(ctx, c, old, done)
 }
@@ -211,7 +214,7 @@ func confirm(ctx context.Context, c client.Client, old, cp *unstructured.Unstruc
 	if err := c.Get(ctx, client.ObjectKeyFromObject(cp), fresh); err != nil {
 		return fmt.Errorf("read the copy back: %w", err)
 	}
-	if err := same(old, fresh); err != nil {
+	if err := same(old, fresh, true); err != nil {
 		return fmt.Errorf("the copy differs, so the original is kept: %w", err)
 	}
 	patch := []byte(`{"metadata":{"annotations":{"` + v1alpha1.AnnotationMigrating + `":null}}}`)
@@ -237,12 +240,16 @@ func release(ctx context.Context, c client.Client, old *unstructured.Unstructure
 	return done, nil
 }
 
-// same is nil when the copy carries everything the original does: spec and status as subsets (a
-// newer schema may default a field the original lacks), and every label and annotation except the
-// migration's own. It names fields, never values: a spec holds task text.
-func same(old, cp *unstructured.Unstructured) error {
+// same is nil when the copy carries everything the original does: spec and, withStatus, status as
+// subsets (a newer schema may default a field the original lacks), and every label and annotation
+// except the migration's own. It names fields, never values: a spec holds task text.
+func same(old, cp *unstructured.Unstructured, withStatus bool) error {
 	var errs []error
-	for _, f := range []string{"spec", "status"} {
+	fields := []string{"spec"}
+	if withStatus {
+		fields = append(fields, "status")
+	}
+	for _, f := range fields {
 		if !subset(old.Object[f], cp.Object[f]) {
 			errs = append(errs, fmt.Errorf("%s", f))
 		}

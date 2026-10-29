@@ -303,6 +303,21 @@ func TestRun(t *testing.T) {
 			},
 		},
 		{
+			name: "a live copy whose original was edited since is not released",
+			objs: func() []client.Object {
+				orig := room(oldG, "aaaaaaaa", "u1")
+				orig.Object["spec"].(map[string]any)["retention"] = "30d"
+				cp := room(newG, "aaaaaaaa", "c1")
+				cp.SetFinalizers([]string{newG + "/room-log"})
+				cp.SetAnnotations(map[string]string{"agents.ogenki.io/forked-from": "aaaaaaaa@3", v1alpha1.AnnotationMigratedFrom: "u1"})
+				return []client.Object{orig, cp}
+			}(),
+			apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				kept(t, c, "Room", "aaaaaaaa", "a live copy that differs cost the original")
+			},
+		},
+		{
 			name: "a kind the source group does not serve is reported, not failed",
 			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
 			fail: func(op, g, kind string) error {
