@@ -127,7 +127,7 @@ func scrape(t *testing.T, h http.Handler) string {
 }
 
 // RoomLogAppendErrors pages on a failing database, never on an append refused
-// for what it is; rooms_events_appended_total counts every new event, whoever wrote it.
+// for what it is; maku_rooms_events_appended_total counts every new event, whoever wrote it.
 func TestMeteredLog(t *testing.T) {
 	valid := envelope.Draft{RoomID: "3kq7x2ma", Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
 		Type: envelope.StateChanged, Origin: envelope.OriginBroker, OriginClient: "broker:room", OriginSeq: 1,
@@ -142,23 +142,23 @@ func TestMeteredLog(t *testing.T) {
 		absent []string
 	}{
 		{"a new event is counted with its redactions", valid, fakeAppends{ev: stored},
-			[]string{`rooms_events_appended_total{origin="harness",type="message"} 1`, `rooms_redactions_total{rule="jwt"} 1`,
-				`rooms_redactions_total{rule="github-pat"} 1`, `rooms_append_seconds_count 1`},
-			[]string{"rooms_append_errors_total"}},
+			[]string{`maku_rooms_events_appended_total{origin="harness",type="message"} 1`, `maku_rooms_redactions_total{rule="jwt"} 1`,
+				`maku_rooms_redactions_total{rule="github-pat"} 1`, `maku_rooms_append_seconds_count 1`},
+			[]string{"maku_rooms_append_errors_total"}},
 		{"a replayed key is not a new event", valid, fakeAppends{ev: stored, dup: true},
-			[]string{`rooms_append_seconds_count 1`}, []string{"rooms_events_appended_total", "rooms_redactions_total"}},
+			[]string{`maku_rooms_append_seconds_count 1`}, []string{"maku_rooms_events_appended_total", "maku_rooms_redactions_total"}},
 		{"a failing database is an append error", valid, fakeAppends{err: wrapped(errors.New("conn reset"))},
-			[]string{`rooms_append_errors_total 1`, `rooms_append_seconds_count 1`}, []string{"rooms_events_appended_total"}},
+			[]string{`maku_rooms_append_errors_total 1`, `maku_rooms_append_seconds_count 1`}, []string{"maku_rooms_events_appended_total"}},
 		{"a database timeout is an append error", valid, fakeAppends{err: wrapped(context.DeadlineExceeded)},
-			[]string{`rooms_append_errors_total 1`}, nil},
-		{"a missing room is not", valid, fakeAppends{err: wrapped(store.ErrNoRoom)}, nil, []string{"rooms_append_errors_total"}},
-		{"a sealed room is not", valid, fakeAppends{err: wrapped(store.ErrSealed)}, nil, []string{"rooms_append_errors_total"}},
-		{"a lost lease is not", valid, fakeAppends{err: wrapped(store.ErrLeaseLost)}, nil, []string{"rooms_append_errors_total"}},
+			[]string{`maku_rooms_append_errors_total 1`}, nil},
+		{"a missing room is not", valid, fakeAppends{err: wrapped(store.ErrNoRoom)}, nil, []string{"maku_rooms_append_errors_total"}},
+		{"a sealed room is not", valid, fakeAppends{err: wrapped(store.ErrSealed)}, nil, []string{"maku_rooms_append_errors_total"}},
+		{"a lost lease is not", valid, fakeAppends{err: wrapped(store.ErrLeaseLost)}, nil, []string{"maku_rooms_append_errors_total"}},
 		{"a value PostgreSQL refuses is not", valid, fakeAppends{err: wrapped(&pgconn.PgError{Code: "22P05"})}, nil,
-			[]string{"rooms_append_errors_total"}},
-		{"a caller that went away is not", valid, fakeAppends{err: wrapped(context.Canceled)}, nil, []string{"rooms_append_errors_total"}},
+			[]string{"maku_rooms_append_errors_total"}},
+		{"a caller that went away is not", valid, fakeAppends{err: wrapped(context.Canceled)}, nil, []string{"maku_rooms_append_errors_total"}},
 		{"an invalid draft is not", envelope.Draft{RoomID: "3kq7x2ma"}, fakeAppends{err: errors.New("the actor is stamped by the broker")},
-			nil, []string{"rooms_append_errors_total"}},
+			nil, []string{"maku_rooms_append_errors_total"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
@@ -214,24 +214,24 @@ func TestBridgeSignals(t *testing.T) {
 	}{
 		{"a stall notice counts its code", envelope.StateChanged, envelope.OriginHarness,
 			state(`"harness_error","code":"cursor_lost","detail":"the bridge cannot read past this point"`),
-			`rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`},
+			`maku_rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`},
 		{"every stall reason", envelope.StateChanged, envelope.OriginHarness,
-			state(`"harness_error","code":"next_page_unreadable"`), `rooms_bridge_harness_stalls_total{reason="next_page_unreadable"} 1`},
+			state(`"harness_error","code":"next_page_unreadable"`), `maku_rooms_bridge_harness_stalls_total{reason="next_page_unreadable"} 1`},
 		{"the harness's own error is not a stall", envelope.StateChanged, envelope.OriginHarness,
 			state(`"harness_error","code":"LLMRateLimit","detail":"429"`), ""},
 		{"a refused item's stub", envelope.StateChanged, envelope.OriginHarness,
 			state(`"harness_event","harnessKind":"refused","detail":"message","bytes":12,"reason":"bad_payload"`),
-			`rooms_bridge_items_stubbed_total{reason="refused"} 1`},
+			`maku_rooms_bridge_items_stubbed_total{reason="refused"} 1`},
 		{"an oversize item's stub", envelope.StateChanged, envelope.OriginHarness,
 			state(`"harness_event","harnessKind":"oversize","detail":"message","bytes":3000000`),
-			`rooms_bridge_items_stubbed_total{reason="oversize"} 1`},
+			`maku_rooms_bridge_items_stubbed_total{reason="oversize"} 1`},
 		{"an oversize tool result, stubbed by the bridge or the store", envelope.ToolResult, envelope.OriginHarness,
-			json.RawMessage(`{"oversize":true,"bytes":70000,"type":"tool_result"}`), `rooms_bridge_items_stubbed_total{reason="oversize"} 1`},
+			json.RawMessage(`{"oversize":true,"bytes":70000,"type":"tool_result"}`), `maku_rooms_bridge_items_stubbed_total{reason="oversize"} 1`},
 		// S1 review I-4: each stub says why, in a bounded set of reasons.
 		{"the broker's stub for a value the store rejected", envelope.Message, envelope.OriginHarness,
-			json.RawMessage(`{"reason":"invalid_value","refused":true,"type":"message"}`), `rooms_bridge_items_stubbed_total{reason="invalid_value"} 1`},
+			json.RawMessage(`{"reason":"invalid_value","refused":true,"type":"message"}`), `maku_rooms_bridge_items_stubbed_total{reason="invalid_value"} 1`},
 		{"the broker's stub for keys that collide once redacted", envelope.ToolResult, envelope.OriginHarness,
-			json.RawMessage(`{"reason":"key_collision","refused":true,"type":"tool_result"}`), `rooms_bridge_items_stubbed_total{reason="key_collision"} 1`},
+			json.RawMessage(`{"reason":"key_collision","refused":true,"type":"tool_result"}`), `maku_rooms_bridge_items_stubbed_total{reason="key_collision"} 1`},
 		{"a stub with a reason outside the set is not counted", envelope.Message, envelope.OriginHarness,
 			json.RawMessage(`{"reason":"whatever","refused":true,"type":"message"}`), ""},
 		{"an unknown harness kind is not a stub", envelope.StateChanged, envelope.OriginHarness,
@@ -263,7 +263,7 @@ func TestBridgeSignals(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := scrape(t, exp.Handler())
-			for _, name := range []string{"rooms_bridge_harness_stalls_total", "rooms_bridge_items_stubbed_total"} {
+			for _, name := range []string{"maku_rooms_bridge_harness_stalls_total", "maku_rooms_bridge_items_stubbed_total"} {
 				if (c.want == "" || !strings.HasPrefix(c.want, name)) && strings.Contains(body, name+"{") {
 					t.Errorf("counts %s:\n%s", name, body)
 				}
@@ -276,7 +276,7 @@ func TestBridgeSignals(t *testing.T) {
 }
 
 // A bridge's harness_status names the effort its run told: the broker records it for
-// rooms_run_info. A model in it is never a label: the claim's, from the watch, is. The watch here
+// maku_rooms_run_info. A model in it is never a label: the claim's, from the watch, is. The watch here
 // knows the run as live with the model agent-default.
 func TestRunInfoFromTheRoom(t *testing.T) {
 	for _, c := range []struct {
@@ -287,10 +287,10 @@ func TestRunInfoFromTheRoom(t *testing.T) {
 	}{
 		{"a harness_status with an effort", envelope.OriginHarness,
 			`{"kind":"harness_status","status":"running","previous":"","effort":"high"}`,
-			`rooms_run_info{effort="high",model="agent-default",run="7f3cq2xz"} 1`},
+			`maku_rooms_run_info{effort="high",model="agent-default",run="7f3cq2xz"} 1`},
 		{"a model the harness names is not the label", envelope.OriginHarness,
 			`{"kind":"harness_status","status":"running","model":"forged","effort":"low"}`,
-			`rooms_run_info{effort="low",model="agent-default",run="7f3cq2xz"} 1`},
+			`maku_rooms_run_info{effort="low",model="agent-default",run="7f3cq2xz"} 1`},
 		{"an older harness tells no effort", envelope.OriginHarness, `{"kind":"harness_status","status":"running","previous":""}`, ""},
 		{"an effort outside the set is never a label", envelope.OriginHarness,
 			`{"kind":"harness_status","status":"running","effort":"turbo"}`, ""},
@@ -313,7 +313,7 @@ func TestRunInfoFromTheRoom(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := scrape(t, exp.Handler())
-			if c.want == "" && strings.Contains(body, "rooms_run_info{") {
+			if c.want == "" && strings.Contains(body, "maku_rooms_run_info{") {
 				t.Errorf("a series from %s:\n%s", c.payload, body)
 			}
 			if c.want != "" && !strings.Contains(body, c.want+"\n") {
@@ -461,7 +461,7 @@ func TestOps(t *testing.T) {
 	migrated := func(context.Context) (bool, error) { return true, nil }
 	unmigrated := func(context.Context) (bool, error) { return false, nil }
 	broken := func(context.Context) (bool, error) { return false, errors.New("refused") }
-	metricsH := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("rooms_build_info 1")) })
+	metricsH := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("maku_rooms_build_info 1")) })
 	for _, c := range []struct {
 		name     string
 		path     string
@@ -621,7 +621,7 @@ func TestFanoutHub(t *testing.T) {
 	if _, err := fanoutHub(fakeRoomLog{}, nil, m, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatal(err)
 	}
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_fanout_listener_up 0\n") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_rooms_fanout_listener_up 0\n") {
 		t.Fatalf("no listener gauge in\n%s", body)
 	}
 }

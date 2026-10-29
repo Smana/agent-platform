@@ -20,12 +20,12 @@ func TestSponsoredSeries(t *testing.T) {
 	s.APIIntake(WithPrincipal(ctx, "system:<script>"), "admitted")
 	out := scrape()
 	for _, want := range []string{
-		`agent_factory_principal_sponsor_info{principal="system:slack-app",sponsor="github:smana"} 1` + "\n",
-		`agent_factory_max_cost_usd_total{principal="system:slack-app"} 2` + "\n",
-		`agent_factory_api_intake_total{outcome="admitted",principal="system:slack-app"} 1` + "\n",
-		`agent_factory_api_intake_total{outcome="not_linked",principal="system:slack-app"} 1` + "\n",
-		`agent_factory_api_intake_total{outcome="other",principal="system:slack-app"} 1` + "\n",
-		`agent_factory_api_intake_total{outcome="admitted",principal="other"} 1` + "\n",
+		`maku_factory_principal_sponsor_info{principal="system:slack-app",sponsor="github:smana"} 1` + "\n",
+		`maku_factory_max_cost_usd_total{principal="system:slack-app"} 2` + "\n",
+		`maku_factory_api_intake_total{outcome="admitted",principal="system:slack-app"} 1` + "\n",
+		`maku_factory_api_intake_total{outcome="not_linked",principal="system:slack-app"} 1` + "\n",
+		`maku_factory_api_intake_total{outcome="other",principal="system:slack-app"} 1` + "\n",
+		`maku_factory_api_intake_total{outcome="admitted",principal="other"} 1` + "\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s", want)

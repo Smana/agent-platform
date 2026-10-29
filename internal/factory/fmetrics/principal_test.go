@@ -31,14 +31,14 @@ func TestThePayerLabelsTheSeriesItsContextBinds(t *testing.T) {
 	s.PrincipalShadow(alice, "system:factory") // the key over, not the payer
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="auto_merged",principal="github:alice",repository="Smana/a"} 1`,
-		`agent_factory_prs_opened_total{principal="github:alice",repository="Smana/a"} 1`,
-		`agent_factory_admission_refusals_total{principal="github:alice",reason="person_budget_exhausted",repository="Smana/a"} 1`,
-		`agent_factory_run_revocations_total{principal="github:alice",reason="budget-person"} 1`,
-		`agent_factory_run_revocations_total{limit="task-usd",principal="github:alice",reason="budget-task"} 1`,
-		`agent_factory_human_wait_seconds_total{phase="AwaitingHuman",principal="github:alice"} 90`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="other"} 2`,
-		`agent_factory_run_revocations_total{principal="system:factory",reason="budget-principal-shadow"} 1`,
+		`maku_factory_pr_outcomes_total{class="docs-links",outcome="auto_merged",principal="github:alice",repository="Smana/a"} 1`,
+		`maku_factory_prs_opened_total{principal="github:alice",repository="Smana/a"} 1`,
+		`maku_factory_admission_refusals_total{principal="github:alice",reason="person_budget_exhausted",repository="Smana/a"} 1`,
+		`maku_factory_run_revocations_total{principal="github:alice",reason="budget-person"} 1`,
+		`maku_factory_run_revocations_total{limit="task-usd",principal="github:alice",reason="budget-task"} 1`,
+		`maku_factory_human_wait_seconds_total{phase="AwaitingHuman",principal="github:alice"} 90`,
+		`maku_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="other"} 2`,
+		`maku_factory_run_revocations_total{principal="system:factory",reason="budget-principal-shadow"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -82,9 +82,9 @@ func TestTheChargedCounterIsInDollars(t *testing.T) {
 	s.Charged(t.Context(), "github:alice", "a kind", 1)
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_charged_usd_total{kind="task",principal="github:alice"} 1.5`,
-		`agent_factory_charged_usd_total{kind="room",principal="human:292"} 0.0017`,
-		`agent_factory_charged_usd_total{kind="other",principal="github:alice"} 1e-06`,
+		`maku_factory_charged_usd_total{kind="task",principal="github:alice"} 1.5`,
+		`maku_factory_charged_usd_total{kind="room",principal="human:292"} 0.0017`,
+		`maku_factory_charged_usd_total{kind="other",principal="github:alice"} 1e-06`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)
@@ -104,9 +104,9 @@ func TestTheChargeInfoNamesEachRunsPayer(t *testing.T) {
 	})
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_run_charge_info{principal="github:alice",room="3buqdlot",run="aaaaaaaa",task="3buqdlot"} 1`,
-		`agent_factory_run_charge_info{principal="github:bob",room="5buqdlot",run="bbbbbbbb"} 1`,
-		`agent_factory_run_charge_info{principal="human:292",run="cccccccc"} 1`,
+		`maku_factory_run_charge_info{principal="github:alice",room="3buqdlot",run="aaaaaaaa",task="3buqdlot"} 1`,
+		`maku_factory_run_charge_info{principal="github:bob",room="5buqdlot",run="bbbbbbbb"} 1`,
+		`maku_factory_run_charge_info{principal="human:292",run="cccccccc"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)
@@ -116,7 +116,7 @@ func TestTheChargeInfoNamesEachRunsPayer(t *testing.T) {
 		t.Errorf("a run id outside C2 is exposed")
 	}
 	s.RunCharges(nil)
-	if body := scrape(); strings.Contains(body, "agent_factory_run_charge_info{") {
+	if body := scrape(); strings.Contains(body, "maku_factory_run_charge_info{") {
 		t.Errorf("an ended run's series outlives the hand-over that dropped it\n%s", body)
 	}
 }
@@ -129,7 +129,7 @@ func TestTheTasksGaugeNamesThePayer(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(labelled, scheduled).Build()
 	s, scrape := rig(t, c, func() bool { return true })
 	gauge := func(who string, n int) string {
-		return fmt.Sprintf(`agent_factory_tasks{phase="AwaitingHuman",predicted_class="review",principal="%s",repository="other",source="issue",tier="standard"} %d`, who, n)
+		return fmt.Sprintf(`maku_factory_tasks{phase="AwaitingHuman",predicted_class="review",principal="%s",repository="other",source="issue",tier="standard"} %d`, who, n)
 	}
 	if body := scrape(); !strings.Contains(body, gauge("system:factory", 2)+"\n") {
 		t.Errorf("per-person caps off: both tasks are the fleet's\n%s", body)

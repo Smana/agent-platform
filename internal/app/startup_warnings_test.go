@@ -50,7 +50,7 @@ func TestStartupWithATesterTemplateAndALiveClassWithoutHoldouts(t *testing.T) {
 	exp.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
 	for _, class := range []string{"docs-links", "revert"} {
-		if want := `agent_factory_class_without_holdout{class="` + class + `",repository="Smana/cloud-native-ref"} 1`; !strings.Contains(string(body), want) {
+		if want := `maku_factory_class_without_holdout{class="` + class + `",repository="Smana/cloud-native-ref"} 1`; !strings.Contains(string(body), want) {
 			t.Errorf("missing %s", want)
 		}
 	}

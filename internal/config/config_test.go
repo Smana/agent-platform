@@ -564,26 +564,11 @@ func TestLoadSlackLink(t *testing.T) {
 	}
 }
 
-func TestLoadMetrics(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		want       bool
-	}{
-		{"unset is on", valid, true},
-		{"true is on", valid + "metrics:\n  makuNames: true\n", true},
-		{"false is off", valid + "metrics:\n  makuNames: false\n", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c, err := Load(write(t, tc.body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := c.Metrics.MakuNamesOn(); got != tc.want {
-				t.Fatalf("MakuNamesOn() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-	if _, err := Load(write(t, valid+"metrics:\n  makuName: true\n")); err == nil {
-		t.Fatal("a misspelt metrics key loaded")
+// v0.31.0 serves the maku_ names only, so the one-release switch is gone, and strict decode refuses it.
+func TestLoadRefusesTheMetricsSwitch(t *testing.T) {
+	for _, body := range []string{valid + "metrics:\n  makuNames: true\n", valid + "metrics:\n  makuNames: false\n"} {
+		if _, err := Load(write(t, body)); err == nil {
+			t.Fatalf("loaded %q", body)
+		}
 	}
 }

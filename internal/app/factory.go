@@ -140,7 +140,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err := runwatch.Configure(cfg.Runs); err != nil {
 		return fmt.Errorf("factory config: runs: %w", err)
 	}
-	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version, metrics.WithMakuNames(cfg.Metrics.MakuNames))
+	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version)
 	if err != nil {
 		return err
 	}

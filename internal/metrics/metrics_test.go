@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -68,30 +69,30 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 
 	body := scrape(t, exp.Handler())
 	for _, want := range []string{
-		`rooms_build_info{version="v1.2.3"} 1`,
+		`maku_rooms_build_info{version="v1.2.3"} 1`,
 		`rooms{phase="Active"} 1`,
 		`rooms{phase="Closed"} 1`,
-		`rooms_participants 1`,
-		`rooms_connections{kind="human"} 1`,
-		`rooms_events_appended_total{origin="harness",type="message"} 1`,
-		`rooms_append_seconds_bucket{le="0.005"} 1`,
-		`rooms_append_errors_total 1`,
-		`rooms_fanout_lag_seconds_bucket{le="0.01"} 1`,
-		`rooms_approvals_pending 2`,
-		`rooms_approvals_oldest_pending_seconds 12`,
-		`rooms_approval_decision_seconds_count 1`,
-		`rooms_driver_changes_total 1`,
-		`rooms_redactions_total{rule="jwt"} 1`,
-		`rooms_rejected_actions_total{reason="not_permitted"} 1`,
-		`rooms_connections_dropped_total{reason="slow"} 1`,
-		`rooms_verdict_posts_total{result="posted"} 1`,
-		`rooms_human_mcp_calls_total{outcome="ok",tool="room_summary"} 1`,
-		`rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999994e+09`,
-		`rooms_authn_jwks_last_refresh_timestamp_seconds{issuer="https://issuer"} 1.7e+09`,
-		`rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`,
-		`rooms_bridge_items_stubbed_total{reason="refused"} 1`,
-		`rooms_webhook_deliveries_total{outcome="delivered",subscriber="slack-app"} 1`,
-		`rooms_webhook_disabled{subscriber="slack-app"} 1`,
+		`maku_rooms_participants 1`,
+		`maku_rooms_connections{kind="human"} 1`,
+		`maku_rooms_events_appended_total{origin="harness",type="message"} 1`,
+		`maku_rooms_append_seconds_bucket{le="0.005"} 1`,
+		`maku_rooms_append_errors_total 1`,
+		`maku_rooms_fanout_lag_seconds_bucket{le="0.01"} 1`,
+		`maku_rooms_approvals_pending 2`,
+		`maku_rooms_approvals_oldest_pending_seconds 12`,
+		`maku_rooms_approval_decision_seconds_count 1`,
+		`maku_rooms_driver_changes_total 1`,
+		`maku_rooms_redactions_total{rule="jwt"} 1`,
+		`maku_rooms_rejected_actions_total{reason="not_permitted"} 1`,
+		`maku_rooms_connections_dropped_total{reason="slow"} 1`,
+		`maku_rooms_verdict_posts_total{result="posted"} 1`,
+		`maku_rooms_human_mcp_calls_total{outcome="ok",tool="room_summary"} 1`,
+		`maku_rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999994e+09`,
+		`maku_rooms_authn_jwks_last_refresh_timestamp_seconds{issuer="https://issuer"} 1.7e+09`,
+		`maku_rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`,
+		`maku_rooms_bridge_items_stubbed_total{reason="refused"} 1`,
+		`maku_rooms_webhook_deliveries_total{outcome="delivered",subscriber="slack-app"} 1`,
+		`maku_rooms_webhook_disabled{subscriber="slack-app"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -122,7 +123,7 @@ func TestFanoutListenerUp(t *testing.T) {
 	if err := s.WatchFanout(up.Load); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"rooms_fanout_listener_up 0\n", "rooms_fanout_listener_up 1\n"} {
+	for _, want := range []string{"maku_rooms_fanout_listener_up 0\n", "maku_rooms_fanout_listener_up 1\n"} {
 		if body := scrape(t, exp.Handler()); !strings.Contains(body, want) {
 			t.Fatalf("missing %q in\n%s", want, body)
 		}
@@ -146,25 +147,25 @@ func TestRoomGauges(t *testing.T) {
 		{"a room without a Running run has no activity series", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", true, 0, now)
 			s.ObserveRoom("3kq7x2ma", "Idle", false, 0, now)
-		}, []string{`rooms{phase="Idle"} 1`}, []string{"rooms_last_event_timestamp_seconds{"}},
+		}, []string{`rooms{phase="Idle"} 1`}, []string{"maku_rooms_last_event_timestamp_seconds{"}},
 		// S1 review I-3: 30 silent minutes flip a running room to AwaitingHuman,
 		// which is exactly when RoomStalled must still see its series.
 		{"a stalled room keeps its activity series through the flip to AwaitingHuman", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", true, 0, now.Add(-31*time.Minute))
 			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", true, 0, now.Add(-31*time.Minute))
-		}, []string{`rooms{phase="AwaitingHuman"} 1`, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999814e+09`}, nil},
+		}, []string{`rooms{phase="AwaitingHuman"} 1`, `maku_rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999814e+09`}, nil},
 		{"pending approvals sum over rooms", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", false, 2, now)
 			s.ObserveRoom("4kq7x2ma", "AwaitingHuman", false, 3, now)
-		}, []string{`rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, []string{"rooms_last_event_timestamp_seconds{"}},
+		}, []string{`maku_rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, []string{"maku_rooms_last_event_timestamp_seconds{"}},
 		{"a room keeps its last values while it is not reconciled (a database outage)", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", true, 1, now)
-		}, []string{`rooms{phase="Active"} 1`, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"}`, `rooms_approvals_pending 1`}, nil},
+		}, []string{`rooms{phase="Active"} 1`, `maku_rooms_last_event_timestamp_seconds{room="3kq7x2ma"}`, `maku_rooms_approvals_pending 1`}, nil},
 		{"a forgotten room (its CR is gone) drops out", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", true, 1, now)
 			s.ObserveRoom("4kq7x2ma", "Idle", false, 0, now)
 			s.ForgetRoom("3kq7x2ma")
-		}, []string{`rooms_approvals_pending 0`, `rooms{phase="Idle"} 1`}, []string{`rooms{phase="Active"}`, `room="3kq7x2ma"`}},
+		}, []string{`maku_rooms_approvals_pending 0`, `rooms{phase="Idle"} 1`}, []string{`rooms{phase="Active"}`, `room="3kq7x2ma"`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			exp, err := NewExporter(BrokerBuildInfo, "test")
@@ -201,8 +202,8 @@ func TestEachBinaryHasItsOwnBuildInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = exp.Shutdown(t.Context()) }()
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "agent_factory_build_info{version=\"v0.7.0\"} 1\n") ||
-		strings.Contains(body, "rooms_build_info") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_factory_build_info{version=\"v0.7.0\"} 1\n") ||
+		strings.Contains(body, "maku_rooms_build_info") {
 		t.Fatal(body)
 	}
 	if _, err := NewExporter("build_info", "v0.7.0"); err == nil {
@@ -222,13 +223,13 @@ func TestNoopMeterWorks(t *testing.T) {
 	s.ForgetRoom("3kq7x2ma")
 }
 
-// rooms_run_info{run, model, effort} = 1 for each live run whose harness reported an effort. The
+// maku_rooms_run_info{run, model, effort} = 1 for each live run whose harness reported an effort. The
 // model is the claim's spec.model, read from the watch at collection, never the harness's; the
 // effort is the harness's, an enum. A per-live-run series, its map capped.
 func TestRunInfo(t *testing.T) {
 	ctx := t.Context()
 	series := func(run, model, effort string) string {
-		return `rooms_run_info{effort="` + effort + `",model="` + model + `",run="` + run + `"} 1`
+		return `maku_rooms_run_info{effort="` + effort + `",model="` + model + `",run="` + run + `"} 1`
 	}
 	for _, c := range []struct {
 		name    string
@@ -236,7 +237,7 @@ func TestRunInfo(t *testing.T) {
 		observe func(s *Set)
 		want    []string
 		absent  []string
-		count   int // series of rooms_run_info, when set
+		count   int // series of maku_rooms_run_info, when set
 	}{
 		{"the claim's model and the harness's effort", map[string]watchedRun{"aaaaaaaa": {"agent-default", true}}, func(s *Set) {
 			s.RunInfo(ctx, "aaaaaaaa", "high")
@@ -257,13 +258,13 @@ func TestRunInfo(t *testing.T) {
 				s.RunInfo(ctx, fmt.Sprintf("r%07d", i), "high")
 			}
 			s.RunInfo(ctx, "newrun00", "low") // every held run has ended since: pruned, not dropped
-		}, []string{series("newrun00", "", "low")}, []string{"rooms_run_info_dropped_total "}, 1},
+		}, []string{series("newrun00", "", "low")}, []string{"maku_rooms_run_info_dropped_total "}, 1},
 		{"at the cap with every run live, a new one is dropped and counted", nil, func(s *Set) {
 			for i := range maxRunInfo + 5 {
 				s.RunInfo(ctx, fmt.Sprintf("r%07d", i), "high")
 			}
 			s.RunInfo(ctx, "r0000000", "low") // a known run still updates
-		}, []string{series("r0000000", "", "low"), "rooms_run_info_dropped_total 5"},
+		}, []string{series("r0000000", "", "low"), "maku_rooms_run_info_dropped_total 5"},
 			[]string{`run="r` + fmt.Sprintf("%07d", maxRunInfo) + `"`}, maxRunInfo},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -295,8 +296,8 @@ func TestRunInfo(t *testing.T) {
 					t.Errorf("exposes %s", a)
 				}
 			}
-			if n := strings.Count(body, "\nrooms_run_info{"); c.count > 0 && n != c.count {
-				t.Errorf("%d rooms_run_info series, want %d", n, c.count)
+			if n := strings.Count(body, "\nmaku_rooms_run_info{"); c.count > 0 && n != c.count {
+				t.Errorf("%d maku_rooms_run_info series, want %d", n, c.count)
 			}
 			if t.Failed() && len(body) < 4096 {
 				t.Log(body)
@@ -352,62 +353,50 @@ func TestMakuName(t *testing.T) {
 	}
 }
 
-// v0.30.0 serves every rooms series twice, the second under maku_ (the rebrand): dashboards switch
-// names while both carry the same values. Off, only the old names.
-func TestMakuNamesMirrorEveryRoomsSeries(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		on   bool
-	}{{"on serves both names with equal values", true}, {"off serves the old names only", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := t.Context()
-			exp, err := NewExporter(BrokerBuildInfo, "v0.30.0", WithMakuNames(tc.on))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = exp.Shutdown(ctx) }()
-			s, err := New(exp.Meter())
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.Appended(ctx, "message", "harness", []string{"jwt"})
-			s.AppendTook(ctx, 3*time.Millisecond)
-			s.ObserveRoom("3kq7x2ma", "Active", true, 2, time.Unix(1_700_000_000, 0))
-			s.BridgeStalled(ctx, "cursor_lost")
-			got := series(scrape(t, exp.Handler()))
-			n := 0
-			for k, v := range got {
-				if !strings.HasPrefix(k, "rooms_") && !strings.HasPrefix(k, "rooms{") {
-					continue
-				}
-				n++
-				m, ok := got["maku_"+k]
-				switch {
-				case tc.on && (!ok || m != v):
-					t.Errorf("%s = %s, maku_%s = %q (present %v)", k, v, k, m, ok)
-				case !tc.on && ok:
-					t.Errorf("maku_%s served with the switch off", k)
-				}
-			}
-			if n < 6 {
-				t.Fatalf("scraped %d rooms series, want at least 6", n)
-			}
-			if _, ok := got[`maku_rooms_build_info{version="v0.30.0"}`]; ok != tc.on {
-				t.Errorf("maku_rooms_build_info present = %v, want %v", ok, tc.on)
-			}
-		})
+// v0.31.0 serves the maku_ names only (the rebrand): every rooms series as maku_rooms*, none under its
+// old name, the build info included.
+func TestOnlyMakuNamesAreServed(t *testing.T) {
+	ctx := t.Context()
+	exp, err := NewExporter(BrokerBuildInfo, "v0.31.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exp.Shutdown(ctx) }()
+	s, err := New(exp.Meter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Appended(ctx, "message", "harness", []string{"jwt"})
+	s.AppendTook(ctx, 3*time.Millisecond)
+	s.ObserveRoom("3kq7x2ma", "Active", true, 2, time.Unix(1_700_000_000, 0))
+	s.BridgeStalled(ctx, "cursor_lost")
+	got := series(scrape(t, exp.Handler()))
+	n := 0
+	for k := range got {
+		switch {
+		case strings.HasPrefix(k, "rooms_"), strings.HasPrefix(k, "rooms{"):
+			t.Errorf("%s served under its old name", k)
+		case strings.HasPrefix(k, "maku_rooms"):
+			n++
+		}
+	}
+	if n < 6 {
+		t.Fatalf("scraped %d maku_rooms series, want at least 6", n)
+	}
+	if v := got[`maku_rooms_build_info{version="v0.31.0"}`]; v != "1" {
+		t.Errorf("maku_rooms_build_info = %q, want 1", v)
 	}
 }
 
-// A family whose maku_ name is already a real family keeps only the real one: never two families
-// of one name in a scrape, which Prometheus would reject.
-func TestMakuGathererSkipsATwinThatIsAlreadyReal(t *testing.T) {
+// A mapped family is served under its maku_ name only; a real family of that name wins over the
+// renamed one, so a scrape never holds two families of one name; an unmapped family keeps its own.
+func TestMakuGathererRenames(t *testing.T) {
 	fam := func(name string, v float64) *dto.MetricFamily {
 		typ := dto.MetricType_GAUGE
 		return &dto.MetricFamily{Name: &name, Type: &typ, Metric: []*dto.Metric{{Gauge: &dto.Gauge{Value: &v}}}}
 	}
 	g := makuGatherer{reg: prometheus.GathererFunc(func() ([]*dto.MetricFamily, error) {
-		return []*dto.MetricFamily{fam("rooms_x", 1), fam("maku_rooms_x", 2), fam("rooms_y", 3)}, nil
+		return []*dto.MetricFamily{fam("rooms_x", 1), fam("maku_rooms_x", 2), fam("rooms_y", 3), fam("factory_slack_z", 4)}, nil
 	})}
 	mfs, err := g.Gather()
 	if err != nil {
@@ -417,9 +406,8 @@ func TestMakuGathererSkipsATwinThatIsAlreadyReal(t *testing.T) {
 	for _, mf := range mfs {
 		got[mf.GetName()] = append(got[mf.GetName()], mf.GetMetric()[0].GetGauge().GetValue())
 	}
-	for name, want := range map[string]float64{"rooms_x": 1, "maku_rooms_x": 2, "rooms_y": 3, "maku_rooms_y": 3} {
-		if v := got[name]; len(v) != 1 || v[0] != want {
-			t.Errorf("%s = %v, want [%v]", name, v, want)
-		}
+	want := map[string][]float64{"maku_rooms_x": {2}, "maku_rooms_y": {3}, "factory_slack_z": {4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("families %v, want %v", got, want)
 	}
 }

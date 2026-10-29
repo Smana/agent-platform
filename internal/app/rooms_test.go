@@ -174,7 +174,7 @@ func TestHumanActorIsWired(t *testing.T) {
 	if f := chat("human:watcher", 1); f.Rejected != "not_permitted" {
 		t.Fatalf("a watcher's chat: %+v", f)
 	}
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, `rooms_rejected_actions_total{reason="not_permitted"} 1`) {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, `maku_rooms_rejected_actions_total{reason="not_permitted"} 1`) {
 		t.Fatalf("the rejection is not counted:\n%s", body)
 	}
 }
@@ -251,7 +251,7 @@ func TestMeteredDriverChanges(t *testing.T) {
 	both()
 	l.drivers = fakeDrivers{dup: true}
 	both()
-	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_driver_changes_total 2\n") {
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "maku_rooms_driver_changes_total 2\n") {
 		t.Fatalf("want 2 changes:\n%s", body)
 	}
 }

@@ -100,7 +100,7 @@ func TestRoomDataClass(t *testing.T) {
 	}
 }
 
-// Every result reaches rooms_verdict_posts_total{result}.
+// Every result reaches maku_rooms_verdict_posts_total{result}.
 func TestVerdictResultsAreCounted(t *testing.T) {
 	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
@@ -117,7 +117,7 @@ func TestVerdictResultsAreCounted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	exp.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	for _, want := range []string{`rooms_verdict_posts_total{result="posted"} 1`, `rooms_verdict_posts_total{result="error"} 1`} {
+	for _, want := range []string{`maku_rooms_verdict_posts_total{result="posted"} 1`, `maku_rooms_verdict_posts_total{result="error"} 1`} {
 		if !strings.Contains(string(body), want+"\n") {
 			t.Errorf("missing %s", want)
 		}
