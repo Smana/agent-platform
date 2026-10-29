@@ -57,3 +57,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.QUICKSTART_GITHUB_TOKEN }}
           REPO: ${{ secrets.QUICKSTART_REPO }}
+  # The CRD group move (agents.ogenki.io -> maku.ogenki.io): v0.30.0, the upgrade, maku-broker migrate-group.
+  # No secrets: nothing here starts a run, so it also runs on fork PRs.
+  migrate-group:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the v0.30.0 tag, for its chart and CRDs
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          install_args: go kubectl aqua:kubernetes-sigs/kind helm aqua:mikefarah/yq
+      - run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - run: hack/quickstart/migrate-e2e.sh
