@@ -292,6 +292,25 @@ func TestProviderAliasesArePublicOnly(t *testing.T) {
 	}
 }
 
+// The same refusal over HTTP: an admin's run in an internal room, on a provider alias, is 400 and
+// creates nothing; the same run on its tier's name is created.
+func TestAnInternalRoomsRunOnAProviderAliasIs400(t *testing.T) {
+	for model, want := range map[string]int{"kimi-frontier": http.StatusBadRequest, "mistral-light": http.StatusBadRequest, "tier-frontier": http.StatusCreated} {
+		t.Run(model, func(t *testing.T) {
+			room := aliceRoom()
+			room.Spec.DataClass = "internal"
+			body := base()
+			body["dataClass"], body["roomRef"], body["model"] = "internal", room.Name, model
+			st := &store{}
+			c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(room).Build()
+			w := post(mkServer(t, st, c, false, false, "7f3cq2xz", 5_000_000).Handler(), "admin", body)
+			if w.Code != want || (want == http.StatusBadRequest && (!strings.Contains(w.Body.String(), "provider_alias_is_public_only") || len(st.created) != 0)) {
+				t.Fatalf("%d %s, %d created", w.Code, w.Body, len(st.created))
+			}
+		})
+	}
+}
+
 func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
 	for name, c := range map[string]struct {
 		class    string

@@ -932,6 +932,8 @@ type providerModel struct{ tier, served string }
 // in the EU: both serve public data only, so only loops.<class>.models and a judge name them,
 // and only a public task is given one.
 func providerModels() map[string]providerModel {
+	// The served ids are ai-native-ref's infrastructure/base/agent-gateway/{moonshot,mistral}.yaml
+	// modelAliases, copied: when a backend pins another model, change both together.
 	return map[string]providerModel{
 		"kimi-frontier":    {"frontier", "k3.1-pro"},
 		"mistral-standard": {"standard", "mistral-medium-2604"},
@@ -956,24 +958,21 @@ func judges() []string {
 	return j
 }
 
-// needsPrice: with meter.prices set, a provider alias must be priced, under its own name or, for
-// a meter that prices by served model, under the model its backend pins. An unpriced run would
+// needsPrice: with meter.prices set, a provider alias must be priced: under the model its backend
+// pins for a meter that prices by served model, else under its own name. An unpriced run would
 // fall back to its token caps (F3, F8).
 func (c *Config) needsPrice(bad func(string, ...any), key, alias string) {
 	if len(c.Meter.Prices) == 0 {
 		return
 	}
-	if _, ok := c.Meter.Prices[alias]; ok {
-		return
-	}
+	// A by-model meter reads the served model's row only: a row under the alias never prices a run.
 	want := alias
 	if c.Meter.ByModel() {
 		want = providerModels()[alias].served
-		if _, ok := c.Meter.Prices[want]; ok {
-			return
-		}
 	}
-	bad("%s: %s needs meter.prices.%s", key, alias, want)
+	if _, ok := c.Meter.Prices[want]; !ok {
+		bad("%s: %s needs meter.prices.%s", key, alias, want)
+	}
 }
 func tiers() []string { return []string{"light", "standard", "frontier"} }
 

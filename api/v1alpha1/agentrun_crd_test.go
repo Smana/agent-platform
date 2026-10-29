@@ -49,14 +49,15 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 		"has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)":               "queueName is immutable and cannot be added or removed after creation",
 		"has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)":     "suspendable is immutable and cannot be added or removed after creation",
 		"self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks) || !self.loop.checks":                               "an internal run runs no repository checks",
+		"self.dataClass == 'public' || !has(self.model) || !(self.model in ['kimi-frontier', 'mistral-standard', 'mistral-light'])":    "an internal run never names a provider alias",
 		"has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks) == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks == oldSelf.loop.checks) && has(self.loop.search) == has(oldSelf.loop.search) && (!has(self.loop.search) || self.loop.search == oldSelf.loop.search)))": "loop is immutable and cannot be added or removed after creation",
 	} {
 		if m, ok := got[rule]; !ok || m != msg {
 			t.Errorf("spec rule %q: message %q, want %q", rule, m, msg)
 		}
 	}
-	if len(spec.XValidations) != 9 {
-		t.Errorf("spec has %d rules, want 9", len(spec.XValidations))
+	if len(spec.XValidations) != 10 {
+		t.Errorf("spec has %d rules, want 10", len(spec.XValidations))
 	}
 	immutable := func(name string, p apiextensionsv1.JSONSchemaProps) {
 		for _, r := range p.XValidations {

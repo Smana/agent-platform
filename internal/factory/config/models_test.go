@@ -88,6 +88,11 @@ func TestProviderAliasesAreRefused(t *testing.T) {
 		"unpriced, prices by served model": {strings.Replace(byModel, "mistral-medium-2604: {input: 1.50, cacheRead: 0.15, output: 7.50}, ", "", 1),
 			"loops: {docs: {models: {implementer: {standard: mistral-standard}}}}",
 			"loops.docs.models.implementer.standard: mistral-standard needs meter.prices.mistral-medium-2604"},
+		// A by-model meter prices the served model: a row under the alias alone never reaches it.
+		"unpriced by served model, an alias-only row": {strings.Replace(strings.Replace(byModel, "mistral-medium-2604: {input: 1.50, cacheRead: 0.15, output: 7.50}, ", "", 1),
+			"  prices: {", "  prices: {mistral-standard: {input: 1.50, cacheRead: 0.15, output: 7.50}, ", 1),
+			"loops: {docs: {models: {implementer: {standard: mistral-standard}}}}",
+			"loops.docs.models.implementer.standard: mistral-standard needs meter.prices.mistral-medium-2604"},
 		"unpriced, prices by logical model": {priced, "loops: {docs: {models: {implementer: {standard: mistral-standard}}}}",
 			"loops.docs.models.implementer.standard: mistral-standard needs meter.prices.mistral-standard"},
 		"an unknown class": {byModel, "loops: {nope: {models: {implementer: {standard: mistral-standard}}}}",

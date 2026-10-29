@@ -158,15 +158,14 @@ spec:
                     minimum: 0
                     type: integer
                   judgeModel:
-                    description: 'The judge''s alias; empty: no judge. The provider
-                      aliases (v3 F15) are public tasks'' only.'
+                    description: |-
+                      The judge's alias; empty: no judge. mistral-light, the one provider alias a judge may take
+                      (v3 F15, F3), is a public task's only.
                     enum:
                     - agent-default
                     - tier-light
                     - tier-standard
                     - tier-frontier
-                    - kimi-frontier
-                    - mistral-standard
                     - mistral-light
                     type: string
                   stallSteps:
@@ -473,6 +472,9 @@ spec:
                 && (!has(self.budget.runMicroUSD) || self.budget.runMicroUSD <= self.maxMicroUSD)
                 && (!has(self.budget.taskMicroUSD) || self.budget.taskMicroUSD <=
                 self.maxMicroUSD))
+            - message: a provider judgeModel is a public task's only
+              rule: '!has(self.loop) || !has(self.loop.judgeModel) || self.loop.judgeModel
+                != ''mistral-light'' || self.dataClass == ''public'''
           status:
             description: |-
               TaskStatus is the task's audit record: the whole §4 record, including the fields later

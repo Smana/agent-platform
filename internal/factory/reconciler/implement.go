@@ -113,7 +113,7 @@ func (r *Reconciler) recordExisting(t *v1alpha1.Task, x runs.Run) error {
 	}
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: trigger,
 		Round: t.Status.ReviewRounds, Phase: x.Phase, Tokens: x.Tokens, StartSeq: x.StartSeq, HeadSHA: x.Head,
-		Started: &started, ChargedTo: x.ChargedTo})
+		Started: &started, ChargedTo: x.ChargedTo, Provenance: v1alpha1.RunProvenance{ModelSource: r.modelSourceOf(t, x)}})
 	t.Status.NextTrigger, t.Status.NextRole = "", ""
 	r.to(t, phaseFor(x.Role), "adopted")
 	return nil
@@ -272,6 +272,19 @@ func (r *Reconciler) pinModel(t *v1alpha1.Task, s *runs.Spec) string {
 		return v1alpha1.ModelSourceClassModels
 	}
 	if s.Role == "reviewer" && r.Cfg.Templates[t.Spec.Template].ReviewerModel != "" {
+		return v1alpha1.ModelSourceReviewerModel
+	}
+	return v1alpha1.ModelSourceTier
+}
+
+// modelSourceOf is pinModel's answer for a run adopted from its claim (R48), derived from the
+// claim's model: only loops.<class>.models names a provider alias, and a reviewer on the
+// template's reviewerModel ran on it.
+func (r *Reconciler) modelSourceOf(t *v1alpha1.Task, x runs.Run) string {
+	switch rm := r.Cfg.Templates[t.Spec.Template].ReviewerModel; {
+	case config.PublicOnly(x.Model):
+		return v1alpha1.ModelSourceClassModels
+	case x.Role == "reviewer" && rm != "" && x.Model == rm:
 		return v1alpha1.ModelSourceReviewerModel
 	}
 	return v1alpha1.ModelSourceTier

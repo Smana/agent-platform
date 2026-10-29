@@ -256,6 +256,9 @@ spec:
                 == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks
                 == oldSelf.loop.checks) && has(self.loop.search) == has(oldSelf.loop.search)
                 && (!has(self.loop.search) || self.loop.search == oldSelf.loop.search)))
+            - message: an internal run never names a provider alias
+              rule: self.dataClass == 'public' || !has(self.model) || !(self.model
+                in ['kimi-frontier', 'mistral-standard', 'mistral-light'])
           status:
             description: AgentRunStatus is what runwatch and the factory read (C3),
               as the composition writes it.
