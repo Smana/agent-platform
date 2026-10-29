@@ -44,8 +44,10 @@ says why on stderr.
 
 - **A continuation is boxed in time**: at most 15 minutes, ending 3 minutes before `AGENT_RUN_SECONDS`
   runs out, and the message names the box. A conversation that has not finished again by then is
-  interrupted and the run ends with the loop's reason, not the wall clock's. Under 5 minutes left, no
-  continuation is sent. The stall rule is spent at the first commit, so before the box a continuation
+  interrupted, read for up to 30 s until it settles (so a push in flight can land), and the run ends
+  with the loop's reason, not the wall clock's; a `not_met` note says whether its commits are pushed.
+  The box is timed after the contract hold, and a finish read on the poll that crosses it is a finish.
+  Under 5 minutes left, no continuation is sent. The stall rule is spent at the first commit, so before the box a continuation
   was bounded only by the run's deadline (gcp-0, task `xlcx2775`: 36 minutes retrying a CI log the
   sandbox could not reach, escalated as `deadline`).
 

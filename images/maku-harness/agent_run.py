@@ -415,9 +415,15 @@ def poll(cid: str, on_tick=None) -> int:
             time.sleep(POLL_INTERVAL_S)
             continue
         errors = 0
-        if on_tick:
-            on_tick()
         code = outcome(status)
+        if on_tick:
+            try:
+                on_tick()
+            except (Stalled, BoxSpent):
+                # A finish read on the poll that crosses a continuation's box, or the stall limit, is a finish:
+                # the tick's raise ends only a conversation still running.
+                if code is None:
+                    raise
         if code is not None:
             print("agent-run: conversation ended with execution_status=%s" % status, file=sys.stderr)
             return code
@@ -1306,6 +1312,11 @@ CONTINUATION_S = 15 * 60
 CONTINUATION_MARGIN_S = CHECKS_MARGIN_S + MIN_NOTE_GAP_S
 CONTINUATION_MIN_S = 5 * 60
 TOO_LATE = "%s; too little of the run's time was left for a continuation"
+# After a spent box's interrupt, the conversation is read until it settles (paused or ended), at most SETTLE_S,
+# so a push in flight can land before the pod stops.
+SETTLE_S = 30
+SETTLE_POLL_S = 2
+SETTLED = TERMINAL_OK | TERMINAL_FAIL | {"paused"}
 
 
 def box_for(deadline: float | None, clock=time.monotonic) -> int | None:
@@ -1503,10 +1514,11 @@ def hold_verdict(res: dict):
 
 
 def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path: str | None = LOOP_STATE,
-               box: int | None = 0):
+               box=None):
     """A finished conversation's contract hold (F1-R11): None when the contract is not red (the caller goes on
-    to its judge or its end), a loop_policy.End when the continuations are spent or box is None (too little
-    time left for one), its reason once one was sent. box is the continuation's time box in seconds, 0 for none."""
+    to its judge or its end), a loop_policy.End when the continuations are spent or no box is left, and
+    (reason, seconds) once one was sent. box, when given, answers the continuation's time box in seconds (None:
+    too little time left); it is asked after the hold, which can take minutes. Without it, nothing is boxed."""
     res = hold()
     v = hold_verdict(res)
     if v is None:
@@ -1515,7 +1527,8 @@ def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path
         return None
     n = commits_since(env, state.mark) if state.sent else None
     d = loop_policy.decide(policy, state, v, n is None or n > 0)
-    if isinstance(d, loop_policy.Continue) and box is None:
+    seconds = box() if box else 0
+    if isinstance(d, loop_policy.Continue) and seconds is None:
         state.sent -= 1
         d = loop_policy.End("not_met", TOO_LATE % d.reason)
     if isinstance(d, loop_policy.End):
@@ -1526,8 +1539,8 @@ def hold_round(env: dict, cid: str, hold, policy, state, notes, fence: str, path
     if path:
         save_state(state, path)
     continue_conversation(cid, loop_policy.contract_continuation(res.get("failing", []), state.sent, policy.continuations, fence,
-                                                                 (box or 0) // 60))
-    return d.reason
+                                                                 seconds // 60))
+    return d.reason, seconds
 
 
 def contract_loop(env: dict, cid: str, steps, hold, notes=None) -> int:
@@ -1573,17 +1586,44 @@ def interrupt(cid: str) -> None:
         print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
 
 
+def settle(cid: str, clock=time.monotonic, sleep=time.sleep) -> None:
+    """Reads the interrupted conversation until it settles, at most SETTLE_S. Best effort."""
+    end = clock() + SETTLE_S
+    while True:
+        try:
+            if http("GET", "/api/conversations/" + cid).get("execution_status", "") in SETTLED:
+                return
+        except (OSError, ValueError, HTTPException):
+            pass
+        if clock() + SETTLE_POLL_S > end:
+            return
+        sleep(SETTLE_POLL_S)
+
+
+def unpushed(env: dict) -> int | None:
+    """HEAD's commits the run's remote branch does not hold, as the last push left it; None when git cannot tell."""
+    ref = "refs/remotes/origin/" + env.get("BRANCH", "")
+    if not env.get("BRANCH") or not _has(ref):
+        return None
+    out = _git("rev-list", "--count", "HEAD", "^" + ref)
+    return int(out) if out and out.strip().isdigit() else None
+
+
 def box_end(env: dict, state, policy, minutes: int, reason: str) -> tuple[int, str, str]:
-    """A spent box's end: stalled when the continuation added no commit, else not_met with the reason it was sent for."""
+    """A spent box's end: stalled when the continuation added no commit, else not_met with the reason it was sent
+    for and whether its commits are pushed."""
     n = commits_since(env, state.mark)
     which = "continuation %d of %d" % (state.sent, policy.continuations)
     if n == 0:
         return 1, "stalled", "%s added no commit in %d minutes" % (which, minutes)
-    return 1, "not_met", "%s did not finish within %d minutes; it was sent for: %s" % (which, minutes, reason)
+    left = unpushed(env)
+    pushed = ("its commits are pushed" if left == 0 else "whether its commits are pushed is unknown" if left is None
+              else "%d of its commits %s not pushed" % (left, "is" if left == 1 else "are"))
+    return 1, "not_met", "%s did not finish within %d minutes (%s); it was sent for: %s" % (which, minutes, pushed, reason)
 
 
 def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None, hold=None,
-          deadline: float | None = None, clock=time.monotonic) -> tuple[int, str | None, str]:
+          deadline: float | None = None, clock=time.monotonic, sleep=time.sleep) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
     stuck conversation does, so a bridge that drops the reason still has the task escalated. deadline is
     the run's end on clock; each continuation is boxed by box_for, so none runs into it."""
@@ -1596,7 +1636,10 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             raise BoxSpent()
 
     def boxed(seconds: int, reason: str) -> None:
-        box.update(until=clock() + seconds, minutes=seconds // 60, reason=reason)
+        until = clock() + seconds
+        if deadline is not None:  # a backstop: no box ends past the margin the run's end needs
+            until = min(until, deadline - CONTINUATION_MARGIN_S)
+        box.update(until=until, minutes=seconds // 60, reason=reason)
 
     rounds, fence = 0, "JUDGE-" + secrets.token_hex(4)  # one per run: the judge's reason stays data
     cfence = "CONTRACT-" + secrets.token_hex(4)  # the contract hold's ids, likewise
@@ -1608,15 +1651,15 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             return 1, "stalled", "no commit after %d steps" % policy.stall_steps
         except BoxSpent:
             interrupt(cid)
+            settle(cid, clock, sleep)
             return box_end(env, state, policy, box["minutes"], box["reason"])
         box["until"] = None  # the conversation finished: the judge round is not the agent's time
         if code == 0 and hold is not None:
-            seconds = box_for(deadline, clock)
-            done = hold_round(env, cid, hold, policy, state, notes, cfence, path, seconds)
+            done = hold_round(env, cid, hold, policy, state, notes, cfence, path, lambda: box_for(deadline, clock))
             if isinstance(done, loop_policy.End):
                 return (0 if done.reason is None else 1), done.reason, done.note
             if done:
-                boxed(seconds, done)
+                boxed(done[1], done[0])
                 continue
         if code or policy.judge_model is None:
             return code, None, ""

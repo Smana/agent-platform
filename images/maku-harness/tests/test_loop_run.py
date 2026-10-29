@@ -497,8 +497,8 @@ class ContinuationBoxTest(unittest.TestCase):
     check:validate whose log the sandbox could not fetch, and continuation 1 of 2 ran 36 minutes with no commit
     and no finish, into the run's wall clock, which escalated as `deadline`."""
 
-    def drive(self, polls, answers, commits=0, deadline=45 * 60, state=None):
-        self.now, self.sent, self.interrupted = [0.0], [], []
+    def drive(self, polls, answers, commits=0, deadline=45 * 60, state=None, hold=None, settled="paused", unpushed=0):
+        self.now, self.sent, self.interrupted, self.gets = [0.0], [], [], []
         state = state or lp.State(start="s", committed=True)
         polls = iter(polls)
 
@@ -513,17 +513,23 @@ class ContinuationBoxTest(unittest.TestCase):
         def http(method, path_, body=None, timeout=30):
             if path_.endswith("/interrupt"):
                 self.interrupted.append(self.now[0])
-            return {}
+                return {}
+            self.gets.append(self.now[0])  # the settle after the interrupt
+            return {"execution_status": settled}
+
+        def sleep(s):
+            self.now[0] += s
 
         with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http), \
                 mock.patch("agent_run.evidence", return_value=("e", {"diff"})), \
                 mock.patch("agent_run.ask_judge", side_effect=answers), \
                 mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.unpushed", return_value=unpushed), \
                 mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
                 mock.patch("sys.stdout", new=io.StringIO()):
             return agent_run.drive({}, "cid", Steps(0), POLICY, state, "task",
-                                   os.path.join(tempfile.mkdtemp(), "loop.json"),
-                                   deadline=deadline, clock=lambda: self.now[0])
+                                   os.path.join(tempfile.mkdtemp(), "loop.json"), hold=hold,
+                                   deadline=deadline, clock=lambda: self.now[0], sleep=sleep)
 
     def answer(self, verdict, reason="check:validate failed"):
         return json.dumps({"verdict": verdict, "reason": reason, "evidence": ["diff"]}), "glm-5.3-flash"
@@ -540,7 +546,7 @@ class ContinuationBoxTest(unittest.TestCase):
     def test_a_continuation_that_committed_but_never_finished_ends_not_met(self):
         result = self.drive([0, "forever"], [self.answer("not_yet")], commits=1)
         self.assertEqual(result, (1, "not_met",
-                                  "continuation 1 of 2 did not finish within 15 minutes; it was sent for: "
+                                  "continuation 1 of 2 did not finish within 15 minutes (its commits are pushed); it was sent for: "
                                   "check:validate failed"))
 
     def test_the_box_never_runs_into_the_runs_deadline(self):
@@ -559,9 +565,62 @@ class ContinuationBoxTest(unittest.TestCase):
     def test_a_continuation_that_finishes_inside_its_box_is_judged_as_before(self):
         self.assertEqual(self.drive([0, 0], [self.answer("not_yet"), self.answer("met")]), (0, None, ""))
 
+    def test_review_1_a_slow_hold_shrinks_the_box_so_it_never_overruns_the_deadline(self):
+        # The contract hold can take minutes (the toolchain, then the contract): the box is what is left after it.
+        def hold():
+            self.now[0] += 10 * 60
+            return {"result": "red", "failing": ["t::a"]}
+        result = self.drive([0, "forever"], [], deadline=20 * 60, hold=hold)
+        self.assertEqual(result[:2], (1, "stalled"))
+        [at] = self.interrupted
+        self.assertLessEqual(at, 20 * 60 - agent_run.CONTINUATION_MARGIN_S + agent_run.POLL_INTERVAL_S)
+        self.assertIn("You have 7 minutes for this continuation", self.sent[0])
+
+    def test_review_1_the_box_is_clamped_to_the_deadline(self):
+        # A backstop: whatever the caller computed, the box ends CONTINUATION_MARGIN_S before the deadline.
+        with mock.patch("agent_run.box_for", return_value=agent_run.CONTINUATION_S):
+            self.drive([0, "forever"], [self.answer("not_yet")], deadline=10 * 60)
+        [at] = self.interrupted
+        self.assertLessEqual(at, 10 * 60 - agent_run.CONTINUATION_MARGIN_S + agent_run.POLL_INTERVAL_S)
+
+    def test_review_3_the_interrupt_waits_for_the_conversation_to_settle(self):
+        self.drive([0, "forever"], [self.answer("not_yet")], settled="running")
+        [at] = self.interrupted
+        self.assertTrue(self.gets, "the conversation is read after the interrupt")
+        self.assertGreaterEqual(self.gets[-1] - at, agent_run.SETTLE_S - agent_run.SETTLE_POLL_S)
+        self.assertLessEqual(self.gets[-1] - at, agent_run.SETTLE_S)
+        self.drive([0, "forever"], [self.answer("not_yet")], settled="paused")
+        self.assertEqual(len(self.gets), 1, "a paused conversation has settled")
+
+    def test_review_3_unpushed_commits_are_named(self):
+        result = self.drive([0, "forever"], [self.answer("not_yet")], commits=2, unpushed=1)
+        self.assertIn("(1 of its commits is not pushed)", result[2])
+        result = self.drive([0, "forever"], [self.answer("not_yet")], commits=2, unpushed=None)
+        self.assertIn("(whether its commits are pushed is unknown)", result[2])
+
     def test_no_deadline_still_boxes_a_continuation(self):
         result = self.drive([0, "forever"], [self.answer("not_yet")], deadline=None)
         self.assertEqual(result, (1, "stalled", "continuation 1 of 2 added no commit in 15 minutes"))
+
+
+class PollOrderTest(unittest.TestCase):
+    """Review 2: a finish read on the poll that crosses the box is a finish, never a spent box."""
+
+    def test_a_terminal_status_wins_over_the_ticks_raise(self):
+        ticks = []
+
+        def tick():
+            ticks.append(1)
+            raise agent_run.BoxSpent()
+
+        statuses = iter(["running", "finished"])
+        with mock.patch("agent_run.http", side_effect=lambda *a, **k: {"execution_status": next(statuses)}), \
+                mock.patch("agent_run.time.sleep"), mock.patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(agent_run.BoxSpent):
+                agent_run.poll("cid", on_tick=tick)  # a running read ticks, and the spent box ends it
+            statuses = iter(["finished"])
+            self.assertEqual(agent_run.poll("cid", on_tick=tick), 0)
+        self.assertEqual(len(ticks), 2, "the finished poll still ticks: the step log reads it")
 
 
 class FakeBridge(http.server.BaseHTTPRequestHandler):
