@@ -7,7 +7,7 @@ name: ghcr-cleanup
 # referrers, so a platform manifest a release still points to is kept.
 #
 # A dry run unless the repository variable GHCR_CLEANUP_APPLY is "true" (schedule) or the
-# dispatch input says apply. The old-name packages stay listed until they are deleted by hand.
+# dispatch input says apply.
 on:
   schedule:
     - cron: "17 3 * * 1"
@@ -36,9 +36,7 @@ jobs:
           owner: Smana
           packages: >-
             maku-broker,maku-bridge,maku-factory,maku-harness,maku-run-controller,maku-slack,
-            charts/maku-factory,charts/maku,
-            room-broker,room-bridge,agent-factory,run-controller,factory-slack-app,
-            charts/agent-factory,charts/agent-platform
+            charts/maku-factory,charts/maku
           use-regex: true
           delete-tags: '^.*-pr[0-9]+[.-].*$'
           exclude-tags: '^v?[0-9]+\.[0-9]+\.[0-9]+$'
