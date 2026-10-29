@@ -103,6 +103,12 @@ step "the logs came through, and the broker serves them"
 for r in "${ROOMS[@]}"; do
   kubectl -n "$NS" wait "rooms.$NEW/$r" --for=jsonpath='{.status.lastSeq}'=1 --timeout=60s
   [[ -z $(kubectl -n "$NS" get "rooms.$NEW/$r" -o jsonpath='{.metadata.annotations.maku\.ogenki\.io/migrating}') ]] || fail "$r is still guarded"
+  # The copy already carries the original's lastSeq, so the wait above returns at once: the new controller
+  # adds its finalizer a moment later.
+  for _ in $(seq 30); do
+    kubectl -n "$NS" get "rooms.$NEW/$r" -o jsonpath='{.metadata.finalizers}' | grep -q "$NEW/room-log" && break
+    sleep 2
+  done
   kubectl -n "$NS" get "rooms.$NEW/$r" -o jsonpath='{.metadata.finalizers}' | grep -q "$NEW/room-log" || fail "$r has no $NEW/room-log finalizer"
 done
 [[ $(kubectl -n "$NS" get "rooms.$NEW/${ROOMS[0]}" -o jsonpath='{.metadata.annotations.maku\.ogenki\.io/migrated-from}') == "$uid0" ]] || fail "migrated-from is not the original's uid"
