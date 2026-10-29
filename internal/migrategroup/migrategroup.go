@@ -184,29 +184,46 @@ func copyOf(old *unstructured.Unstructured, to schema.GroupVersionKind) *unstruc
 	return cp
 }
 
-// finish writes the status, confirms the copy, lifts the guard, then releases and deletes the
-// original. Each step is idempotent, so a run stopped half way is finished by the next.
+// finish confirms a guarded copy, then releases and deletes the original. Each step is idempotent,
+// so a run stopped half way is finished by the next. An unguarded copy was confirmed before its
+// guard came off and is live under the target group's controller: its status is that controller's
+// now, so it is neither rewritten nor compared, and moveOne has already matched its migrated-from.
 func finish(ctx context.Context, c client.Client, old, cp *unstructured.Unstructured, done Outcome) (Outcome, error) {
+	if _, guarded := cp.GetAnnotations()[v1alpha1.AnnotationMigrating]; guarded {
+		if err := confirm(ctx, c, old, cp); err != nil {
+			return Failed, err
+		}
+	}
+	return release(ctx, c, old, done)
+}
+
+// confirm writes the guarded copy's status, reads it back, compares it with the original and only
+// then lifts the guard.
+func confirm(ctx context.Context, c client.Client, old, cp *unstructured.Unstructured) error {
 	if st, ok := old.Object["status"]; ok && !reflect.DeepEqual(cp.Object["status"], st) {
 		cp.Object["status"] = runtime.DeepCopyJSONValue(st)
 		if err := c.Status().Update(ctx, cp); err != nil {
-			return Failed, fmt.Errorf("write the copy's status: %w", err)
+			return fmt.Errorf("write the copy's status: %w", err)
 		}
 	}
 	fresh := &unstructured.Unstructured{}
 	fresh.SetGroupVersionKind(cp.GroupVersionKind())
 	if err := c.Get(ctx, client.ObjectKeyFromObject(cp), fresh); err != nil {
-		return Failed, fmt.Errorf("read the copy back: %w", err)
+		return fmt.Errorf("read the copy back: %w", err)
 	}
 	if err := same(old, fresh); err != nil {
-		return Failed, fmt.Errorf("the copy differs, so the original is kept: %w", err)
+		return fmt.Errorf("the copy differs, so the original is kept: %w", err)
 	}
-	if _, guarded := fresh.GetAnnotations()[v1alpha1.AnnotationMigrating]; guarded {
-		patch := []byte(`{"metadata":{"annotations":{"` + v1alpha1.AnnotationMigrating + `":null}}}`)
-		if err := c.Patch(ctx, fresh, client.RawPatch(types.MergePatchType, patch)); err != nil {
-			return Failed, fmt.Errorf("lift the copy's guard: %w", err)
-		}
+	patch := []byte(`{"metadata":{"annotations":{"` + v1alpha1.AnnotationMigrating + `":null}}}`)
+	if err := c.Patch(ctx, fresh, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		return fmt.Errorf("lift the copy's guard: %w", err)
 	}
+	return nil
+}
+
+// release strips the original's finalizers (its controller's, such as <from>/room-log: the copy owns
+// the same-named log now) and deletes it under the UID and resourceVersion it was confirmed against.
+func release(ctx context.Context, c client.Client, old *unstructured.Unstructured, done Outcome) (Outcome, error) {
 	if len(old.GetFinalizers()) > 0 {
 		old.SetFinalizers(nil)
 		if err := c.Update(ctx, old); err != nil {
@@ -248,6 +265,9 @@ func same(old, cp *unstructured.Unstructured) error {
 
 // subset: every field of a is in b with the same value; lists and scalars compare whole.
 func subset(a, b any) bool {
+	if a == nil {
+		return true // the original never had the field: whatever the copy has is extra
+	}
 	am, ok := a.(map[string]any)
 	if !ok {
 		return reflect.DeepEqual(a, b)

@@ -96,7 +96,7 @@ func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func
 		log.Info("schema up to date", "applied", n)
 		return nil
 	case "migrate-group":
-		return runMigrateGroup(ctx, log, args[1:], kubeClient(log))
+		return runMigrateGroup(ctx, log, args[1:], getenv, kubeClient(log))
 	}
 	return fmt.Errorf("room-broker: unknown subcommand %q (serve, retention, migrate, migrate-group)", cmd)
 }

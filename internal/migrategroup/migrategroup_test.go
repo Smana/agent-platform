@@ -235,9 +235,7 @@ func TestRun(t *testing.T) {
 			},
 			apply: true, want: []Outcome{Failed, Migrated},
 			check: func(t *testing.T, c client.Client, _ Report) {
-				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
-					t.Error("the original of a failed copy was deleted")
-				}
+				kept(t, c, "Room", "aaaaaaaa", "the original of a failed copy was deleted")
 			},
 		},
 		{
@@ -255,9 +253,7 @@ func TestRun(t *testing.T) {
 				if _, guarded := cp.GetAnnotations()[v1alpha1.AnnotationMigrating]; !guarded {
 					t.Error("a copy without its status lost its guard")
 				}
-				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
-					t.Error("the original was deleted before its copy was confirmed")
-				}
+				kept(t, c, "Room", "aaaaaaaa", "the original was deleted before its copy was confirmed")
 			},
 		},
 		{
@@ -265,8 +261,44 @@ func TestRun(t *testing.T) {
 			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
 			wrap: pruning, apply: true, want: []Outcome{Failed},
 			check: func(t *testing.T, c client.Client, _ Report) {
-				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
-					t.Error("an unconfirmed copy cost the original")
+				kept(t, c, "Room", "aaaaaaaa", "an unconfirmed copy cost the original")
+			},
+		},
+		{
+			name: "a copy whose status the server prunes is not confirmed, and the original stays",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: pruningStatus, apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				kept(t, c, "Room", "aaaaaaaa", "a copy without its full status cost the original")
+			},
+		},
+		{
+			name: "an original rewritten after the list is not deleted",
+			objs: []client.Object{task(oldG, "aaaaaaaa", "u2")},
+			wrap: rewriting, apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, oldG, "Task", "aaaaaaaa"); !ok {
+					t.Error("the delete ignored the original's resourceVersion")
+				}
+			},
+		},
+		{
+			name: "a resumed copy already live keeps its newer status",
+			objs: func() []client.Object {
+				cp := room(newG, "aaaaaaaa", "c1")
+				cp.Object["status"] = map[string]any{"phase": "Closed", "lastSeq": int64(50), "driver": "system:factory"}
+				cp.SetFinalizers([]string{newG + "/room-log"})
+				cp.SetAnnotations(map[string]string{"agents.ogenki.io/forked-from": "aaaaaaaa@3", v1alpha1.AnnotationMigratedFrom: "u1"})
+				return []client.Object{room(oldG, "aaaaaaaa", "u1"), cp}
+			}(),
+			apply: true, want: []Outcome{Resumed},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				got, _ := get(t, c, newG, "Room", "aaaaaaaa")
+				if seq := got.Object["status"].(map[string]any)["lastSeq"]; seq != int64(50) {
+					t.Errorf("the live copy's lastSeq went from 50 to %v", seq)
+				}
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); ok {
+					t.Error("the original is still there")
 				}
 			},
 		},
@@ -302,6 +334,52 @@ func TestRun(t *testing.T) {
 			tc.check(t, c, r)
 		})
 	}
+}
+
+// kept fails t unless the original is still there with its finalizers: a failure never strips them.
+func kept(t *testing.T, c client.Client, kind, name, msg string) {
+	t.Helper()
+	orig, ok := get(t, c, oldG, kind, name)
+	if !ok {
+		t.Error(msg)
+		return
+	}
+	if len(orig.GetFinalizers()) != 1 {
+		t.Errorf("a failure released the original's finalizers: %v", orig.GetFinalizers())
+	}
+}
+
+// pruningStatus wraps c so that a status write under the target group loses status.lastSeq.
+func pruningStatus(c client.Client) client.Client {
+	return interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, w client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if u, ok := o.(*unstructured.Unstructured); ok && u.GroupVersionKind().Group == newG {
+				unstructured.RemoveNestedField(u.Object, "status", "lastSeq")
+			}
+			return w.SubResource(sub).Update(ctx, o, opts...)
+		},
+	})
+}
+
+// rewriting wraps c so that someone else updates an original under the source group just before
+// it is deleted: the delete's resourceVersion precondition must refuse it.
+func rewriting(c client.Client) client.Client {
+	return interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, w client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+			if o.GetObjectKind().GroupVersionKind().Group == oldG {
+				cur := &unstructured.Unstructured{}
+				cur.SetGroupVersionKind(o.GetObjectKind().GroupVersionKind())
+				if err := w.Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
+					return err
+				}
+				cur.SetLabels(map[string]string{"rewritten": "yes"})
+				if err := w.Update(ctx, cur); err != nil {
+					return err
+				}
+			}
+			return w.Delete(ctx, o, opts...)
+		},
+	})
 }
 
 // pruning wraps c so that a create under the target group loses spec.dataClass, as a stricter
