@@ -415,3 +415,60 @@ func TestTheOtherSplitExitsAreCounted(t *testing.T) {
 		t.Fatalf("%s %+v %v", got.Status.Reason, got.Status.Split, g.metrics.recorded)
 	}
 }
+
+// Drill ziawgisq (cnref #2655): the scoper wrote "SPLIT" in room_post and its summary, and its one
+// room_handoff carried no split, so the task ran whole. The handoff sentence itself names split as an
+// argument of the same call, only when the task was offered one.
+func TestTheHandoffSentenceNamesSplitOnlyWhenOffered(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, parentText)
+	if b := ScoperBrief(tk, "n0nce234"); strings.Contains(b, "split {why, children} in this same room_handoff call") {
+		t.Fatalf("a scoper not offered a split is told to pass one:\n%s", b)
+	}
+	tk.Spec.Split = &v1alpha1.SplitSpec{MaxChildren: 3, FamilyMicroUSD: 20_400_000, ChildTier: "standard"}
+	b := ScoperBrief(tk, "n0nce234")
+	for _, want := range []string{"End with one room_handoff call", "split {why, children} in this same room_handoff call",
+		"A split written only in room_post or in the summary is never proposed"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the handoff sentence lacks %q:\n%s", want, b)
+		}
+	}
+}
+
+// The drill's silent case: offered a split, the handoff carries none, and its summary says SPLIT.
+// The task still runs whole on its scope, but the factory logs it, counts it and says so in the room.
+func TestASplitOnlyInTheSummaryIsNamedInTheRoom(t *testing.T) {
+	for name, c := range map[string]struct {
+		summary string
+		noted   bool
+	}{
+		"split in the summary":  {"SPLIT: this goes in three PRs, one per page.", true},
+		"no mention of a split": {"Scoped: one link, one page.", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := splitRig(t, "frontier", false)
+			g.reconcile(t, "3buqdlot", 3)
+			sc := readyScope()
+			g.log.evs = append(g.log.evs, envelope.Event{Seq: int64(len(g.log.evs) + 1), RunID: rid(0), Type: envelope.Handoff,
+				Origin: envelope.OriginClient, Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + rid(0), Role: "triager"},
+				Payload: envelope.Must(envelope.HandoffPayload{FromRole: "triager", ToRole: "implementer", Summary: c.summary,
+					Commit: strings.Repeat("c", 40), Scope: &sc})})
+			tk := endScoper(t, g, "Succeeded", "agent_finished")
+			if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != "ready" {
+				t.Fatalf("the task runs whole on its scope: %s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+			var note string
+			for _, s := range g.log.states {
+				if strings.Contains(s, "no split") {
+					note = s
+				}
+			}
+			counted := slices.Contains(g.metrics.recorded, "split review unstated")
+			if c.noted != (note != "") || c.noted != counted {
+				t.Fatalf("noted %v: room note %q, counted %v (%v)", c.noted, note, counted, g.metrics.recorded)
+			}
+			if c.noted && !strings.Contains(note, "room_handoff") {
+				t.Fatalf("the note says where a split goes: %q", note)
+			}
+		})
+	}
+}

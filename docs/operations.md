@@ -255,7 +255,7 @@ absent rather than 0.
 | `agent_factory_steering_reads_total` | counter | `class`, `read`, `repository` | Steering notes read at triage, in a mode other than `off`: `used`, `absent`, `invalid`, or `unowned` (the repository's fence does not name this factory, or its cache is stale: not read) |
 | `agent_factory_scoper_runs_total` | counter | `class`, `outcome`, `repository` | Scoper runs as they end: `ready`, `question`, `assumed`, `missing`, `failed` |
 | `agent_factory_scope_bounces_total` | counter | `class`, `exit`, `repository` | Bounced tasks leaving their wait: `relabel`, `retry`, `expired` |
-| `agent_factory_splits_total` | counter | `class`, `outcome`, `repository` | Split handoffs, once each: `approved`, `declined`, `superseded`, `expired`, `ignored` |
+| `agent_factory_splits_total` | counter | `class`, `outcome`, `repository` | Split handoffs, once each: `approved`, `declined`, `superseded`, `expired`, `ignored`, and `unstated` (offered a split, the scoper's handoff summary describes one but its `room_handoff` carries no `split`: the task runs whole, and a room note says so) |
 | `agent_factory_split_children_total` | counter | `class`, `outcome`, `repository` | Parts of a split, once each when their parent ends: `landed`, `dropped`, `reverted` |
 | `agent_factory_rooms_closed_at_cap_total` | counter | `reason` | Rooms closed at the cap (below): `human_driver`, `facts_due` |
 | `agent_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |

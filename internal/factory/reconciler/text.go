@@ -197,7 +197,9 @@ func ScoperBrief(t *v1alpha1.Task, nonce string) string {
 	head := fmt.Sprintf("You are the scoper for agent factory task %s in %s: a read-only run before any code is written. "+
 		"Read the task below and the repository with your read-only tools; change nothing and open nothing.\n%s",
 		t.Name, t.Spec.Repository, scoperHow)
-	if s := t.Spec.Split; s != nil {
+	s := t.Spec.Split
+	head += scoperHandoff(s != nil)
+	if s != nil {
 		head += splitHow(s.MaxChildren)
 	}
 	return fit(head, steeringBlock(t, nonce), snapshotBlock(t, fence), t)
@@ -215,10 +217,20 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 	"changes what gets built and no reasonable default exists; then ask exactly one question, answerable in a sentence, " +
 	"and still write the whole scope, the assumption a maintainer may proceed on first. A task naming a link to fix but " +
 	"not its target, where the repository shows one replacement, is an assumption. A task asking to move a panel to " +
-	"\"the other dashboard\", where two dashboards qualify, is a question.\n" +
-	"End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
-	"read (git rev-parse HEAD), and scope {state, task, touches, leave, plan, assumptions, acceptance, question}: state " +
-	"ready, or question with the question. Then finish.\n"
+	"\"the other dashboard\", where two dashboards qualify, is a question.\n"
+
+// scoperHandoff is SC6's one binding call. Offered a split, it names split as an argument of that same
+// call: drill ziawgisq's scoper wrote its split in room_post and the summary only, and the task ran whole.
+func scoperHandoff(split bool) string {
+	s := "End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
+		"read (git rev-parse HEAD), and scope {state, task, touches, leave, plan, assumptions, acceptance, question}: state " +
+		"ready, or question with the question"
+	if split {
+		s += "; when you split, also split {why, children} in this same room_handoff call. A split written only in " +
+			"room_post or in the summary is never proposed: the task then runs whole"
+	}
+	return s + ". Then finish.\n"
+}
 
 // splitHow is the scoper's second answer (splitter design SL1, "The split"), told only to a scoper
 // whose task was offered one.

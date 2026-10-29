@@ -802,7 +802,7 @@ func (s *Set) ScoperRun(ctx context.Context, class, outcome string) {
 // Split counts a split handoff's outcome once.
 func (s *Set) Split(ctx context.Context, class, outcome string) {
 	s.splits.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("outcome", oneOf(outcome, []string{"approved", "declined", "superseded", "expired", "ignored"})), s.repoOf(ctx)))
+		attribute.String("outcome", oneOf(outcome, []string{"approved", "declined", "superseded", "expired", "ignored", "unstated"})), s.repoOf(ctx)))
 }
 
 // SplitChild counts a part's outcome once, when its parent ends.
