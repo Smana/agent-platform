@@ -121,6 +121,7 @@ The draft is shown in Slack's mrkdwn (an intro line, then `*What is wrong*`, `*W
 | `not_a_maintainer` | `Not filed: @u's GitHub account is not a maintainer of <repo>; a maintainer must react.` |
 | `repository_not_allowed`, `repository_not_owned` | `ask an operator to add it to the Slack App's repositories` |
 | `principal_budget_exhausted` | `the Slack App's budget for today is spent; react again tomorrow` |
+| `daily_task_cap` | `the factory's daily task cap is reached; react again after 00:00 UTC` |
 | Any other code | `Not filed: <the broker's refusal>` |
 
 A passing failure (`kill_switch`, `principal_task_cap`, `link_unverified`, `ledger_unavailable`, `tasks_unavailable`, `intake_failed`, `meter_unpriced`, the factory or Slack unreachable) says to react again, at most once per 5 minutes per draft, user and reason. **Silent on purpose:** a ✅ on a message that is not the App's draft, a malformed id, the App's own user, a bot's event, another workspace, an event already seen, and a message Slack cannot return (no thread is known to answer in; logged and counted `error`).

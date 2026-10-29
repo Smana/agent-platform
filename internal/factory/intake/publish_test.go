@@ -314,3 +314,23 @@ func TestPublishIgnoresAMarkerFiledBySomeoneElse(t *testing.T) {
 		t.Fatalf("%d filed, %+v", len(f.Created()), tk.Status.Published)
 	}
 }
+
+// gcp-0, 2026-10-28, task 2d5ch27g: RunLore's task was rejected on the daily task cap before any
+// triage, so it has no template, and factory/publish answered "the triager's run made no proposal".
+// The refusal names the rejection and its reason.
+func TestPublishOnARejectedTaskNamesTheRejection(t *testing.T) {
+	tk := investigated("2d5ch27g")
+	tk.Spec.Template = ""
+	tk.Status.Phase, tk.Status.Reason = v1alpha1.PhaseRejected, "daily_task_cap"
+	p, f, _ := publishing(t, "", tk, "Smana")
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	cs := strings.Join(f.Comments(7), "\n")
+	want := "The agent factory did not publish #7's proposal: its task `2d5ch27g` was not accepted, so no run made one: " +
+		"the factory has reached its daily task cap."
+	if len(f.Created()) != 0 || !strings.Contains(cs, want) || strings.Contains(cs, "made no proposal to publish") ||
+		!slices.Contains(f.Removed(7), LabelPublish) {
+		t.Fatalf("%d issues, comments %q, removed %v", len(f.Created()), cs, f.Removed(7))
+	}
+}

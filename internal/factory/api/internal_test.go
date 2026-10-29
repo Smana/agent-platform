@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -207,4 +208,40 @@ func TestInternalPrincipalRefusals(t *testing.T) {
 			t.Fatalf("%d %s", w.Code, w.Body)
 		}
 	})
+}
+
+// gcp-0, 2026-10-28, task 2d5ch27g: RunLore's POST was answered 201 with a stub issue saying the task
+// "investigates it", and the reconciler rejected the task a second later on the factory's daily task cap.
+// A request the cap would reject is refused at the door, as a 429 RunLore logs as the factory deciding:
+// no Task, no stub. Tasks the reconciler does not count (rejected, adopted, another day's) are not counted.
+func TestTheFactoryDailyTaskCapIsRefusedBeforeAnyStub(t *testing.T) {
+	seed := func(name, kind, phase string, at time.Time) client.Object {
+		return &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: taskid.Name(name), Namespace: "agent-system", CreationTimestamp: metav1.NewTime(at)},
+			Spec:   factoryv1.TaskSpec{Source: factoryv1.Source{Kind: kind, RequestedBy: "Smana"}},
+			Status: factoryv1.TaskStatus{Phase: phase}}
+	}
+	for name, c := range map[string]struct {
+		p      authn.Principal
+		body   string
+		status int
+	}{
+		"runlore":   {runlore, incident(0.9), http.StatusTooManyRequests},
+		"sponsored": {slack, draft, http.StatusTooManyRequests},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, f := internalServer(t, seed("a", "label", factoryv1.PhaseDone, now), seed("b", "label", factoryv1.PhaseImplementing, now),
+				seed("c", "label", factoryv1.PhaseRejected, now), seed("d", "adopt", factoryv1.PhaseDone, now),
+				seed("e", "label", factoryv1.PhaseDone, now.Add(-24*time.Hour)))
+			s.Auth = byToken{"t": c.p}
+			s.Cfg.Caps.TasksPerDay = 2
+			w := postTask(s, c.body, key)
+			if w.Code != c.status || !strings.Contains(w.Body.String(), `"error":"daily_task_cap"`) || len(f.got) != 0 || len(tasks(t, s)) != 5 {
+				t.Fatalf("%d %s, %d issues, %d tasks", w.Code, w.Body, len(f.got), len(tasks(t, s)))
+			}
+			s.Cfg.Caps.TasksPerDay = 3 // the rejected, adopted and yesterday's tasks leave one slot
+			if w := postTask(s, c.body, key); w.Code != http.StatusCreated {
+				t.Fatalf("under the cap: %d %s", w.Code, w.Body)
+			}
+		})
+	}
 }

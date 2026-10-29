@@ -52,7 +52,7 @@ func (e ErrRefused) Error() string {
 var refusalCodes = []string{"kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
 	"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
 	"max_cost_over_class", "unauthenticated", "not_permitted", "not_linked", "link_unverified", "not_a_maintainer", "sponsored_only", "invalid_draft", "bad_text", "tasks_unavailable",
-	"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "idempotency_conflict"}
+	"principal_task_cap", "daily_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "idempotency_conflict"}
 
 // CreateTask posts r to the factory's POST /v1/tasks with the caller's own token, as Request does.
 func (f Factory) CreateTask(ctx context.Context, r TaskRequest) (TaskResult, error) {

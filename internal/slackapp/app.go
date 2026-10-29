@@ -689,6 +689,8 @@ func notFiled(refusal, user, repo string) (code, text string, passing bool) {
 		return code, "Not filed: the factory is paused (kill switch); react again once an operator resumes it.", true
 	case code == "principal_budget_exhausted":
 		return code, "Not filed: the Slack App's budget for today is spent; react again tomorrow.", false
+	case code == "daily_task_cap":
+		return code, "Not filed: the factory's daily task cap is reached; react again after 00:00 UTC.", false
 	case code == "principal_task_cap":
 		return code, "Not filed: the Slack App has the most tasks open it may; react again once one ends.", true
 	case slices.Contains([]string{"link_unverified", "ledger_unavailable", "tasks_unavailable", "intake_failed", "meter_unpriced"}, code):

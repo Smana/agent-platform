@@ -104,6 +104,14 @@ func (s *Server) admitInternal(ctx context.Context, w http.ResponseWriter, out f
 			return
 		}
 	}
+	switch capped, err := s.dailyCapReached(ctx); {
+	case err != nil:
+		fail("tasks_unavailable", err)
+		return
+	case capped:
+		out(http.StatusTooManyRequests, "daily_task_cap")
+		return
+	}
 	today, err := s.tasksToday(ctx, ip.Principal())
 	switch {
 	case err != nil:
@@ -192,4 +200,27 @@ func (s *Server) tasksToday(ctx context.Context, principal string) (int, error) 
 		}
 	}
 	return n, nil
+}
+
+// dailyCapReached reports whether the factory's daily task cap is spent, counted as the reconciler's
+// admit counts it. A request it would reject is refused before its Task and its issue exist: the
+// owner then never reads a stub that says the task investigates (gcp-0, task 2d5ch27g). Two racing
+// requests can still pass it; the reconciler rejects the second and narrates that on its issue.
+// An unset cap is no refusal here: the config refuses one, and the reconciler stays the authority.
+func (s *Server) dailyCapReached(ctx context.Context) (bool, error) {
+	limit := s.Cfg.Caps.TasksPerDay
+	if limit < 1 {
+		return false, nil
+	}
+	var l factoryv1.TaskList
+	if err := s.Rooms.List(ctx, &l, client.InNamespace(s.Namespace)); err != nil {
+		return false, err
+	}
+	n, at := 0, s.Now()
+	for i := range l.Items {
+		if factoryv1.SpendsDailyCap(&l.Items[i], at) {
+			n++
+		}
+	}
+	return n >= limit, nil
 }
