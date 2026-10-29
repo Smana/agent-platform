@@ -28,8 +28,14 @@ func scoperDue(t *v1alpha1.Task) bool {
 // meter caps the run's USD by. Its spend counts toward the task's caps as every run's does.
 func (r *Reconciler) scoperSpec(t *v1alpha1.Task, text string) runs.Spec {
 	s := r.implementerSpec(t, text)
-	light := r.Cfg.Tiers["light"]
-	s.Role, s.Tier, s.MaxTokens, s.MaxMinutes = "triager", "light", light.RunTokens, light.RunMinutes
+	s.Role = "triager"
+	// Offered a split, the scoper also plans every part, and the light tier's run cap is what ended drill
+	// 6ysg5vvt's (budget-run at $0.51 in cache reads, before any handoff): it runs at the task's own tier,
+	// which implementerSpec already set. Otherwise the light tier's caps.
+	if t.Spec.Split == nil {
+		light := r.Cfg.Tiers["light"]
+		s.Tier, s.MaxTokens, s.MaxMinutes = "light", light.RunTokens, light.RunMinutes
+	}
 	if t.Spec.Source.Kind == "api" && t.Spec.Budget.RunTokens > 0 { // never above the ceiling-derived run (C4)
 		s.MaxTokens = min(s.MaxTokens, t.Spec.Budget.RunTokens)
 	}
@@ -87,7 +93,7 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	case sc == nil && phase == "Succeeded":
 		return r.scopeEnd(ctx, t, "missing", 0)
 	case sc == nil:
-		return r.scopeEnd(ctx, t, "failed", 0)
+		return r.scoperFailed(ctx, t, reason)
 	case sc.State == envelope.ScopeReady && split != nil:
 		return r.splitHandoff(ctx, t, split, seq)
 	case sc.State == envelope.ScopeReady:
@@ -156,6 +162,22 @@ func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope
 	return nil, nil, 0, "", nil
 }
 
+// scoperFailed is a scoper run that ended without a handoff, on its run cap or any other end that
+// fails open: the task runs whole, unscoped, and the room says so (drill 6ysg5vvt). A run cap is
+// counted apart from other failures. The note is best effort.
+func (r *Reconciler) scoperFailed(ctx context.Context, t *v1alpha1.Task, reason string) error {
+	what, outcome := "the scoper's run ended before handing off ("+narrate.Reason(reason)+")", "failed"
+	if reason == "budget-run" {
+		what, outcome = "the scoper ran out of budget before handing off", "budget"
+	}
+	r.log().Warn("the scoper ended without a handoff; the task runs whole", "task.id", t.Name, "reason", reason)
+	if err := narrate.Room(ctx, r.Rooms, t, "scope-failed", "Agent factory: "+what+"; the task runs whole, with no scope or split.",
+		func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) }); err != nil {
+		r.log().Warn("the scoper's failure note not posted", "task.id", t.Name, "err", err)
+	}
+	return r.scopeEndAs(ctx, t, "failed", 0, outcome)
+}
+
 // mentionsSplit: the handoff's summary speaks of splitting the task.
 func mentionsSplit(summary string) bool { return strings.Contains(strings.ToLower(summary), "split") }
 
@@ -178,9 +200,14 @@ func (r *Reconciler) unstatedSplit(ctx context.Context, t *v1alpha1.Task) {
 
 // scopeEnd records the scoper's outcome and queues the implementer's first run.
 func (r *Reconciler) scopeEnd(ctx context.Context, t *v1alpha1.Task, state string, seq int64) error {
+	return r.scopeEndAs(ctx, t, state, seq, state)
+}
+
+// scopeEndAs is scopeEnd counted under outcome, which may say more than the recorded state.
+func (r *Reconciler) scopeEndAs(ctx context.Context, t *v1alpha1.Task, state string, seq int64, outcome string) error {
 	t.Status.Scope = &v1alpha1.ScopeStatus{State: state, Seq: seq}
 	class := t.Spec.PredictedClass
-	record(ctx, func(ctx context.Context) { r.Metrics.ScoperRun(ctx, class, state) })
+	record(ctx, func(ctx context.Context) { r.Metrics.ScoperRun(ctx, class, outcome) })
 	t.Status.NextTrigger = "initial" // the scoper's run was no attempt at the work
 	r.to(t, v1alpha1.PhaseQueued, "")
 	return nil
