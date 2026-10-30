@@ -103,9 +103,12 @@ class AwaitChecksTest(unittest.TestCase):
         self.assertLessEqual(self.clock.now, agent_run.CONTINUATION_S)
         self.assertEqual(len(self.clock.slept), agent_run.CONTINUATION_S // agent_run.PENDING_POLL_S)
 
-    def test_github_not_answering_stops_the_wait_and_lets_the_guard_read_it(self):
-        self.assertEqual(self.wait([None])[0], "rebuilt")
-        self.assertEqual(self.clock.slept, [])
+    def test_github_not_answering_counts_as_still_pending(self):
+        # T7 M1: a failed read rebuilt as evidence would read `unpushed` and spend a continuation on it (#224).
+        self.assertEqual(self.wait([None, runs("pending"), runs("success")])[0], "rebuilt")
+        self.assertEqual(self.clock.slept, [agent_run.PENDING_POLL_S] * 2)
+        self.assertIsNone(self.wait([None] * 1000, seconds=5 * 60))
+        self.assertEqual(self.evidence_calls, 0)
 
 
 class CheckRunsTest(unittest.TestCase):
@@ -176,8 +179,14 @@ class FailingLogTailTest(unittest.TestCase):
 class JudgeTriageTest(unittest.TestCase):
     """drive()'s judge round over scripted evidence, check runs, judge answers and a fake clock."""
 
-    def round(self, evidence, answers, checks=(), deadline=45 * 60, state=None):
-        self.messages, self.clock = [], Clock()
+    def round(self, evidence, answers, checks=(), deadline=45 * 60, state=None, notes=False, posted=True):
+        """notes: a ProgressNotes whose send records (clock, text) in self.notes and answers posted."""
+        self.messages, self.clock, self.notes = [], Clock(), []
+        room = None
+        if notes:
+            room = agent_run.ProgressNotes("http://unused", "implementer", clock=self.clock)
+            room.send = lambda text: self.notes.append((self.clock.now, text)) or posted
+            room.judge = lambda *a: None
         self.state = state or lp.State(start="s", committed=True)
         polls, checks = iter([0, 0, 0]), iter(checks)
         with mock.patch("agent_run.poll", side_effect=lambda cid, on_tick=None: next(polls)), \
@@ -189,7 +198,7 @@ class JudgeTriageTest(unittest.TestCase):
                 mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.messages.append(text)), \
                 mock.patch("sys.stdout", new=io.StringIO()) as out:
             result = agent_run.drive({"REPOSITORY": "o/r"}, "cid", Steps(), POLICY, self.state, "task",
-                                     os.path.join(tempfile.mkdtemp(), "loop.json"),
+                                     os.path.join(tempfile.mkdtemp(), "loop.json"), notes=room,
                                      deadline=deadline, clock=self.clock, sleep=self.clock.sleep)
         self.out = out.getvalue()
         return result
@@ -233,7 +242,8 @@ class JudgeTriageTest(unittest.TestCase):
         self.assertEqual(self.state.sent, 1)
 
     def test_checks_pending_past_the_box_end_not_met(self):
-        code, reason, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000)
+        code, reason, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000,
+                                        notes=True)
         self.assertEqual((code, reason, note), (1, "not_met", "checks still pending after 15 minutes"))
         self.assertEqual(self.messages, [])
         self.assertEqual(self.state.sent, 0)
@@ -245,8 +255,81 @@ class JudgeTriageTest(unittest.TestCase):
         self.assertLessEqual(self.clock.now, 10 * 60 - agent_run.CONTINUATION_MARGIN_S)
 
     def test_no_deadline_still_ends_the_wait(self):
-        _, _, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000, deadline=None)
+        _, _, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000, deadline=None,
+                                notes=True)
         self.assertEqual(note, "checks still pending after 15 minutes")
+
+    # I1: the factory deletes a Running run with no room event for StuckAfter (outcome.go). The wait must end
+    # with the judge's call and the slack still inside that window, counted from the last room event.
+    QUIET = agent_run.STUCK_AFTER_S - agent_run.JUDGE_TIMEOUT_S - agent_run.PENDING_SLACK_S
+
+    def test_without_notes_the_wait_ends_inside_the_factorys_window(self):
+        code, reason, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000)
+        self.assertEqual((code, reason, note), (1, "not_met", "checks still pending after %d minutes" % (self.QUIET // 60)))
+        self.assertLessEqual(self.clock.now, self.QUIET)
+        self.assertEqual((self.messages, self.state.sent), ([], 0))
+
+    def test_notes_keep_the_window_open_for_the_whole_box(self):
+        self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000, notes=True)
+        times = [t for t, _ in self.notes]
+        self.assertEqual(times, [0, agent_run.PENDING_NOTE_S, 2 * agent_run.PENDING_NOTE_S])
+        for gap in (b - a for a, b in zip([0, *times], [*times, self.clock.now])):
+            self.assertLessEqual(gap, self.QUIET)
+        self.assertEqual(self.notes[0][1],
+                         "Harness (implementer): waiting for 1 pending check, up to 15 more minutes; no continuation spent.")
+
+    def test_notes_that_do_not_post_leave_the_window_where_it_was(self):
+        _, _, note = self.round([offered(pending=["check:0"])], ["met"], checks=[runs("pending")] * 1000, notes=True,
+                                posted=False)
+        self.assertEqual(note, "checks still pending after %d minutes" % (self.QUIET // 60))
+        self.assertLessEqual(self.clock.now, self.QUIET)
+
+    def test_a_window_with_no_room_for_a_wait_continues_as_before(self):
+        """The first evidence already waited out the checks and the judge: with no note to reopen the window,
+        the harness does not wait into the factory's stuck end; the continuation goes as before HR5."""
+        self.messages, self.clock = [], Clock()
+        state = lp.State(start="s", committed=True)
+        evidence = iter([offered(pending=["check:0"]), offered()])
+
+        def ev(env, task):
+            self.clock.now += agent_run.CHECKS_WAIT_S + agent_run.JUDGE_TIMEOUT_S
+            return "e", next(evidence)
+        polls = iter([0, 0])
+        with mock.patch("agent_run.poll", side_effect=lambda cid, on_tick=None: next(polls)), \
+                mock.patch("agent_run.http", return_value={}), mock.patch("agent_run.evidence", side_effect=ev), \
+                mock.patch("agent_run.check_runs", return_value=runs("pending")), \
+                mock.patch("agent_run.ask_judge", side_effect=[self.answer("met")] * 2), \
+                mock.patch("agent_run.commits_since", return_value=1), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.messages.append(text)), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            agent_run.drive({"REPOSITORY": "o/r"}, "cid", Steps(), POLICY, state, "task",
+                            os.path.join(tempfile.mkdtemp(), "loop.json"), deadline=90 * 60,
+                            clock=self.clock, sleep=self.clock.sleep)
+        self.assertEqual((len(self.messages), state.sent), (1, 1))
+        self.assertEqual(self.clock.slept, [])
+
+    def test_a_failure_during_the_wait_never_ends_as_met(self):
+        # T7 M3: the guard objected; an exception in the wait or the rebuild fails towards a human.
+        with mock.patch("agent_run.await_checks", side_effect=RuntimeError("boom")), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            code, reason, _ = self.round([offered(pending=["check:0"])], ["met"])
+        self.assertEqual((code, reason), (1, "not_met"))
+        self.assertEqual(self.messages, [])
+
+    def test_the_wait_then_a_failing_checks_log_rides_the_continuation(self):
+        run, _ = gh_log("FAIL: after the wait\n")
+        with mock.patch("subprocess.run", side_effect=run):
+            self.round([offered(pending=["check:0"]), failed_with_log(), offered()], ["met", "met", "met"],
+                       checks=[runs("failure")], notes=True)
+        [msg] = self.messages
+        self.assertIn("FAIL: after the wait", msg)
+
+    def test_no_log_read_when_no_box_would_be_left(self):
+        run, calls = gh_log("FAIL\n")
+        with mock.patch("subprocess.run", side_effect=run):
+            code, reason, note = self.round([failed_with_log()], ["not_yet"], deadline=agent_run.CONTINUATION_MARGIN_S + 60)
+        self.assertEqual((code, reason, calls), (1, "not_met", []))
+        self.assertTrue(note.endswith("too little of the run's time was left for a continuation"), note)
 
     def test_a_failing_checks_log_is_quoted_fenced_and_redacted(self):
         run, _ = gh_log("step 3\nFAIL: expected 2 got 3\ntoken=%s\n" % FAKE_TOKEN)

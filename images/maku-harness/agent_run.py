@@ -71,7 +71,9 @@ RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries"
 LOOP_STATE = "/workspace/.agent-loop.json"
 
 # The checks' wait and the judge's call stay inside the factory's 10-minute no-activity window
-# (StuckAfter), counted from the finish the bridge mirrors.
+# (StuckAfter), counted from the finish the bridge mirrors. HR5's wait for pending checks counts from the last room
+# event instead, and ends with JUDGE_TIMEOUT_S and PENDING_SLACK_S still left in the window (QuietWindow).
+STUCK_AFTER_S = 10 * 60
 CHECKS_WAIT_S, CHECKS_APPEAR_S, CHECKS_POLL_S = 300, 60, 30
 JUDGE_TIMEOUT_S = 120
 JUDGE_MAX_TOKENS = 2048
@@ -1506,6 +1508,41 @@ def evidence(env: dict, task: str) -> tuple[str, set[str]]:
 # have had, and asks the judge again.
 PENDING_POLL_S = 30
 CHECKS_PENDING = "checks still pending after %d minutes"
+WAIT_FAILED = "the judge round failed during the wait for pending checks"
+# I1: the wait is silent, and the factory deletes a Running run with no room event for STUCK_AFTER_S. With notes,
+# the wait posts one at its start and every PENDING_NOTE_S, each moving the window; without, or while none
+# posts, the wait ends early enough for the judge's second call and PENDING_SLACK_S to fit in it.
+PENDING_SLACK_S = 60
+PENDING_NOTE_S = 5 * 60
+PENDING_NOTE = "waiting for %d pending check%s, up to %d more minutes; no continuation spent."
+
+
+class QuietWindow:
+    """The factory's no-activity window during the wait: when the wait must end by, and the notes that move
+    it. Best effort: a note that is not posted moves nothing. The text is fixed but for two counts."""
+
+    def __init__(self, notes, since: float, pending: int, clock=time.monotonic):
+        self.notes, self.since, self.pending, self.clock = notes, since, pending, clock
+        self.noted = None  # when the wait's last note was posted
+
+    def until(self) -> float:
+        return self.since + STUCK_AFTER_S - JUDGE_TIMEOUT_S - PENDING_SLACK_S
+
+    def keep_alive(self, end: float) -> None:
+        """Posts the wait's note when it has posted none yet, or PENDING_NOTE_S ago. Outside MAX_NOTES: the
+        box bounds it to four."""
+        notes, now = self.notes, self.clock()
+        if notes is None or notes.failures >= NOTE_FAILURES or (self.noted is not None and now - self.noted < PENDING_NOTE_S):
+            return
+        text = "Harness (%s): " % notes.role + PENDING_NOTE % (self.pending, "" if self.pending == 1 else "s",
+                                                              max(0, int(end - now)) // 60)
+        try:
+            if notes.send(text):
+                self.since = self.noted = notes.last = now
+                notes.sent += 1
+        except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+            notes.failures += 1
+            print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
 
 
 def pending_only(v, guarded, offered) -> bool:
@@ -1514,17 +1551,21 @@ def pending_only(v, guarded, offered) -> bool:
             and not (offered.failing or offered.missing or offered.unmakeable or offered.unpushed))
 
 
-def await_checks(env: dict, task: str, seconds: int, clock=time.monotonic, sleep=time.sleep):
-    """The rebuilt evidence once none of the head's check runs is pending, or None when the box of seconds
-    ends first. The box's end is fixed once, so the wait always ends. GitHub not answering ends the wait
-    too: the rebuilt evidence then says so, and the guard reads it."""
+def await_checks(env: dict, task: str, seconds: int, clock=time.monotonic, sleep=time.sleep, window=None):
+    """The rebuilt evidence once none of the head's check runs is pending, or None when the box of seconds,
+    or the window's end, comes first. The box's end is fixed once, so the wait always ends. GitHub not
+    answering counts as still pending: rebuilt, it would read as unpushed work."""
     until, sha = clock() + seconds, head()
     while True:
         runs = check_runs(env, sha)
-        if runs is None or all(r["status"] == "completed" for r in runs):
+        if runs is not None and all(r["status"] == "completed" for r in runs):
             return evidence(env, task)
         if clock() + PENDING_POLL_S > until:
             return None
+        if window is not None:
+            window.keep_alive(until)
+            if clock() + PENDING_POLL_S > window.until():
+                return None
         sleep(PENDING_POLL_S)
 
 
@@ -1798,6 +1839,7 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             settle(cid, clock, sleep)
             return box_end(env, state, policy, box["minutes"], box["reason"])
         box["until"] = None  # the conversation finished: the judge round is not the agent's time
+        finished = clock()  # the factory's no-activity window counts from here (QuietWindow)
         if code == 0 and hold is not None:
             done = hold_round(env, cid, hold, policy, state, notes, cfence, path, lambda: box_for(deadline, clock))
             if isinstance(done, loop_policy.End):
@@ -1809,12 +1851,12 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             return code, None, ""
         sent = None  # the continuation, once the judge asked for one
         failing = ()  # the failing checks the evidence showed, once it was read
+        waited = False  # HR5: at most one wait for pending checks per round
         try:
             n = commits_since(env, state.mark) if state.sent else None
             new_commit = n is None or n > 0
             message, offered = evidence(env, task)
             failing = getattr(offered, "failing", ())
-            waited = False  # HR5: at most one wait for pending checks per round
             while True:
                 answer = ask_judge(env, policy.judge_model, message)
                 if answer is None:
@@ -1834,11 +1876,18 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
                 waited, seconds = True, box_for(deadline, clock)
                 if seconds is None:
                     return 1, "not_met", TOO_LATE % _short(guarded.reason, loop_policy.REASON_MAX)
+                started = clock()
+                window = QuietWindow(notes, finished, len(offered.pending), clock)
+                window.keep_alive(started + seconds)
+                if window.until() - clock() < PENDING_POLL_S:  # no room for a wait: decide as before HR5
+                    print("agent-run judge %d: no time left in the factory's no-activity window to wait" % rounds, flush=True)
+                    v = guarded
+                    break
                 print("agent-run judge %d: waiting up to %d minutes for pending checks %s, no continuation spent" % (
                     rounds, seconds // 60, ",".join(offered.pending)), flush=True)
-                rebuilt = await_checks(env, task, seconds, clock, sleep)
+                rebuilt = await_checks(env, task, seconds, clock, sleep, window)
                 if rebuilt is None:
-                    return 1, "not_met", CHECKS_PENDING % (seconds // 60)
+                    return 1, "not_met", CHECKS_PENDING % max(1, round((clock() - started) / 60))
                 message, offered = rebuilt
                 failing = getattr(offered, "failing", ())
             if notes is not None and v.kind != "invalid":
@@ -1847,9 +1896,11 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
             log_tail = log_note = None
-            if isinstance(d, loop_policy.Continue) and failing:  # read before the box is timed: it takes time
-                log_tail, log_note = failing_log_tail(env, offered, getattr(offered, "runs", ()))
             seconds = box_for(deadline, clock)
+            if isinstance(d, loop_policy.Continue) and failing and seconds is not None:
+                # read before the box is timed: it takes time; and only when a box is left to send it in
+                log_tail, log_note = failing_log_tail(env, offered, getattr(offered, "runs", ()))
+                seconds = box_for(deadline, clock)
             if isinstance(d, loop_policy.Continue) and seconds is None:
                 state.sent -= 1
                 d = loop_policy.End("not_met", TOO_LATE % d.reason)
@@ -1868,6 +1919,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             if sent is None:
                 if failing:  # the run must not end as met with a check known to fail
                     return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
+                if waited:  # the guard objected before the wait: never end as met
+                    return 1, "not_met", WAIT_FAILED
                 return 0, None, ""  # today's end
             # The judge said not_yet but the message did not go (SDK 1.56 answers 429 when its run
             # capacity is full: saved, no run started). Ending as met would hand off silently.
