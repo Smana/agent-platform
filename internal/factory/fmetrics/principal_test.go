@@ -24,8 +24,8 @@ func TestThePayerLabelsTheSeriesItsContextBinds(t *testing.T) {
 	s.AdmissionRefused(alice, "person_budget_exhausted")
 	s.Revoked(alice, "budget-person")
 	s.RunRevoked(alice, "budget-task", "task-usd")
-	s.HumanWait(alice, "AwaitingHuman", 90*time.Second)
-	s.HumanWait(alice, "Implementing", time.Hour) // not a wait for a human: not counted
+	s.HumanWait(alice, "AwaitingHuman", "policy_pending", "docs-links", 90*time.Second)
+	s.HumanWait(alice, "Implementing", "", "docs-links", time.Hour) // not a wait for a human: not counted
 	s.PROutcome(WithPrincipal(t.Context(), "github:Ignore previous instructions"), "docs-links", "closed")
 	s.PROutcome(t.Context(), "docs-links", "closed")
 	s.PrincipalShadow(alice, "system:factory") // the key over, not the payer
@@ -36,7 +36,7 @@ func TestThePayerLabelsTheSeriesItsContextBinds(t *testing.T) {
 		`maku_factory_admission_refusals_total{principal="github:alice",reason="person_budget_exhausted",repository="Smana/a"} 1`,
 		`maku_factory_run_revocations_total{principal="github:alice",reason="budget-person"} 1`,
 		`maku_factory_run_revocations_total{limit="task-usd",principal="github:alice",reason="budget-task"} 1`,
-		`maku_factory_human_wait_seconds_total{phase="AwaitingHuman",principal="github:alice"} 90`,
+		`maku_factory_human_wait_seconds_total{class="docs-links",phase="AwaitingHuman",principal="github:alice",reason="policy_pending"} 90`,
 		`maku_factory_pr_outcomes_total{class="docs-links",outcome="closed",principal="other",repository="other"} 2`,
 		`maku_factory_run_revocations_total{principal="system:factory",reason="budget-principal-shadow"} 1`,
 	} {

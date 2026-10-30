@@ -819,6 +819,65 @@ A shadow decision's comment carries the head it judged and what a live class wou
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
+**The decision record (AM8).** Every non-wait decision the gate's rows reach (arm, shadow, human,
+escalate, and an adopted task's `ci_red` or `ci_cancelled`) also appends one hidden line to its
+comment, with the values each row read, so a tally can replay a cap later. An agent task's `ci_red`
+or `ci_cancelled` starts a fix run or a re-run instead, and posts no record:
+
+```
+<!-- agent-factory-decision head=<sha> class=docs-links decision=shadow:shadow_would_arm files=2/3 lines=12/20 shape=ok holdout=ok oracle=ok age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->
+```
+
+| Field | Reads |
+|---|---|
+| `class=` | The task's predicted class: the tally filters by it under `--class` |
+| `decision=` | `<verdict>:<reason>` as the gate decided it |
+| `files=`, `lines=` | GitHub's counts of the diff over the class's caps (0 is no cap). Lines are additions plus deletions |
+| `shape=`, `holdout=`, `oracle=`, `age=` | `ok` when held, `n/a` when the class declares none, the refusal's reason when refused, `pending` for a release age still waiting |
+| `evidence=` | `ok`, or the refusal's reason |
+| `paused=`, `capped=` | What the breaker and the day's count said, whether or not they stopped the decision (AM4) |
+| `reviewer=` | The reviewer run's served models joined with `+`; `none` when the class has no reviewer run |
+
+A value the decision never read prints `-`: a refusal leaves the rows after it unread, and a
+decision that did not read the diff prints `files=-/3 lines=-/20` (the caps always print). `-` is
+not `0`: a replay must not count a diff nobody read as an empty one, so it counts such a record as
+unreplayable. A `patch_too_large` from a diff over GitHub's page of files prints `-` too. The
+record is **its own `agent-factory-decision` line, beside the event marker, not fields in it**: a
+recorded deviation from AM8's single marker (R-m11), which leaves the would-arm marker and the
+tally's regex for it unchanged. The same facts go to the log as `merge decision` with `rows=`.
+
+Some hand-offs carry no record:
+- the ones decided before the rows are read: `merge_gate_off`, `ledger_truncated`, and the
+  `class_mismatch` of an adopted task whose class was removed, renamed or lost its author;
+- the waits' own endings, `ci_cancelled` (the re-run budget spent) and `ci_wait_expired`.
+
+A `class_mismatch` raised by the class's declared conditions (row 8) is a decision of the gate and
+carries a record, which is why `--strictness` counts it as a refusing row. A decision where
+policy-bot matched another class than the prediction goes through the gate too, and carries a
+record. `ledger_truncated` is decided before the gate (R-m13) and stays the one input that still
+stops a shadow record. Early refusals (the base checks, the author, an unarmed class) carry a record with every count unread.
+
+**The human path's metrics (AM9)** ([operations](operations.md#factory-metrics)):
+- `maku_factory_merge_decisions_total` gains `repository`.
+- `maku_factory_human_wait_seconds_total` gains `reason` (the hand-off's) and `class` (the task's).
+- `maku_factory_handoff_to_merge_seconds{class,reason,how}` is a histogram of the time from a pull
+  request's first hand-off to its merge. `how` is `approved` (the merger, on a maintainer's
+  approval) or `human`.
+
+The clock starts at the first `AwaitingHuman` entry, recorded in
+`status.pullRequest.handedOffAt`. **A task already in `AwaitingHuman` when Maku is upgraded has
+none, and its merge records no observation.** A hand-off the gate later arms on the class's own
+conditions (after `reentered_day_turned` or `reentered_unpaused`) records none either, since `how`
+is only `approved` or `human`; and Renovate's own automerge of an adopted pull request counts as
+`how=human`.
+
+`reason` passes the factory's own closed codes: the wait reasons, the escalation codes
+(`budget-*`, `revoked`, `deleted`, `manual`, and the like), the meter's revocations and the run
+ends (`run_lost`, `resumes_exhausted`, `PodLost`, `Disrupted`, `PodFailed`, and the lowered terminal
+phases), and every reason narrate has prose for, the gate's refusals (`class_paused`,
+`patch_too_large`, `file_*`, `oracle_*`, …) and the stops included. Only free text reads `other`,
+such as a hand-written `revoked` annotation.
+
 ### Adopted classes
 
 A class that declares `author.adopt` takes another author's pull requests, Renovate's, instead of
@@ -1053,8 +1112,42 @@ merges=31 mature=30 conclusive=29 inconclusive=1 bad=0 reverted=0 follow_up=0 re
 ```
 
 A pause no longer stops a shadow class's would-arm record (AM4): the tally counts through it.
-A drill revert does not count for the breaker (AM6), but `--outcomes` still lists it as `reverted`
-until the tally sets drills apart: subtract the pull requests labelled `factory/drill` by hand.
+A drill revert does not count for the breaker (AM6), and the tally sets drills apart: a drilled
+merge keeps its verdict and its line ends in ` drill`, the totals gain `drill=<n>`, and under
+`--outcomes` it is neither `reverted` nor bad (`drill=<n>` counts every listed drill, apart from
+`bad`).
+
+The [decision record](#the-merge-gate) (AM8) makes two more counts possible:
+
+```
+scripts/shadow-merge-tally.sh --class docs-links --replay lines=40 --strictness
+merged_unchanged=2 changed=1 reverted=1 auto_merged=0 drill=1
+reviewer glm-5.3: merged_unchanged=2 changed=0
+reviewer kimi-k3: merged_unchanged=0 changed=1
+replay lines=40: would_arm=6 would_refuse=0 unreplayable=1
+strictness: refused=3 refused_merged_unchanged=2
+```
+
+- `--replay lines=N` (or `files=N`) says how many recorded decisions would arm under another cap.
+  The set is the `shadow` and `arm:armed` decisions plus those refused `patch_too_large`, recounted
+  on their recorded counts: a decision would arm when the chosen count is at most N and the other
+  count is within its recorded cap. A record with an unread count (`-`) is counted as
+  `unreplayable=`. `arm:maintainer_approved` is left out: it is a human's judgement, not a cap of
+  the class. Anything but `lines=N` or `files=N` exits 2.
+- `--strictness` counts the decisions a class row refused (`patch_too_large`, `file_not_allowed`,
+  `file_protected`, `file_added_or_deleted`, `class_mismatch`, `holdout_red`,
+  `oracle_finding_open`, `oracle_unrequested`, `release_age_red`): `refused=<n>`, and
+  `refused_merged_unchanged=<m>` of them a human then merged unchanged, at the head the record
+  names. That is the gate's too-strict side.
+- Per reviewer model, `reviewer <model>: merged_unchanged=<n> changed=<n>`, read from the record
+  in the comment of the last would-arm. A record with `reviewer=-` and a comment from before the
+  record get no line; `none` (a class with no reviewer) does. A change of a live class's reviewer
+  model is a config change, reviewed as a class switch is (AM10), and starts a new count: tally
+  from the date of the change.
+
+The tally reads merged pull requests only, and keeps a record whose `class=` is the `--class`.
+A record on a hand-off comment counts as its hand-off whatever its `decision=` says, so a
+`not_mergeable` hand-off after an arm is no arm.
 
 The rule: widen one step only when `bound < budget` (0.10 by default; `--budget` changes it), by
 the owner's config pull request citing the tally's output. Zero bad merges need 29 conclusive

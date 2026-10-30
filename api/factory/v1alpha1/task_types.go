@@ -810,6 +810,14 @@ type PullRequestRef struct {
 	ArmedAt *metav1.Time `json:"armedAt,omitempty"`
 	// +optional
 	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
+	// HandedOffAt is the first hand-off to a human (AM9): the start of the hand-off to merge
+	// histogram. Set once, by the first entry to AwaitingHuman with a pull request.
+	// +optional
+	HandedOffAt *metav1.Time `json:"handedOffAt,omitempty"`
+	// HandedOffReason is the reason of the first hand-off to a human (AM9), the histogram's label.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	HandedOffReason string `json:"handedOffReason,omitempty"`
 	// +optional
 	RevertNumber int `json:"revertNumber,omitempty"`
 	// Drill: the revert was a maintainer's drill (AM6); the breaker does not count it.

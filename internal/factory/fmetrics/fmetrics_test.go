@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/narrate"
 	"github.com/Smana/maku/internal/metrics"
 )
 
@@ -160,7 +161,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`maku_factory_human_interventions_total{kind="stop",repository="other"} 1`,
 		`maku_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`maku_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
-		`maku_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",verdict="shadow"} 1`,
+		`maku_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",repository="other",verdict="shadow"} 1`,
 		`maku_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
 		`maku_factory_intake_errors_total{repository="other",source="issue"} 1`,
 		`maku_factory_run_revocations_total{principal="other",reason="budget-run"} 1`,
@@ -392,5 +393,72 @@ func TestClassPausedIsAGauge(t *testing.T) {
 	s.ClassPaused(t.Context(), "Smana/cloud-native-ref", "docs-links", false)
 	if body := scrape(); !strings.Contains(body, `maku_factory_class_paused{class="docs-links",repository="Smana/cloud-native-ref"} 0`) {
 		t.Fatalf("%s", body)
+	}
+}
+
+// AM9: the wait from a pull request's first hand-off to its merge, by the hand-off's reason and
+// how it merged, approved or human.
+func TestHandoffToMergeIsAHistogram(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	s.HandoffToMerge(t.Context(), "docs-links", "policy_pending", "approved", 10*time.Minute)
+	s.HandoffToMerge(t.Context(), "docs-links", "policy_pending", "class", time.Minute) // neither approved nor human
+	got := read()
+	for _, want := range []string{
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="approved",reason="policy_pending",le="900"} 1`,
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="other",reason="policy_pending",le="300"} 1`,
+	} {
+		if !strings.Contains(got, want+"\n") {
+			t.Fatalf("missing %s\n%s", want, got)
+		}
+	}
+}
+
+// AM9, review: an Escalated wait's reason can be a run's free-text end (the revoked annotation);
+// the wait and the hand-off to merge read other for anything outside the factory's wait reasons.
+func TestTheHumanPathReasonIsBounded(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	s.HumanWait(t.Context(), "Escalated", "revoked by Smana: please stop, it is looping", "docs-links", time.Minute)
+	s.HumanWait(t.Context(), "Escalated", "ci_red", "docs-links", time.Minute)
+	s.HandoffToMerge(t.Context(), "docs-links", "anything an operator wrote", "human", time.Minute)
+	// The factory's own escalation codes pass: a budget revocation, a revoked or lost run, a pod
+	// the AgentRun read, an exhausted resume, a run's lowered terminal phase.
+	codes := []string{"class_paused", "patch_too_large", "budget-run", "budget-task-shadow", "revoked", "deleted", "manual", "run_lost", "resumes_exhausted",
+		"PodLost", "Disrupted", "PodFailed", "failed"}
+	for _, code := range codes {
+		s.HumanWait(t.Context(), "Escalated", code, "docs-links", time.Minute)
+	}
+	got := read()
+	for _, want := range []string{
+		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="other"} 60`,
+		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="ci_red"} 60`,
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="human",reason="other",le="300"} 1`,
+	} {
+		if !strings.Contains(got, want+"\n") {
+			t.Errorf("missing %s", want)
+		}
+	}
+	for _, code := range codes {
+		want := `maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="` + code + `"} 60`
+		if !strings.Contains(got, want+"\n") {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(got, "please stop") || strings.Contains(got, "operator wrote") {
+		t.Errorf("free text reached a label\n%s", got)
+	}
+}
+
+// AM9, final review: every reason narrate has prose for is one of the factory's codes, so none
+// reads other on the human path; a reason added to narrate joins the vocabulary with it.
+func TestEveryNarratedReasonIsAHumanPathReason(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	for _, r := range narrate.Reasons() {
+		s.HumanWait(t.Context(), "AwaitingHuman", r, "docs-links", time.Minute)
+	}
+	if got := read(); strings.Contains(got, `reason="other"`) {
+		t.Fatalf("a narrated reason reads other\n%s", got)
+	}
+	if len(narrate.Reasons()) < 100 {
+		t.Fatalf("narrate lists %d reasons: the walk proves nothing", len(narrate.Reasons()))
 	}
 }

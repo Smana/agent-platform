@@ -5,6 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# shellcheck disable=SC2016 # the backticks are the comment's markdown
 wa() { printf '{"author":{"login":"%s"},"createdAt":"%s","body":"would auto-merge: `%s` <!-- agent-factory scope=x event=would-arm-1 head=%s -->"}' "$1" "$2" "$3" "$4"; }
 cat > "$tmp/prs.json" <<JSON
 [
@@ -35,7 +36,7 @@ want='#1 merged_unchanged
 #6 reverted
 #7 auto_merged
 #9 merged_unchanged
-merged_unchanged=3 changed=1 reverted=1 auto_merged=1'
+merged_unchanged=3 changed=1 reverted=1 auto_merged=1 drill=0'
 if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
 if scripts/shadow-merge-tally.sh 2>/dev/null; then echo "--class is required"; exit 1; fi
 
@@ -49,7 +50,7 @@ chmod +x "$tmp/gh-adopted"
 out=$(GH="$tmp/gh-adopted" scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate)
 want='#10 merged_unchanged
 #11 changed
-merged_unchanged=1 changed=1 reverted=0 auto_merged=0'
+merged_unchanged=1 changed=1 reverted=0 auto_merged=0 drill=0'
 if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
 grep -qF -- '--author app/renovate' "$tmp/adopted.log" || { echo "FAIL: --author reaches the pull request list" >&2; exit 1; }
 
@@ -91,4 +92,54 @@ for w in 7d 72h30m 168; do
   fi
 done
 grep -qF 'label:"factory/merged:dead-links"' "$GH_LOG" || { echo "FAIL: the search quotes the label (L11)" >&2; exit 1; }
+# A drill revert (AM6) is listed apart, never bad: prs-drill.json, reverts-drill.json. #200 is
+# healthy, #201 reverted by a factory/drill revert (no verdict: inconclusive), #202 reverted for real.
+out="$(TALLY_FIXTURE=drill tally)"
+expect "$(grep '^#201' <<<"$out")" "#201 mature none - drill" "a drill-reverted merge is listed as a drill, not reverted"
+expect "$(grep -o 'conclusive=.*drill=[0-9]*' <<<"$out")" "conclusive=2 inconclusive=1 bad=1 reverted=1 follow_up=0 regression=0 drill=1" "a drill is counted apart from bad"
+
+# The decision record (AM8-AM10) on prs-decisions.json (merged pull requests, docs-links unless
+# said) and reverts-drill.json. The newest factory record of each pull request counts:
+#   #21 would-arm a21 files=1/3 lines=12/20 glm-5.3, merged at a21, drill-reverted
+#   #22 holdout_red hand-off, then the newer would-arm a22 files=2/3 lines=4/20 glm-5.3, merged at a22
+#   #23 would-arm a23 files=1/3 lines=8/20 kimi-k3, merged at b23 (changed)
+#   #24 hand-off patch_too_large a24 files=1/3 lines=30/20, merged at a24
+#   #25 hand-off patch_too_large a25 files=-/3 lines=-/20 (diff unread), merged at a25
+#   #26 hand-off file_not_allowed a26, merged at b26 (changed)
+#   #27 hand-off not_mergeable whose record reads arm:armed files=1/3 lines=5/20, merged at a27
+#   #28 class review: left out by --class
+#   #29 would-arm a29 files=1/3 lines=3/20 reviewer=- (no model named), merged at a29, reverted
+#   #31 armed a31 files=1/3 lines=15/20, merged by the merger
+#   #32 a record in someone else's comment: left out
+cat > "$tmp/gh-decisions" <<'EOF4'
+#!/usr/bin/env bash
+case "$*" in *"Revert in:title"*) cat scripts/testdata/tally/reverts-drill.json ;; *) cat scripts/testdata/tally/prs-decisions.json ;; esac
+EOF4
+chmod +x "$tmp/gh-decisions"
+decisions() { GH="$tmp/gh-decisions" scripts/shadow-merge-tally.sh --class docs-links "$@"; }
+# Would-arm pull requests: #21 and #22 merged unchanged (#21 a drill too), #23 changed, #29 reverted.
+# Per model: glm-5.3 #21 #22; kimi-k3 #23; #29 names none.
+out="$(decisions)"
+want='#21 merged_unchanged drill
+#22 merged_unchanged
+#23 changed
+#29 reverted
+merged_unchanged=2 changed=1 reverted=1 auto_merged=0 drill=1
+reviewer glm-5.3: merged_unchanged=2 changed=0
+reviewer kimi-k3: merged_unchanged=0 changed=1'
+if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
+# --replay: the would-arm and arm decisions (#21 #22 #23 #29 #31) and the patch_too_large ones
+# (#24, #25 unread). Not #26 (file_not_allowed) nor #27 (a hand-off, never an arm).
+# lines=10: would arm #22(4) #23(8) #29(3); refuse #21(12) #24(30) #31(15); #25 unreplayable.
+expect "$(decisions --replay lines=10 | tail -1)" "replay lines=10: would_arm=3 would_refuse=3 unreplayable=1" "--replay lines=10"
+# lines=40: all six would arm (#24's files 1 is within its cap of 3).
+expect "$(decisions --replay lines=40 | tail -1)" "replay lines=40: would_arm=6 would_refuse=0 unreplayable=1" "--replay lines=40"
+# files=1: would arm #21 #23 #29 #31; refuse #22 (files 2) and #24 (lines 30 over its cap of 20).
+expect "$(decisions --replay files=1 | tail -1)" "replay files=1: would_arm=4 would_refuse=2 unreplayable=1" "--replay files=1"
+# --strictness: refused by a class row #24 #25 (patch_too_large) #26 (file_not_allowed); merged
+# unchanged at that head #24 #25. #22's holdout_red is not its newest decision; #27 is not a row's.
+expect "$(decisions --strictness | tail -1)" "strictness: refused=3 refused_merged_unchanged=2" "--strictness"
+for bad in lines files=x size=3 lines=; do
+  if decisions --replay "$bad" >/dev/null 2>&1; then echo "FAIL: --replay $bad is refused" >&2; exit 1; fi
+done
 echo ok

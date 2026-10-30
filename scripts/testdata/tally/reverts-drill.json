@@ -1,0 +1,6 @@
+[
+ {"body":"Reverts Smana/cloud-native-ref#21","labels":[{"name":"factory/revert-of:#21"},{"name":"factory/drill"}],"state":"MERGED"},
+ {"body":"Reverts Smana/cloud-native-ref#29","labels":[],"state":"MERGED"},
+ {"body":"Reverts Smana/cloud-native-ref#201","labels":[{"name":"factory/revert-of:#201"},{"name":"factory/drill"}],"state":"MERGED"},
+ {"body":"","labels":[{"name":"factory/revert-of:#202"}],"state":"MERGED"}
+]

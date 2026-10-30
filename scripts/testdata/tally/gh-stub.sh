@@ -4,7 +4,8 @@
 d="$(dirname "$0")"
 echo "$*" >> "${GH_LOG:-/dev/null}"
 case "$*" in
-  *"Revert in:title"*) echo '[]' ;;
+  # Fixture "drill" has reverts: reverts-drill.json, one of them a factory/drill revert.
+  *"Revert in:title"*) f="$d/reverts-${TALLY_FIXTURE:-}.json"; [ -f "$f" ] && cat "$f" || echo '[]' ;;
   # A later pull request carries factory/follow-up-of:#<n>: only fixture "followup" has one, of #100.
   *'label:"factory/follow-up-of:#100"'*) [ "${TALLY_FIXTURE:-}" = followup ] && echo '[{"number":900}]' || echo '[]' ;;
   *'label:"factory/follow-up-of:#'*) echo '[]' ;;

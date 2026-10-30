@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"maps"
 	"regexp"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 
 	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/decision"
 	"github.com/Smana/maku/internal/factory/filefence"
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/mdlinks"
@@ -218,15 +220,39 @@ func onDiffFor(c Condition, cl config.Class) bool {
 		c.Key == "diffShape" && (cl.DiffShape == "semver-patch" || cl.DiffShape == "semver-minor")
 }
 
-// declared checks the class's declared conditions in order: the first refusal, or "".
-func declared(cl config.Class, in ArmInputs) (string, bool) {
+// rowOf names the decision record's string row a condition fills (AM8); the file conditions
+// read the counts DecideArm records.
+var rowOf = map[string]func(*decision.Rows) *string{
+	"diffShape":       func(r *decision.Rows) *string { return &r.Shape },
+	"releaseAgeCheck": func(r *decision.Rows) *string { return &r.Age },
+	"holdoutChecks":   func(r *decision.Rows) *string { return &r.Holdout },
+	"oracle":          func(r *decision.Rows) *string { return &r.Oracle },
+}
+
+// declared checks the class's declared conditions in order: the first refusal, or "". It fills
+// rows with what it read (AM8): "n/a" for a row the class does not declare, "ok" for one that
+// held, the reason for the one that refused ("pending" for a release age still waiting), and ""
+// for a declared row it did not reach or a diff row while the diff is unread.
+func declared(cl config.Class, in ArmInputs, rows decision.Rows) (decision.Rows, string, bool) {
+	for _, c := range Conditions() {
+		if row, ok := rowOf[c.Key]; ok && !c.Declared(cl) {
+			*row(&rows) = "n/a"
+		}
+	}
 	for _, c := range Conditions() {
 		if !c.Declared(cl) || (!in.DiffRead && onDiffFor(c, cl)) {
 			continue
 		}
-		if reason, wait := c.Check(cl, in); reason != "" {
-			return reason, wait
+		reason, wait := c.Check(cl, in)
+		if row, ok := rowOf[c.Key]; ok {
+			*row(&rows) = cmp.Or(reason, "ok")
+			if wait && c.Key == "releaseAgeCheck" {
+				*row(&rows) = "pending"
+			}
+		}
+		if reason != "" {
+			return rows, reason, wait
 		}
 	}
-	return "", false
+	return rows, "", false
 }

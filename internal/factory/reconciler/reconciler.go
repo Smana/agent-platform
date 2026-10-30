@@ -93,7 +93,8 @@ type metrics interface {
 	PROutcome(ctx context.Context, class, outcome string)
 	MonitorVerdict(ctx context.Context, class, verdict string)
 	MonitorVerification(ctx context.Context, class, verdict string)
-	HumanWait(ctx context.Context, phase string, d time.Duration)
+	HumanWait(ctx context.Context, phase, reason, class string, d time.Duration)
+	HandoffToMerge(ctx context.Context, class, reason, how string, d time.Duration)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
@@ -254,7 +255,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		for _, f := range fx.after {
 			f(ctx)
 		}
-		r.waited(ctx, before, &t.Status)
+		r.waited(ctx, &t, before, &t.Status)
 	}
 	// Only a written outbox is posted (review M-a), only written facts reach the room, and only a
 	// written end exports the task's span: a write that conflicts posts and exports nothing, and its
@@ -394,15 +395,19 @@ func (r *Reconciler) payer(t *v1alpha1.Task) string {
 }
 
 // waited adds a written exit from AwaitingHuman or Escalated to the payer's waits (SI8): the time
-// from the phase's start to the next phase's, both as the status records them.
-func (r *Reconciler) waited(ctx context.Context, before, after *v1alpha1.TaskStatus) {
+// from the phase's start to the next phase's, both as the status records them, by the hand-off's
+// reason and the task's class (AM9).
+func (r *Reconciler) waited(ctx context.Context, t *v1alpha1.Task, before, after *v1alpha1.TaskStatus) {
 	if before.Phase == after.Phase || before.PhaseSince == nil || after.PhaseSince == nil {
 		return
 	}
 	if before.Phase == v1alpha1.PhaseAwaitingHuman || before.Phase == v1alpha1.PhaseEscalated {
-		r.Metrics.HumanWait(ctx, before.Phase, after.PhaseSince.Sub(before.PhaseSince.Time))
+		r.Metrics.HumanWait(ctx, before.Phase, before.Reason, t.Spec.PredictedClass, after.PhaseSince.Sub(before.PhaseSince.Time))
 	}
 }
+
+// maxHandedOffReason is HandedOffReason's CRD bound.
+const maxHandedOffReason = 64
 
 func (r *Reconciler) to(t *v1alpha1.Task, phase, reason string) {
 	if t.Status.Phase != phase {
@@ -410,6 +415,22 @@ func (r *Reconciler) to(t *v1alpha1.Task, phase, reason string) {
 		t.Status.PhaseSince = &now
 	}
 	t.Status.Phase, t.Status.Reason = phase, reason
+	// AM9: the pull request's first hand-off to a human starts its hand-off to merge clock, from
+	// every site that hands off.
+	if ref := t.Status.PullRequest; phase == v1alpha1.PhaseAwaitingHuman && ref != nil && ref.HandedOffAt == nil {
+		ref.HandedOffAt, ref.HandedOffReason = t.Status.PhaseSince.DeepCopy(), reason[:min(len(reason), maxHandedOffReason)]
+	}
+}
+
+// handedOffMerged records a merged pull request's wait from its first hand-off to its merge (AM9),
+// how being approved or human; a pull request never handed off records nothing.
+func (r *Reconciler) handedOffMerged(ctx context.Context, t *v1alpha1.Task, how string) {
+	ref := t.Status.PullRequest
+	if ref == nil || ref.HandedOffAt == nil || ref.MergedAt == nil {
+		return
+	}
+	class, reason, d := t.Spec.PredictedClass, ref.HandedOffReason, ref.MergedAt.Sub(ref.HandedOffAt.Time)
+	record(ctx, func(ctx context.Context) { r.Metrics.HandoffToMerge(ctx, class, reason, how, d) })
 }
 
 // repo is the config entry of the task's repository (v2 D1).

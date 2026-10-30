@@ -285,8 +285,12 @@ func (m *fakeMetrics) PROutcome(ctx context.Context, class, outcome string) {
 	m.add("pr " + class + " " + outcome)
 	m.who(ctx, "pr "+outcome)
 }
-func (m *fakeMetrics) HumanWait(ctx context.Context, phase string, d time.Duration) {
+func (m *fakeMetrics) HumanWait(ctx context.Context, phase, reason, class string, d time.Duration) {
 	m.who(ctx, fmt.Sprintf("wait %s %.0f", phase, d.Seconds()))
+	m.add(fmt.Sprintf("wait %s %s %s %.0f", phase, reason, class, d.Seconds()))
+}
+func (m *fakeMetrics) HandoffToMerge(_ context.Context, class, reason, how string, d time.Duration) {
+	m.add(fmt.Sprintf("handoff_to_merge %s %s %s %.0f", class, reason, how, d.Seconds()))
 }
 func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template, class string) {
 	m.add("task_tokens " + strconv.FormatInt(tokens, 10) + " " + tier + " " + template + " " + class)

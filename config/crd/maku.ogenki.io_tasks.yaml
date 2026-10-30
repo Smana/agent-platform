@@ -903,6 +903,17 @@ spec:
                     description: 'Drill: the revert was a maintainer''s drill (AM6);
                       the breaker does not count it.'
                     type: boolean
+                  handedOffAt:
+                    description: |-
+                      HandedOffAt is the first hand-off to a human (AM9): the start of the hand-off to merge
+                      histogram. Set once, by the first entry to AwaitingHuman with a pull request.
+                    format: date-time
+                    type: string
+                  handedOffReason:
+                    description: HandedOffReason is the reason of the first hand-off
+                      to a human (AM9), the histogram's label.
+                    maxLength: 64
+                    type: string
                   headSHA:
                     description: |-
                       The head when the pull request was found, then the head the merge gate last acted on: merged,
