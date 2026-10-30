@@ -819,8 +819,8 @@ A shadow decision's comment carries the head it judged and what a live class wou
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
-**The decision record (AM8).** Every non-wait decision of the gate (arm, shadow, human, escalate,
-`ci_red`, `ci_cancelled`, and the adopted-class decisions) also appends one hidden line to its
+**The decision record (AM8).** Every non-wait decision the gate's rows reach (arm, shadow, human, escalate,
+`ci_red`, and the adopted-class decisions) also appends one hidden line to its
 comment, with the values each row read, so a tally can replay a cap later:
 
 ```
@@ -845,20 +845,31 @@ record is **its own `agent-factory-decision` line, beside the event marker, not 
 recorded deviation from AM8's single marker (R-m11), which leaves the would-arm marker and the
 tally's regex for it unchanged. The same facts go to the log as `merge decision` with `rows=`.
 
-A decision before the gate reads its rows carries no record: `class_mismatch`, `merge_gate_off`,
-`ledger_truncated` and a wait. `ledger_truncated` is decided before the gate (R-m13) and stays the
-one input that still stops a shadow record. Early refusals (the base checks, the author, an
-unarmed class) carry one with every count unread.
+Some hand-offs carry no record:
+- the ones decided before the rows are read: `merge_gate_off`, `ledger_truncated`, and
+  `class_mismatch` when the prediction differs from the class policy-bot matched;
+- the waits' own endings, `ci_cancelled` (the re-run budget spent) and `ci_wait_expired`.
+
+A `class_mismatch` raised by the class's declared conditions (row 8) is a decision of the gate and
+carries a record, which is why `--strictness` counts it as a refusing row. `ledger_truncated` is
+decided before the gate (R-m13) and stays the one input that still stops a shadow record. Early
+refusals (the base checks, the author, an unarmed class) carry a record with every count unread.
 
 **The human path's metrics (AM9)** ([operations](operations.md#factory-metrics)):
-`maku_factory_merge_decisions_total` gains `repository`; `maku_factory_human_wait_seconds_total`
-gains `reason` and `class` (the hand-off's reason, and the task's class); and
-`maku_factory_handoff_to_merge_seconds{class,reason,how}` is a histogram of the time from a pull
-request's first hand-off to its merge, `how` being `approved` (the merger, on a maintainer's
-approval) or `human`. The clock starts at the first `AwaitingHuman` entry, recorded in
-`status.pullRequest.handedOffAt`: **a task already in `AwaitingHuman` when Maku is upgraded has
-none, and its merge records no observation.** `reason` is bounded to the factory's own wait
-reasons, and any other value reads `other`: a free-text run end that escalated the task, and an escalation code that is not a narrated wait reason.
+- `maku_factory_merge_decisions_total` gains `repository`.
+- `maku_factory_human_wait_seconds_total` gains `reason` (the hand-off's) and `class` (the task's).
+- `maku_factory_handoff_to_merge_seconds{class,reason,how}` is a histogram of the time from a pull
+  request's first hand-off to its merge. `how` is `approved` (the merger, on a maintainer's
+  approval) or `human`.
+
+The clock starts at the first `AwaitingHuman` entry, recorded in
+`status.pullRequest.handedOffAt`. **A task already in `AwaitingHuman` when Maku is upgraded has
+none, and its merge records no observation.**
+
+`reason` passes the factory's own closed codes: the wait reasons, the escalation codes
+(`budget-*`, `revoked`, `deleted`, `manual`, and the like), the meter's revocations and the run
+ends (`run_lost`, `resumes_exhausted`, `PodLost`, `Disrupted`, `PodFailed`, and the lowered terminal
+phases). Only free text reads `other`, such as a hand-written `revoked` annotation.
 
 ### Adopted classes
 
@@ -1103,10 +1114,11 @@ The [decision record](#the-merge-gate) (AM8) makes two more counts possible:
 
 ```
 scripts/shadow-merge-tally.sh --class docs-links --replay lines=40 --strictness
-replay lines=40: would_arm=6 would_refuse=0 unreplayable=1
-strictness: refused=3 refused_merged_unchanged=2
+merged_unchanged=2 changed=1 reverted=1 auto_merged=0 drill=1
 reviewer glm-5.3: merged_unchanged=2 changed=0
 reviewer kimi-k3: merged_unchanged=0 changed=1
+replay lines=40: would_arm=6 would_refuse=0 unreplayable=1
+strictness: refused=3 refused_merged_unchanged=2
 ```
 
 - `--replay lines=N` (or `files=N`) says how many recorded decisions would arm under another cap.
