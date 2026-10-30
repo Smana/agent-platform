@@ -660,3 +660,23 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 		t.Fatalf("an approved merge is never labelled auto-merged: %q", g.f.Added(12))
 	}
 }
+
+// AM1: a maintainer's own merge of a pull request the merger was sent on the approval is a human
+// merge: MergedHow is cleared, so factory/revert never opens a revert of it.
+func TestAHumanMergeAfterAnApprovedArmIsNotTheMergers(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAutoMerging)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	_ = g.c.Status().Update(t.Context(), &tk)
+	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1", MergedAt: now})
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.MergedHow != "" || got.Status.PullRequest.ApprovedBy != "" ||
+		slices.Contains(g.f.Added(12), ApprovedMergeLabel) {
+		t.Fatalf("%s %+v %q", got.Status.Phase, got.Status.PullRequest, g.f.Added(12))
+	}
+	got.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	if g.r.revertable(got) {
+		t.Fatal("a human's merge is never reverted by the factory")
+	}
+}

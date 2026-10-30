@@ -712,6 +712,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		ref.AutoMerged = merger // AutoMerged: merged by the merger App on the class's conditions (R52)
 		if !ref.AutoMerged {
+			ref.MergedHow, ref.ApprovedBy = "", "" // a human's merge, not the merger's: nothing to revert (AM1)
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		}
