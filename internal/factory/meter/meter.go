@@ -1326,10 +1326,11 @@ func (m *Meter) observeCost(ctx context.Context, r runs.Run, usd map[string]int6
 type costKey struct{ tier, role string }
 
 // costRole is the role a run's cost is reported under (harness roles HR6): the claim's role, except
-// that a triager run whose brief opens with the scoper marker is "scoper". The marker counts at
-// offset 0 only: the rest of a brief carries issue text, which could write the same line.
+// that a factory triager run whose brief opens with the scoper marker is "scoper". The marker counts
+// at offset 0 only: the rest of a brief carries issue text, which could write the same line; and on
+// the factory's runs only: an API caller writes its whole brief.
 func costRole(r runs.Run) string {
-	if r.Role == "triager" && strings.HasPrefix(r.TaskText, runs.ScoperMarkerPrefix) {
+	if r.Role == "triager" && r.Principal == runs.PrincipalFactory && strings.HasPrefix(r.TaskText, runs.ScoperMarkerPrefix) {
 		return "scoper"
 	}
 	return r.Role
