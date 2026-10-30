@@ -21,7 +21,7 @@ flowchart LR
   get -->|"yes, another object"| conflict["conflict: original kept"]
   create --> status["status subresource"] --> confirm{"read back equal?"}
   confirm -->|no| failed["failed: original kept"]
-  confirm -->|yes| lift["lift migrating"] --> release["remove the original's finalizers"] --> del["delete the original<br/>(uid + resourceVersion precondition)"]
+  confirm -->|yes| lift["lift migrating"] --> release["remove the original's finalizers"] --> del["delete the original<br/>(uid + resourceVersion precondition;<br/>on a conflict, re-read and retry<br/>while spec, status, labels, annotations hold)"]
 ```
 
 - Without `--apply` nothing is written: each object is listed as `would-copy` or `would-resume`.
@@ -173,7 +173,9 @@ again: the re-run resumes what the first left.
 **Rollback:** the reverse run, with the v0.31.0 controllers **stopped first**. v0.31.0 watches
 `maku.ogenki.io`, the reverse run's `--from`: a running Room controller re-adds the
 `maku.ogenki.io/room-log` finalizer as soon as the run removes it, and the factory reconciles the
-Tasks, so every guarded delete conflicts and every object ends `failed`. The code has no pause
+Tasks, so the guarded deletes conflict. The run re-reads and retries a conflicted delete a few
+times, while the original's spec, status, labels and annotations are still those it copied; a
+controller that keeps writing outlasts the retries, and its objects end `failed`. The code has no pause
 switch: pause what owns each Deployment, so nothing scales it back, then scale both to zero and
 check that they stay there. On ai-native-ref:
 

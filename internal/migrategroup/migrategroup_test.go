@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -312,6 +313,49 @@ func TestRun(t *testing.T) {
 			},
 		},
 		{
+			name:  "a delete refused once on a conflict is retried, and the original goes",
+			objs:  []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			fail:  conflictOnce("delete", oldG),
+			apply: true, want: []Outcome{Migrated},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); ok {
+					t.Error("one conflict on the delete kept the original")
+				}
+			},
+		},
+		{
+			name: "a delete that conflicts every time is retried a bounded number of times, then fails",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			fail: func(op, group, name string) error {
+				if op == "delete" && group == oldG {
+					return conflict(group, name)
+				}
+				return nil
+			},
+			apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				if !apierrors.IsConflict(r[0].Err) {
+					t.Errorf("err %v, want the last conflict", r[0].Err)
+				}
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
+					t.Error("the original is gone")
+				}
+			},
+		},
+		{
+			name: "a controller that re-adds its finalizer before the delete is outrun on a retry",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: refinalizing, apply: true, want: []Outcome{Migrated},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); ok {
+					t.Error("the controller's finalizer kept the original")
+				}
+				if _, ok := get(t, c, newG, "Room", "aaaaaaaa"); !ok {
+					t.Error("the copy is gone")
+				}
+			},
+		},
+		{
 			name: "a resumed copy already live keeps its newer status",
 			objs: func() []client.Object {
 				cp := room(newG, "aaaaaaaa", "c1")
@@ -417,6 +461,47 @@ func rewriting(c client.Client) client.Client {
 					return err
 				}
 				cur.SetLabels(map[string]string{"rewritten": "yes"})
+				if err := w.Update(ctx, cur); err != nil {
+					return err
+				}
+			}
+			return w.Delete(ctx, o, opts...)
+		},
+	})
+}
+
+// conflict is the API server's answer to a write whose resourceVersion precondition went stale.
+func conflict(group, name string) error {
+	return apierrors.NewConflict(schema.GroupResource{Group: group, Resource: "rooms"}, name, errors.New("the object has been modified"))
+}
+
+// conflictOnce refuses the first call op makes under group with a conflict.
+func conflictOnce(op, group string) fail {
+	done := false
+	return func(o, g, name string) error {
+		if done || o != op || g != group {
+			return nil
+		}
+		done = true
+		return conflict(g, name)
+	}
+}
+
+// refinalizing wraps c so that, before the first delete under the source group, a controller adds
+// its finalizer back to the original, as a running Room controller does once migrate-group strips it.
+// Only metadata changes: the delete's resourceVersion precondition fails on its own.
+func refinalizing(c client.Client) client.Client {
+	done := false
+	return interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, w client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+			if !done && o.GetObjectKind().GroupVersionKind().Group == oldG {
+				done = true
+				cur := &unstructured.Unstructured{}
+				cur.SetGroupVersionKind(o.GetObjectKind().GroupVersionKind())
+				if err := w.Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
+					return err
+				}
+				cur.SetFinalizers([]string{oldG + "/room-log"})
 				if err := w.Update(ctx, cur); err != nil {
 					return err
 				}
