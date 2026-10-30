@@ -386,6 +386,18 @@ implementer: `standard` after `frontier`, `frontier` otherwise. It takes that ti
 the template sets `reviewerModel`, its model: `pair: {roles: [implementer, reviewer], reviewerModel:
 tier-frontier}` reviews every `pair` task on `tier-frontier` whatever the implementer's tier.
 
+The reviewer's brief (HR4) names the acceptance checks before the issue snapshot, carries the pull
+request, and asks for correctness-only findings with the command and output behind each; an
+approval with no gaps found is a complete review. It never quotes the implementer's handoff. The
+checks are the scope's, with the files it touches, as fenced data; without a scope, the issue's own
+acceptance section or `Acceptance:` paragraph, quoted up to 4 KiB; without either, the brief says the
+task states none. The reviewer's `AgentRun` carries the brief as `spec.task.text` beside the pull
+request in `spec.task.url`: the CRD admits both for a reviewer only, every other role sets exactly one.
+A cluster whose AgentRun schema predates this (the host's XRD, or a CRD not upgraded) refuses the
+claim; the factory then creates it with the URL alone, today's reviewer, and says once in the room that
+the reviewer runs without its brief and the schema needs the update. A URL-only claim refused too
+takes the usual path.
+
 A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
 a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`
 is implicit, and declared only to give every other task `checks` and `testFirst` (it takes nothing else). Each class is `live` (auto-merges), `shadow` (decided, never
@@ -1166,6 +1178,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
 | `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDailyUSD`, `humanDailyUSD` ([daily budgets](#daily-budgets)), `perPerson: {enabled, dailyUSD}` ([per-person caps](#per-person-caps)), each day positive. The token days `factoryDaily`, `humanDaily` and `perPerson.dailyTokens` load in this release only, ignored, each named in a startup warning | `enforceTask` true, `factoryDailyUSD` 42.50, `humanDailyUSD` 8.50, `perPerson.enabled` false, `perPerson.dailyUSD` `humanDailyUSD` |
 | `resume` | `maxPerTask` (1–5) | 2 |
+| `scoper` | `nudgeAt`, `maxToolCalls` (`1 <= nudgeAt < maxToolCalls <= 200`): the [scoper](#the-scoper)'s tool-call bounds, written as its brief's first line, `<!-- agent-factory scoper nudgeAt=N maxToolCalls=M -->`, which stays first when the run is resumed | `nudgeAt` 25, `maxToolCalls` 40, each defaulted alone |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
 | `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m); `projectIDFile` and `sponsored`, see [sponsored principals](#sponsored-principals) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
@@ -1259,10 +1272,13 @@ tier's run caps (at the task's own tier when it was offered a [split](#splits), 
 every part), and hands the implementer a bounded task through `room_handoff`'s `scope`: the
 change, the files, the paths to leave alone, a plan, its assumptions and its acceptance checks.
 Every implementer brief carries it after the steering note. The brief asks for the handoff as soon
-as the scope is known, within about 25 tool calls. A scoper that leaves none starts the
-implementer unscoped, and the room says so (a run cap counts as `budget` in
-`maku_factory_scoper_runs_total`); a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
-(`run_unschedulable`), no budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
+as the scope is known, within `scoper.nudgeAt` tool calls (25 by default). The harness bounds its
+exploration: it nudges at `scoper.nudgeAt` tool calls and ends the run at `scoper.maxToolCalls`
+(40 by default), counted as `budget_calls`. A scoper that ends without a handoff, on any end,
+starts the implementer unscoped, and the room says so. A run cap counts as `budget` in
+`maku_factory_scoper_runs_total`, the tool-call limit as `budget_calls`. A person's stop, an
+exhausted budget (task, payer, fleet or person), an unschedulable run (`run_unschedulable`), no
+budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
 default answers bounces the task to the issue's author (`needs_author`); a task without an issue
 takes the scoper's first assumption instead.
 

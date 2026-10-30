@@ -563,6 +563,7 @@ func TestEndReasonReadsTheLoopEndFirst(t *testing.T) {
 		{"a stall ends a paused conversation", run("Failed", ""), "paused", "stalled", "stalled"},
 		{"the judge said impossible", run("Failed", ""), "finished", "judge_impossible", "judge_impossible"},
 		{"the continuations are spent", run("Failed", ""), "finished", "not_met", "not_met"},
+		{"the scoper's tool-call limit", run("Failed", ""), "paused", "budget_calls", "budget_calls"},
 		{"an unknown end is ignored", run("Failed", ""), "finished", "met", "agent_finished"},
 		{"a succeeded run ignores an end", run("Succeeded", ""), "finished", "stalled", "agent_finished"},
 		{"the budget wins", run("BudgetExhausted", "budget-run"), "paused", "stalled", "budget-run"},

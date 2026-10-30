@@ -301,6 +301,40 @@ func TestResumeDefault(t *testing.T) {
 	}
 }
 
+// Harness roles HR2: the scoper's exploration bounds live in the config, default 25/40, and a
+// nudge at or past the limit, below one, or a limit over 200, is refused at start.
+func TestScoperBoundsDefaultAndValidate(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Scoper != (Scoper{NudgeAt: 25, MaxToolCalls: 40}) {
+		t.Fatalf("an omitted scoper is 25/40: %+v", c.Scoper)
+	}
+	if c, err = Parse([]byte(good + "scoper: {nudgeAt: 10, maxToolCalls: 200}\n")); err != nil || c.Scoper != (Scoper{NudgeAt: 10, MaxToolCalls: 200}) {
+		t.Fatalf("the file's bounds: %+v, %v", c.Scoper, err)
+	}
+	if c, err = Parse([]byte(good + "scoper: {maxToolCalls: 60}\n")); err != nil || c.Scoper != (Scoper{NudgeAt: 25, MaxToolCalls: 60}) {
+		t.Fatalf("an omitted bound is defaulted alone: %+v, %v", c.Scoper, err)
+	}
+	for name, s := range map[string]Scoper{
+		"nudge at the limit": {NudgeAt: 40, MaxToolCalls: 40},
+		"nudge past it":      {NudgeAt: 41, MaxToolCalls: 40},
+		"limit over 200":     {NudgeAt: 25, MaxToolCalls: 201},
+		"nudge zero":         {NudgeAt: 0, MaxToolCalls: 40},
+		"negative nudge":     {NudgeAt: -1, MaxToolCalls: 40},
+	} {
+		v := *c
+		v.Scoper = s
+		if err := v.Validate(); err == nil || !strings.Contains(err.Error(), "scoper: 1 <= nudgeAt < maxToolCalls <= 200") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := Parse([]byte(good + "scoper: {nudgeAt: 50}\n")); err == nil || !strings.Contains(err.Error(), "scoper") {
+		t.Fatalf("a nudge past the default limit is refused: %v", err)
+	}
+}
+
 // v2 suspend: runs are never made suspendable unless the file says so.
 func TestSandboxSuspendIsOff(t *testing.T) {
 	c, err := Parse([]byte(good))

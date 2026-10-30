@@ -51,7 +51,8 @@ func otherTier(tier string) string {
 	return "frontier"
 }
 
-// verifierSpec: a read-only role starts from the task's branch with the pull request as its task (R25).
+// verifierSpec: a read-only role starts from the task's branch with the pull request as its task (R25);
+// startVerifier adds a reviewer's brief (HR4), which needs the room.
 func (r *Reconciler) verifierSpec(t *v1alpha1.Task, role string) runs.Spec {
 	s := r.implementerSpec(t, "")
 	s.Role, s.TaskText, s.TaskURL, s.BaseRef = role, "", t.Status.PullRequest.URL, "agent/"+t.Name
@@ -90,6 +91,13 @@ func (r *Reconciler) startVerifier(ctx context.Context, t *v1alpha1.Task, pr for
 		role = r.nextVerifier(t, "implementer")
 	}
 	s := r.verifierSpec(t, role)
+	if role == "reviewer" { // HR4: the factory's brief rides beside the pull request (task.url)
+		sc, err := r.taskScope(ctx, t)
+		if err != nil {
+			return err
+		}
+		s.TaskText = ReviewerBrief(t, r.Nonce(), sc)
+	}
 	s.Head = pr.HeadSHA // rides the claim (AnnHead): a replay that records the run knows its head
 	if err := r.startRun(ctx, t, s, "review"); err != nil {
 		return err

@@ -49,7 +49,7 @@ func (r *Reconciler) startScoper(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	if !ok {
-		text = ScoperBrief(t, r.Nonce())
+		text = ScoperBrief(t, r.Nonce(), r.Cfg.Scoper)
 	}
 	return r.startRun(ctx, t, r.scoperSpec(t, text), nextTrigger(t))
 }
@@ -104,25 +104,42 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	return r.bounce(ctx, t, sc, seq)
 }
 
-// acceptanceHeading is the section the issue template and the judge read (loop_policy.acceptance):
-// a heading starting with "acceptance"; its body runs to the next heading.
+// The acceptance the issue states, read as the judge reads it (loop_policy.acceptance, HR3): a heading
+// starting with "acceptance", its body running to the next heading or fence line; else a paragraph whose
+// first line starts "Acceptance:", running to the next blank line or fence line. The two readers share
+// images/maku-harness/tests/acceptance.
 var (
 	acceptanceHeading = regexp.MustCompile(`(?im)^#{1,6}[ \t]*acceptance\b[^\n]*$`)
-	nextHeading       = regexp.MustCompile(`(?m)^#{1,6}[ \t]`)
+	sectionEnd        = regexp.MustCompile(`(?m)^(?:#{1,6}[ \t]|TASK-DATA-)`)
+	inlineAcceptance  = regexp.MustCompile(`(?im)^[ \t]*acceptance:[ \t]*(\S.*)$`)
+	paragraphEnd      = regexp.MustCompile(`(?m)\n[ \t]*\n|^TASK-DATA-\S+$`)
 )
 
-// statesAcceptance: the issue text carries a non-empty acceptance section.
-func statesAcceptance(text string) bool {
-	m := acceptanceHeading.FindStringIndex(text)
-	if m == nil {
-		return false
+// acceptanceText is the acceptance the issue states: the heading's section when non-empty, else the
+// inline paragraph, else "". Pure text matching: nothing in the issue is followed or run.
+func acceptanceText(text string) string {
+	if m := acceptanceHeading.FindStringIndex(text); m != nil {
+		rest := text[m[1]:]
+		if n := sectionEnd.FindStringIndex(rest); n != nil {
+			rest = rest[:n[0]]
+		}
+		if s := strings.TrimSpace(rest); s != "" {
+			return s
+		}
 	}
-	rest := text[m[1]:]
-	if n := nextHeading.FindStringIndex(rest); n != nil {
-		rest = rest[:n[0]]
+	if m := inlineAcceptance.FindStringSubmatchIndex(text); m != nil {
+		rest := text[m[2]:]
+		if n := paragraphEnd.FindStringIndex(rest); n != nil {
+			rest = rest[:n[0]]
+		}
+		return strings.TrimSpace(rest)
 	}
-	return strings.TrimSpace(rest) != ""
+	return ""
 }
+
+// statesAcceptance: the issue text carries a non-empty acceptance section or an inline Acceptance:
+// paragraph (HR3).
+func statesAcceptance(text string) bool { return acceptanceText(text) != "" }
 
 // askForAcceptance turns a ready scope of an issue that states no acceptance into the question the
 // author answers. What the scoper proposed becomes the assumption a maintainer may proceed on.
@@ -162,13 +179,17 @@ func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope
 	return nil, nil, 0, "", nil
 }
 
-// scoperFailed is a scoper run that ended without a handoff, on its run cap or any other end that
-// fails open: the task runs whole, unscoped, and the room says so (drill 6ysg5vvt). A run cap is
+// scoperFailed is a scoper run that ended without a handoff, on its run cap, its tool-call limit
+// (HR2: the harness's budget_calls) or any other end that fails open: the task runs whole,
+// unscoped, and the room says so (drill 6ysg5vvt). A run cap and the tool-call limit are each
 // counted apart from other failures. The note is best effort.
 func (r *Reconciler) scoperFailed(ctx context.Context, t *v1alpha1.Task, reason string) error {
 	what, outcome := "the scoper's run ended before handing off ("+narrate.Reason(reason)+")", "failed"
-	if reason == "budget-run" {
+	switch reason {
+	case "budget-run":
 		what, outcome = "the scoper ran out of budget before handing off", "budget"
+	case envelope.EndBudgetCalls:
+		what, outcome = "the scoper reached its tool-call limit before handing off", envelope.EndBudgetCalls
 	}
 	r.log().Warn("the scoper ended without a handoff; the task runs whole", "task.id", t.Name, "reason", reason)
 	if err := narrate.Room(ctx, r.Rooms, t, "scope-failed", "Agent factory: "+what+"; the task runs whole, with no scope or split.",

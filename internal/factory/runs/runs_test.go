@@ -49,7 +49,23 @@ func TestBuildIsTheSP1Claim(t *testing.T) {
 	r.Role, r.TaskText, r.TaskURL = "reviewer", "", "https://github.com/Smana/cloud-native-ref/pull/12"
 	u = Build(r)
 	if _, found, _ := unstructured.NestedString(u.Object, "spec", "task", "text"); found {
-		t.Error("task.text and task.url are exclusive (XRD CEL)")
+		t.Error("a reviewer with no brief writes no task.text")
+	}
+}
+
+// HR4: a reviewer's claim carries the factory's brief beside the pull request's URL; every other
+// role keeps exactly one of the two (the CRD's CEL), the URL winning.
+func TestBuildKeepsBothTaskFieldsForAReviewerOnly(t *testing.T) {
+	const pr = "https://github.com/Smana/cloud-native-ref/pull/12"
+	for role, wantText := range map[string]bool{"reviewer": true, "implementer": false, "tester": false, "triager": false} {
+		s := spec()
+		s.Role, s.TaskText, s.TaskURL = role, "You are the reviewer", pr
+		u := Build(s)
+		text, found, _ := unstructured.NestedString(u.Object, "spec", "task", "text")
+		url, _, _ := unstructured.NestedString(u.Object, "spec", "task", "url")
+		if url != pr || found != wantText || (wantText && text != "You are the reviewer") {
+			t.Errorf("%s: task.url %q, task.text %q (written %v), want text written %v", role, url, text, found, wantText)
+		}
 	}
 }
 

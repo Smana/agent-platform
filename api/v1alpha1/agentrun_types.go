@@ -32,6 +32,7 @@ type AgentRunList struct {
 
 // AgentRunSpec is what the run does, on which repository, for whom.
 // +kubebuilder:validation:XValidation:rule="self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))",message="a reviewer run needs a pull request URL as its task"
+// +kubebuilder:validation:XValidation:rule="self.role == 'reviewer' || !has(self.task.text) || !has(self.task.url)",message="only a reviewer run carries both task.text and task.url"
 // +kubebuilder:validation:XValidation:rule="!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')",message="task.url must point into spec.repository"
 // +kubebuilder:validation:XValidation:rule="self.dataClass != 'internal' || !has(self.egress) || !has(self.egress.profiles) || size(self.egress.profiles) == 0",message="an internal run takes no egress profiles"
 // +kubebuilder:validation:XValidation:rule="has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)",message="branch is immutable and cannot be added or removed after creation"
@@ -115,8 +116,9 @@ type AgentRunLoop struct {
 	Search bool `json:"search,omitempty"`
 }
 
-// AgentRunTask is exactly one of text or url.
-// +kubebuilder:validation:XValidation:rule="(has(self.text) ? 1 : 0) + (has(self.url) ? 1 : 0) == 1",message="set exactly one of task.text or task.url"
+// AgentRunTask is text or url. A reviewer's carries both, the factory's brief beside the pull request
+// (harness roles HR4); every other role's exactly one, which AgentRunSpec's rule holds.
+// +kubebuilder:validation:XValidation:rule="has(self.text) || has(self.url)",message="set task.text, task.url, or both for a reviewer"
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="task is immutable"
 type AgentRunTask struct {
 	// +kubebuilder:validation:MaxLength=16384

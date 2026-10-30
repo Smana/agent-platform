@@ -99,6 +99,30 @@ SEARCH_NUDGE_STEPS = 6  # lookup-ish steps with no search call before the one nu
 LOOKUP = re.compile(r"(?:^|[\s;&|(])(?:grep|egrep|rg|find|cat|tree|ls|head|tail|ag)\b")
 
 
+# The scoper's end (harness roles HR2): the factory writes the bounds as the scoper brief's first line. Read only
+# at offset 0 of a triager's task: the rest of the text carries the untrusted issue, which must not set a bound.
+SCOPER_MARKER = re.compile(r"<!-- agent-factory scoper nudgeAt=(\d{1,3}) maxToolCalls=(\d{1,3}) -->\n")
+SCOPER_MAX_CALLS = 200
+SCOPER_NUDGE = ("You have made %d tool calls. Hand off what you have now with room_handoff: state ready with your "
+                "guesses as assumptions, or state question. Exploring further only spends your budget.")
+SCOPER_STOP = "the scoper stopped after %d tool calls without a handoff"
+END_BUDGET_CALLS = "budget_calls"
+HANDOFF_TOOL = "room_handoff"
+
+
+def scoper_bounds(env: dict, task: str) -> tuple[int, int] | None:
+    """(nudgeAt, maxToolCalls) for a scoping run, from its brief's first line; None for any other run, or for
+    bounds outside 1 <= nudgeAt < maxToolCalls <= 200, which leave it unbounded as before (said on stderr)."""
+    m = SCOPER_MARKER.match(task) if env.get("ROLE") == "triager" else None
+    if not m:
+        return None
+    nudge_at, limit = int(m.group(1)), int(m.group(2))
+    if not 1 <= nudge_at < limit <= SCOPER_MAX_CALLS:
+        print("agent-run: scoper bound off: nudgeAt %d maxToolCalls %d" % (nudge_at, limit), file=sys.stderr, flush=True)
+        return None
+    return nudge_at, limit
+
+
 def search_task(task: str, on: bool) -> str:
     return SEARCH_BRIEF + task if on else task
 
@@ -419,7 +443,7 @@ def poll(cid: str, on_tick=None) -> int:
         if on_tick:
             try:
                 on_tick()
-            except (Stalled, BoxSpent):
+            except (Stalled, BoxSpent, CallLimit):
                 # A finish read on the poll that crosses a continuation's box, or the stall limit, is a finish:
                 # the tick's raise ends only a conversation still running.
                 if code is None:
@@ -1179,8 +1203,13 @@ class StepLog:
     text is redacted first."""
 
     def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None, ledger: str | None = None,
-                 nudge_after: int = 0):
+                 nudge_after: int = 0, scoper: tuple[int, int] | None = None, resumed: bool = False):
         self.notes = notes
+        # The scoper's bounds (HR2): one nudge at nudgeAt own tool calls, CallLimit at maxToolCalls. A handoff
+        # ends the count once its observation comes back with no error; while one is in flight, no stop.
+        # A resumed pod re-reads the first pod's events: past nudgeAt, its nudge was sent.
+        self.scoper, self.scoper_nudged, self.handed_off, self.handoffs = scoper, False, False, set()
+        self.resumed = resumed
         # Search nudge: lookup-ish steps seen with no search call; one note per run, never twice.
         self.nudge_after, self.lookups, self.search_calls, self.nudged = nudge_after, 0, 0, False
         self.cid = cid
@@ -1229,6 +1258,22 @@ class StepLog:
                 print("agent-run: search nudge failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
         if self.notes:
             self.notes.flush()
+        if self.scoper and not self.handed_off:
+            self.scoper_count(*self.scoper)
+
+    def scoper_count(self, nudge_at: int, limit: int) -> None:
+        if self.resumed:
+            self.resumed, self.scoper_nudged = False, self.scoper_nudged or self.own >= nudge_at
+        if self.own >= nudge_at and not self.scoper_nudged:
+            self.scoper_nudged = True
+            try:  # as the search nudge: no run flag, the running conversation reads it at its next step
+                http("POST", "/api/conversations/%s/events" % self.cid,
+                     {"role": "user", "content": [{"type": "text", "text": SCOPER_NUDGE % self.own}], "run": False})
+                print("agent-run: scoper nudge sent after %d tool calls" % self.own, flush=True)
+            except Exception as exc:  # noqa: BLE001 -- a nudge never fails the run
+                print("agent-run: scoper nudge failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        if self.own >= limit and not self.handoffs:
+            raise CallLimit(self.own)
 
     def describe(self, event: dict) -> str | None:
         kind = event.get("kind")
@@ -1239,6 +1284,8 @@ class StepLog:
             if self.notes:
                 self.notes.intend(event.get("tool_call_id") or "", action.get("command") or "")
             tool = event.get("tool_name") or action.get("kind")
+            if tool and (tool == HANDOFF_TOOL or tool.endswith("_" + HANDOFF_TOOL)):  # the gateway's prefixes
+                self.handoffs.add(event.get("tool_call_id") or "")
             if tool == SEARCH_TOOL:
                 self.search_calls += 1
             elif LOOKUP.search(action.get("command") or "") or tool == "grep":
@@ -1246,8 +1293,19 @@ class StepLog:
             line = "agent-run step %d: %s | %s | %s" % (self.steps, tool, _short(event.get("summary"), 120), _short(target, 200))
             # Correlation only (O22): links the line to its trace in Grafana, attributes nothing.
             return line + (" | trace_id=" + self.trace_id if self.trace_id else "")
-        if kind == "ObservationEvent" and self.notes:
-            self.notes.result(event.get("tool_call_id") or "", event.get("observation") or {})
+        if kind == "ObservationEvent":
+            call = event.get("tool_call_id") or ""
+            if call in self.handoffs:  # a refused handoff is no handoff: the count goes on
+                self.handoffs.discard(call)
+                self.handed_off = self.handed_off or not (event.get("observation") or {}).get("is_error")
+            if self.notes:
+                self.notes.result(call, event.get("observation") or {})
+        if kind == "AgentErrorEvent":
+            call = event.get("tool_call_id") or ""
+            if call:
+                self.handoffs.discard(call)
+            else:
+                self.handoffs.clear()
         if kind == "MessageEvent" and event.get("source") == "agent":
             self.last_message = redact(_text(event.get("llm_message")))
             return "agent-run message: " + _short(self.last_message, 400)
@@ -1301,6 +1359,14 @@ class Stalled(Exception):
 
 class BoxSpent(Exception):
     """A continuation outlasted its time box: its conversation never finished again."""
+
+
+class CallLimit(Exception):
+    """The scoper reached maxToolCalls without a handoff (HR2)."""
+
+    def __init__(self, calls: int):
+        super().__init__(calls)
+        self.calls = calls
 
 
 # A continuation's time box (gcp-0, 2026-10-29, task xlcx2775). The stall rule is spent at the first commit, so
@@ -1600,6 +1666,17 @@ def settle(cid: str, clock=time.monotonic, sleep=time.sleep) -> None:
         sleep(SETTLE_POLL_S)
 
 
+def scoper_poll(cid: str, steps) -> tuple[int, str | None, str]:
+    """poll with the step log as its tick: (exit code, end reason, the end's note). A scoper that reaches its
+    maxToolCalls without a handoff is interrupted and ends budget_calls (HR2); any other run ends as poll does."""
+    try:
+        return poll(cid, on_tick=steps), None, ""
+    except CallLimit as exc:
+        interrupt(cid)
+        settle(cid)
+        return 1, END_BUDGET_CALLS, SCOPER_STOP % exc.calls
+
+
 def unpushed(env: dict) -> int | None:
     """HEAD's commits the run's remote branch does not hold, as the last push left it; None when git cannot tell."""
     ref = "refs/remotes/origin/" + env.get("BRANCH", "")
@@ -1854,6 +1931,7 @@ def disrupted(env: dict, cid: str, steps) -> None:
     finally then stops agent-server and revokes the token."""
     if steps:
         steps.notes = None  # no notes on the way out: the 15 s budget is for the checkpoint
+        steps.scoper = None  # nor a scoper's count: its flush runs in a thread
     timed("pause", PAUSE_S, lambda: pause(cid))
     if env.get("ROLE") == "implementer":
         timed("checkpoint", CHECKPOINT_S, lambda: checkpoint(env, time.monotonic() + CHECKPOINT_S))
@@ -1971,8 +2049,9 @@ def main() -> int:
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
+        # A scoper's StepLog raises CallLimit, which only scoper_poll catches: a triager has no policy and no hold.
         steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None,
-                       nudge_steps(env) if search else 0)
+                       nudge_steps(env) if search else 0, scoper_bounds(env, task), resumed)
         hold = make_hold(env, base, contract, decl, prefetched) if contract else None
         if policy:
             limit = env.get("AGENT_RUN_SECONDS", "")
@@ -1981,11 +2060,14 @@ def main() -> int:
         elif hold:
             code = contract_loop(env, cid, steps, hold, notes)
         else:
-            code = poll(cid, on_tick=steps)
+            code, end, note = scoper_poll(cid, steps)
+        steps.scoper = None  # the run's end is read: the last read of the log counts nothing
         steps()
         steps.summary()
         if policy:
             print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
+        elif end:
+            print("agent-run scoper end: %s: %s" % (end, note), flush=True)
         if code == 0 and test_first(env):
             try:
                 tester_end(env, cid, base, contract_env(decl or {}, prefetched), notes,

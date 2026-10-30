@@ -322,7 +322,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("Steering notes read at triage, by class and read: used, absent, invalid or unowned (scoper design SC4, SC12)."))
 	check(err)
 	s.scoperRuns, err = meter.Int64Counter("agent_factory_scoper_runs_total",
-		metric.WithDescription("Scoper runs as they end, by class and outcome: ready, question, assumed, missing or failed (scoper design SC11, SC12)."))
+		metric.WithDescription("Scoper runs as they end, by class and outcome: ready, question, assumed, missing, failed, budget or budget_calls (scoper design SC11, SC12; harness roles HR2)."))
 	check(err)
 	s.scopeBounces, err = meter.Int64Counter("agent_factory_scope_bounces_total",
 		metric.WithDescription("Bounced tasks leaving their wait, by class and exit: relabel, retry or expired (scoper design SC8, SC12)."))
@@ -798,7 +798,7 @@ func (s *Set) SteeringRead(ctx context.Context, class, read string) {
 // ScoperRun counts a scoper run's outcome once it ends.
 func (s *Set) ScoperRun(ctx context.Context, class, outcome string) {
 	s.scoperRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed", "budget"})), s.repoOf(ctx)))
+		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed", "budget", "budget_calls"})), s.repoOf(ctx)))
 }
 
 // Split counts a split handoff's outcome once.

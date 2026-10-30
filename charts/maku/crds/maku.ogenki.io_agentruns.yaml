@@ -203,7 +203,9 @@ spec:
               suspendable:
                 type: boolean
               task:
-                description: AgentRunTask is exactly one of text or url.
+                description: |-
+                  AgentRunTask is text or url. A reviewer's carries both, the factory's brief beside the pull request
+                  (harness roles HR4); every other role's exactly one, which AgentRunSpec's rule holds.
                 properties:
                   text:
                     maxLength: 16384
@@ -214,8 +216,8 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-validations:
-                - message: set exactly one of task.text or task.url
-                  rule: '(has(self.text) ? 1 : 0) + (has(self.url) ? 1 : 0) == 1'
+                - message: set task.text, task.url, or both for a reviewer
+                  rule: has(self.text) || has(self.url)
                 - message: task is immutable
                   rule: self == oldSelf
             required:
@@ -228,6 +230,8 @@ spec:
             x-kubernetes-validations:
             - message: a reviewer run needs a pull request URL as its task
               rule: self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$'))
+            - message: only a reviewer run carries both task.text and task.url
+              rule: self.role == 'reviewer' || !has(self.task.text) || !has(self.task.url)
             - message: task.url must point into spec.repository
               rule: '!has(self.task.url) || self.task.url.startsWith(''https://github.com/''
                 + self.repository + ''/'')'

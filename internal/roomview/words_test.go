@@ -116,3 +116,10 @@ func TestStamp(t *testing.T) {
 		t.Errorf("yesterday: %q", got)
 	}
 }
+
+// HR2: a room whose scoper the harness stopped at its tool-call limit reads it in words.
+func TestTheScopersToolCallLimitHasWords(t *testing.T) {
+	if w := reasonWords("budget_calls"); w == "budget_calls" || utf8.RuneCountInString(w) > 40 {
+		t.Fatalf("reasonWords(budget_calls) = %q, want 1 to 40 runes of words", w)
+	}
+}

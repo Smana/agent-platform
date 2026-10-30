@@ -5,6 +5,8 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -21,7 +23,14 @@ import (
 // scoperRig is a scoper-mode task with the review note, past its first run's start.
 func scoperRig(t *testing.T) *rig {
 	t.Helper()
+	return scoperRigWith(t, config.Scoper{})
+}
+
+// scoperRigWith is scoperRig with the config's scoper bounds b, set before the scoper starts.
+func scoperRigWith(t *testing.T, b config.Scoper) *rig {
+	t.Helper()
 	g := scopeRig(t, config.ScopeScoper)
+	g.r.Cfg.Scoper = b
 	g.r.Cfg.Tiers["light"] = config.Tier{Model: "agent-default", RunTokens: 300_000, TaskTokens: 600_000, RunMinutes: 20}
 	g.f.SetFile(".github/agent-factory/steering/review.md", reviewNote)
 	g.reconcile(t, "3buqdlot", 3)
@@ -120,16 +129,21 @@ func TestAReadyScopeStartsTheImplementer(t *testing.T) {
 
 // SC11, SO3 (a): no scope, the caps or a stuck run start the implementer unscoped.
 func TestAScoperWithoutAScopeFailsOpen(t *testing.T) {
-	for name, c := range map[string]struct{ phase, reason, state string }{
-		"finished without one": {"Succeeded", "agent_finished", "missing"},
-		"its run cap":          {"BudgetExhausted", "budget-run", "failed"},
-		"an agent error":       {"Failed", "agent_error", "failed"},
+	for name, c := range map[string]struct{ phase, reason, state, outcome string }{
+		"finished without one": {"Succeeded", "agent_finished", "missing", "missing"},
+		"its run cap":          {"BudgetExhausted", "budget-run", "failed", "budget"},
+		"an agent error":       {"Failed", "agent_error", "failed", "failed"},
+		// HR2: the harness stopped the scoper at its tool-call limit.
+		"its tool-call limit": {"Failed", "budget_calls", "failed", "budget_calls"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := scoperRig(t)
 			tk := endScoper(t, g, c.phase, c.reason)
 			if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != c.state {
 				t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+			if !slices.Contains(g.metrics.recorded, "scoper review "+c.outcome) {
+				t.Fatalf("want outcome %s, metrics %v", c.outcome, g.metrics.recorded)
 			}
 			g.reconcile(t, "3buqdlot", 1)
 			if s := g.runs.specs[rid(1)]; s.Role != "implementer" || !strings.Contains(s.TaskText, "STEERING-") ||
@@ -231,6 +245,27 @@ func TestAResumedScopersNoticeNamesNoBranch(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 2)
 	if s := g.runs.specs[rid(1)]; !strings.Contains(s.TaskText, "interrupted by the platform") || strings.Contains(s.TaskText, "pushed") {
 		t.Fatalf("%q", s.TaskText)
+	}
+}
+
+// Harness roles HR2, preflight R4: the scoper's claim opens with the marker line, and a resumed one
+// keeps it as its first line, the notice after it, so the harness still reads its bounds at offset
+// 0. Lost twice: one marker and one notice, never two.
+func TestAScopersMarkerStaysItsFirstLineOnResume(t *testing.T) {
+	g := scoperRigWith(t, config.Scoper{NudgeAt: 10, MaxToolCalls: 20})
+	marker := "<!-- agent-factory scoper nudgeAt=10 maxToolCalls=20 -->\n"
+	if s := g.runs.specs[rid(0)]; !strings.HasPrefix(s.TaskText, marker+"You are the scoper") {
+		t.Fatalf("the scoper's claim %q", s.TaskText[:min(len(s.TaskText), 200)])
+	}
+	for n := range 2 {
+		g.runs.lose(rid(n))
+		g.log.end(rid(n), "Failed", "pod_lost")
+		tk := g.reconcile(t, "3buqdlot", 2)
+		s := g.runs.specs[rid(n+1)]
+		if s.Role != "triager" || !strings.HasPrefix(s.TaskText, marker+ResumeNotice(tk)+"You are the scoper") ||
+			strings.Count(s.TaskText, runs.ScoperMarkerPrefix) != 1 || strings.Count(s.TaskText, "interrupted by the platform") != 1 {
+			t.Fatalf("resume %d: %q", n+1, s.TaskText[:min(len(s.TaskText), 600)])
+		}
 	}
 }
 
@@ -365,7 +400,7 @@ func TestOnlyAMaintainersRetryProceeds(t *testing.T) {
 // Drill 6ysg5vvt (cnref #2666, v0.30.2): the scoper made 72 tool calls, re-read the same files and was
 // revoked budget-run before any room_handoff. The brief orders the hand-off before more exploration.
 func TestTheScoperBriefHandsOffBeforeItExplores(t *testing.T) {
-	b := ScoperBrief(issueTask("3buqdlot", 7, parentText), "n0nce234")
+	b := ScoperBrief(issueTask("3buqdlot", 7, parentText), "n0nce234", config.Scoper{})
 	for _, want := range []string{"Call room_handoff as soon as you have the scope", "at most 25 tool calls",
 		"hand off what you have", "Never re-read a file you already read"} {
 		if !strings.Contains(b, want) {
@@ -413,5 +448,44 @@ func TestAScoperOutOfBudgetBeforeItsHandoffIsSaid(t *testing.T) {
 				t.Fatalf("note %q, metrics %v", note, g.metrics.recorded)
 			}
 		})
+	}
+}
+
+// TestAcceptanceFixturesAgreeWithTheHarness reads the fixtures the harness's
+// tests/test_acceptance_fixtures.py reads (HR3): the scoper never bounces what the judge would read.
+func TestAcceptanceFixturesAgreeWithTheHarness(t *testing.T) {
+	dir := filepath.Join("..", "..", "..", "images", "maku-harness", "tests", "acceptance")
+	raw, err := os.ReadFile(filepath.Join(dir, "expected.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected map[string]struct {
+		States *bool   `json:"states"`
+		Text   *string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatal(err)
+	}
+	if len(expected) < 5 {
+		t.Fatalf("expected.json lists %d fixtures, want at least 5", len(expected))
+	}
+	for name, want := range expected {
+		if want.States == nil {
+			t.Fatalf("%s: no states", name)
+		}
+		text, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := statesAcceptance(string(text)); got != *want.States {
+			t.Errorf("%s: states %v, want %v", name, got, *want.States)
+		}
+		wantText := ""
+		if want.Text != nil {
+			wantText = *want.Text
+		}
+		if got := acceptanceText(string(text)); got != wantText {
+			t.Errorf("%s: text %q, want %q", name, got, wantText)
+		}
 	}
 }

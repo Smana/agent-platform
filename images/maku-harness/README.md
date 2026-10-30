@@ -56,7 +56,8 @@ says why on stderr.
   run's cap. The proxy pins the judge's alias from its own `JUDGE_MODEL`; a refusal (403), a proxy
   with no judge path (404) or any other failure leaves the run to end as it would with no judge.
   The judge has no tools and a fresh context. It reads the issue's `## Acceptance check` section
-  (else the fenced issue text), the diff against the base (16 KiB at most) and the head's check runs,
+  (else a paragraph whose first line starts `Acceptance:`, to the next blank line; else the fenced
+  issue text: the factory's scoper reads the same two rules), the diff against the base (16 KiB at most) and the head's check runs,
   read with the run's own `gh` after waiting up to 5 minutes for them to complete. It answers one
   JSON object; a verdict with no parse or that cites none of the evidence ids it was given is
   discarded: the first counts `not_yet`, the second `judge_impossible`.
@@ -77,6 +78,24 @@ run, and an agent that games the rules only ends its own run.
 implementer run's steps to its first commit from the room log, and `scripts/stall-steps.sh` keeps
 the runs merged pull requests name and prints N, the smallest multiple of 10 above their p90 once
 20 runs have one, and 80 until then.
+
+## The scoper's bound
+
+A scoping run (role `triager`) whose brief starts with the factory's marker line,
+`<!-- agent-factory scoper nudgeAt=25 maxToolCalls=40 -->` (the factory config's `scoper` key), is
+bounded in tool calls (harness roles HR2). The line is read only at the very start of the task text,
+which also carries the untrusted issue, and only within `1 <= nudgeAt < maxToolCalls <= 200`; any
+other run, or other bounds, runs unbounded as before.
+
+| At | The harness |
+|---|---|
+| `nudgeAt` tool calls | sends one message, read at the agent's next step: hand off what you have now with `room_handoff`, `ready` with guesses as assumptions or `question` |
+| `maxToolCalls` tool calls | interrupts the agent and ends the run: exit 1, `endReason` `budget_calls` in the final read, and one room note, "the run ended budget_calls: the scoper stopped after N tool calls without a handoff" |
+
+A `room_handoff` call ends the count once its result comes back with no error; a refused handoff
+does not, and no stop is made while one is in flight. A finish read on the poll that crosses the
+limit is a finish, and a resumed pod already past `nudgeAt` sends no second nudge.
+`agent-run scoper end:` shows the end in the log.
 
 ## The test-first tester
 

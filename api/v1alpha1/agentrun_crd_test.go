@@ -43,6 +43,7 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 	for rule, msg := range map[string]string{
 		"self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))": "a reviewer run needs a pull request URL as its task",
 		"!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')":                               "task.url must point into spec.repository",
+		"self.role == 'reviewer' || !has(self.task.text) || !has(self.task.url)":                                                       "only a reviewer run carries both task.text and task.url",
 		"self.dataClass != 'internal' || !has(self.egress) || !has(self.egress.profiles) || size(self.egress.profiles) == 0":           "an internal run takes no egress profiles",
 		"has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)":                              "branch is immutable and cannot be added or removed after creation",
 		"has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)":                         "roomRef is immutable and cannot be added or removed after creation",
@@ -56,8 +57,17 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 			t.Errorf("spec rule %q: message %q, want %q", rule, m, msg)
 		}
 	}
-	if len(spec.XValidations) != 10 {
-		t.Errorf("spec has %d rules, want 10", len(spec.XValidations))
+	if len(spec.XValidations) != 11 {
+		t.Errorf("spec has %d rules, want 11", len(spec.XValidations))
+	}
+	// HR4: a reviewer carries its brief beside the pull request, so the task needs one of the two, not
+	// exactly one; the spec-level rule above keeps exactly one for every other role.
+	task := map[string]string{}
+	for _, r := range spec.Properties["task"].XValidations {
+		task[r.Rule] = r.Message
+	}
+	if m := task["has(self.text) || has(self.url)"]; m != "set task.text, task.url, or both for a reviewer" {
+		t.Errorf("task rule: message %q", m)
 	}
 	immutable := func(name string, p apiextensionsv1.JSONSchemaProps) {
 		for _, r := range p.XValidations {
