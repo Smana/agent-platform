@@ -142,3 +142,12 @@ func TestTheTasksGaugeNamesThePayer(t *testing.T) {
 		}
 	}
 }
+
+// AM1 (R-I1): the merger's merge on a maintainer's approval is its own outcome, never other.
+func TestAnApprovedMergeIsItsOwnOutcome(t *testing.T) {
+	s, scrape := rig(t, nil, func() bool { return true })
+	s.PROutcome(t.Context(), "docs-links", "approved_merged")
+	if body := scrape(); !strings.Contains(body, `maku_factory_pr_outcomes_total{class="docs-links",outcome="approved_merged",principal="other",repository="other"} 1`+"\n") {
+		t.Fatalf("approved_merged not exposed:\n%s", body)
+	}
+}

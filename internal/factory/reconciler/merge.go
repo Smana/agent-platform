@@ -127,7 +127,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	d := DecideArm(in)
-	if (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
+	// A maintainer's approval arms on a human's judgement of the head, never on its diff: reading it
+	// again could only hand the approved head off for the diff the approval already covered (AM1).
+	approved := d.Verdict == "arm" && d.Reason == "maintainer_approved"
+	if !approved && (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
 		r.Cfg.SteeringOn()) {
 		// The diff is read late (steering on: always, to refuse a changed note): only a decision that would arm or shadow a class with a condition
 		// on its diff pays its 2N+1 API calls. The first pass held those conditions vacuously;
@@ -215,13 +218,15 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-		narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
+		narrateLater(t, r.handOff(t, d.Reason, adopted))
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+		// The head judged is the head an approval must be of to return the task (AM2); for an adopted
+		// task (R46), the head awaitingHuman compares with Renovate's next push.
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		if adoptedTask(t) {
-			// R46: the head decided is the head awaitingHuman compares with Renovate's next push.
-			t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+			t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA
 			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
 			return nil
 		}
@@ -244,8 +249,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
+	ref := t.Status.PullRequest
+	ref.HeadSHA, ref.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+	if d.Reason == "maintainer_approved" {
+		// AM1: a human judged it. Outside the caps (no ArmedAt), Done once merged, never reverted
+		// on main_red; the approval is the record.
+		ref.MergedHow, ref.ApprovedBy = "approved", d.Approver
+		r.to(t, v1alpha1.PhaseAutoMerging, "")
+		narrateOn(t, pr.Number, narrate.ArmedByApproval(t, d.Approver))
+		return nil
+	}
 	armed := metav1.NewTime(r.Now())
-	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = &armed, pr.HeadSHA, pr.HeadSHA
+	ref.ArmedAt, ref.MergedHow = &armed, "class"
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
@@ -256,9 +271,59 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 // with a human.
 const maxGateReentries = 3
 
+// byHandReasons are the hand-offs a human fixes on the pull request itself, which no approval
+// returns to the gate (human path AM2): the gate would refuse them again, or GitHub would.
+// changes_requested is refused while the request is outstanding only (see approvalReturn).
+// human_commit_in_pr is the ninth, beyond the spec's eight: the push check reads the same head
+// the same way after any approval, so only a human's merge takes it (final review I1).
+var byHandReasons = map[string]bool{"not_agent_authored": true, "gate_path": true, "contract_modified": true, "not_owned": true,
+	"steering_path": true, "foreign_trailer": true, "not_mergeable": true, "changes_requested": true, "human_commit_in_pr": true}
+
+// handOff is the gate's hand-off comment (AM3): with approveToMerge, "approve this pull request"
+// for an agents pull request an approval can merge; the bypass instructions for an adopted one and
+// for the by-hand reasons, which no approval returns.
+func (r *Reconciler) handOff(t *v1alpha1.Task, reason string, adopted bool) narrate.Event {
+	if r.repo(t).Merge.ApproveToMerge && !adopted && !byHandReasons[reason] {
+		return narrate.WaitingForApproval(t, reason)
+	}
+	return narrate.WaitingForHuman(t, reason)
+}
+
+// approvalReturn is AM2's return: a maintainer's APPROVED review of the hand-off head, submitted
+// after the hand-off and not yet handled, on a repository with approveToMerge. Once per review,
+// uncounted against maxGateReentries: a human act is not a flap. countApproves already puts every
+// approval's id in status.handled, so this return records the negated id (ruling R-B3). A
+// changes_requested hand-off returns once no maintainer's newest review is a request for changes:
+// the request is lifted, not outstanding (ruling on Task 2).
+func (r *Reconciler) approvalReturn(t *v1alpha1.Task, pr forge.PR) bool {
+	rc := r.repo(t)
+	why := t.Status.Reason
+	if !rc.Merge.ApproveToMerge || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA || t.Status.PhaseSince == nil {
+		return false
+	}
+	if byHandReasons[why] {
+		if _, st := approval(ArmInputs{PR: pr}, rc); why != "changes_requested" || st == "veto" {
+			return false
+		}
+	}
+	for _, rv := range pr.Reviews {
+		if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) && rv.Commit == pr.HeadSHA &&
+			rv.At.After(t.Status.PhaseSince.Add(-retrySkew)) && !slices.Contains(t.Status.Handled, -rv.ID) {
+			markHandled(t, -rv.ID)
+			t.Status.GateReentries-- // backToGate counts one; an approval is uncounted
+			r.backToGate(t, why, "reentered_approved", pr.HeadSHA)
+			return true
+		}
+	}
+	return false
+}
+
 // reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
-// reason is one the gate's inputs can clear by themselves; every other one — a verdict of changes,
-// a maintainer's review, a class or cap rule — was a human's to judge, and stays theirs. Even a
+// reason is one the gate's inputs can clear by themselves, and, with approveToMerge, the day's cap
+// and the class's pause (AM5: auto_merge_cap returns on the next UTC day, class_paused once paused
+// reads false; off, both stay with a human as before the switch existed);
+// every other one — a verdict of changes, a maintainer's review, a class rule — was a human's to
+// judge, and stays theirs unless that human approves the head (AM2, approvalReturn). Even a
 // transient one returns only on the head it was handed off at, while no maintainer has reviewed or
 // commented since: no factory run is in flight in AwaitingHuman, so a push meanwhile is a human's,
 // and a later revision must never auto-merge what a human was asked to judge. head_unreported
@@ -284,8 +349,15 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		r.backToGate(t, why, "reentered_new_head", pr.HeadSHA)
 		return true, nil
 	}
+	if r.approvalReturn(t, pr) {
+		return true, nil
+	}
 	switch why {
 	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
+	case "auto_merge_cap", "class_paused": // AM5 is the human path's: off by default
+		if !r.repo(t).Merge.ApproveToMerge {
+			return false, nil
+		}
 	default:
 		return false, nil
 	}
@@ -299,6 +371,21 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 			return false, err
 		}
 		r.backToGate(t, why, "reentered_head_reported", pr.HeadSHA)
+		return true, nil
+	}
+	switch why {
+	case "auto_merge_cap": // AM5: the day turned
+		if sameUTCDay(t.Status.PhaseSince.Time, r.Now()) {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_day_turned", pr.HeadSHA)
+		return true, nil
+	case "class_paused": // AM5: the pause lifted
+		paused, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass)
+		if err != nil || paused {
+			return false, err
+		}
+		r.backToGate(t, why, "reentered_unpaused", pr.HeadSHA)
 		return true, nil
 	}
 	c, err := r.merger(ctx).PullRequestChecks(ctx, pr.Number)
@@ -687,13 +774,22 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 	class := t.Spec.PredictedClass
 	switch {
 	case pr.State == "MERGED":
-		if forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
-			r.label(ctx, pr, AutoMergedLabel(class))
-		}
 		now := r.mergedAt(pr)
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
-		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
+		merger := forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin)
+		if merger && ref.MergedHow == "approved" {
+			// AM1: the merger's merge on a maintainer's approval is a human merge in the ledger.
+			r.label(ctx, pr, MergedLabel(class))
+			r.label(ctx, pr, ApprovedMergeLabel)
+			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "approved_merged") })
+			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
+		}
+		if merger {
+			r.label(ctx, pr, AutoMergedLabel(class))
+		}
+		ref.AutoMerged = merger // AutoMerged: merged by the merger App on the class's conditions (R52)
 		if !ref.AutoMerged {
+			ref.MergedHow, ref.ApprovedBy = "", "" // a human's merge, not the merger's: nothing to revert (AM1)
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		}
@@ -703,9 +799,18 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	case pr.HeadSHA != ref.HeadSHA:
+		// The arm is spent: whoever merges the new head, the gate decides it again (AM1). A stale
+		// "approved" would make a maintainer's later merge read as the merger's, and revertable.
+		ref.MergedHow, ref.ApprovedBy = "", ""
 		r.to(t, v1alpha1.PhaseAwaitingCI, "head_moved")
 	}
 	return nil
+}
+
+// mergerMerged: the merger made the task's merge, on the class's conditions (AutoMerged) or on a
+// maintainer's approval (AM1); only such a merge is the factory's to revert.
+func mergerMerged(ref *v1alpha1.PullRequestRef) bool {
+	return ref.AutoMerged || ref.MergedHow == "approved"
 }
 
 // mergedAt is when the pull request merged, as GitHub says (L6): every window of the merge, the
@@ -760,18 +865,19 @@ func (r *Reconciler) verifying(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
-// revertable: a Done, auto-merged task a maintainer asked to revert inside the window.
+// revertable: a Done task the merger merged, on the class's conditions or on a maintainer's
+// approval (AM1), that a maintainer asked to revert inside the window.
 func (r *Reconciler) revertable(t *v1alpha1.Task) bool {
 	ref := t.Status.PullRequest
 	return t.Status.Phase == v1alpha1.PhaseDone && t.Annotations[v1alpha1.AnnotationRevert] != "" &&
-		ref != nil && ref.AutoMerged && ref.RevertNumber == 0 && ref.MergedAt != nil &&
+		ref != nil && mergerMerged(ref) && ref.RevertNumber == 0 && ref.MergedAt != nil &&
 		r.Now().Sub(ref.MergedAt.Time) <= r.repo(t).Merge.RevertWindow.Duration
 }
 
 // revert opens the merger-authored revert PR and arms it: the policy's `revert` rule carries
 // docs-links' paths and caps, so GitHub merges it once its checks are green (§6.4). Human
-// merges are never reverted: only an auto-merged task reaches here, so before the wave (R32)
-// no revert is ever opened.
+// merges are never reverted: only a task the merger merged reaches here (revertable), so before
+// the wave (R32) and with approveToMerge off no revert is ever opened.
 func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) error {
 	ref := t.Status.PullRequest
 	if ref.RevertNumber > 0 { // a lost write's replay: the revert exists; end, never open a second
@@ -782,7 +888,9 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	if err != nil {
 		return err
 	}
-	r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
+	if ref.AutoMerged { // an approved merge keeps its two labels (AM1)
+		r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
+	}
 	rv, err := r.merger(ctx).RevertPR(ctx, ref.NodeID, fmt.Sprintf("Revert %q", pr.Title),
 		fmt.Sprintf("Reverts #%d (agent factory task `%s`): %s.", ref.Number, t.Name, narrate.Reason(why)))
 	if err != nil {

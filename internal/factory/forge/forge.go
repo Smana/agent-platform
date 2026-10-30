@@ -122,9 +122,12 @@ type Review struct {
 	// MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE); ""
 	// when GitHub did not say.
 	Association string
-	Body        string
-	At          time.Time
-	Comments    []ReviewComment
+	// Commit is the head the review was submitted on (GitHub's review.commit): row 3 arms on an
+	// approval of the current head only (human path AM1), and "" never matches a head.
+	Commit   string
+	Body     string
+	At       time.Time
+	Comments []ReviewComment
 }
 
 // PR is one GraphQL snapshot of a pull request. Checks and statuses are a separate query on the

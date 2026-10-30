@@ -28,6 +28,10 @@ func RevertOfLabel(n int) string { return fmt.Sprintf("factory/revert-of:#%d", n
 // Renovate): the monitor's record, so the breaker's window sees merges the factory did not issue.
 func MergedLabel(class string) string { return "factory/merged:" + class }
 
+// ApprovedMergeLabel marks a merge the merger made on a maintainer's approval (human path AM1),
+// beside MergedLabel: a human merge in the breaker's window, outside the daily caps.
+const ApprovedMergeLabel = "factory/approved-merge"
+
 // FollowUpOfLabel marks a pull request that fixes pull request n after it merged (MC8).
 func FollowUpOfLabel(n int) string { return fmt.Sprintf("factory/follow-up-of:#%d", n) }
 

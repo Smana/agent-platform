@@ -568,3 +568,28 @@ func TestTheScopersToolCallLimitReadsAsProse(t *testing.T) {
 		t.Fatalf("Reason(budget_calls) = %q", got)
 	}
 }
+
+// Human path AM3: with approveToMerge, the hand-off names the one action; the by-hand reasons keep
+// the bypass instructions; an approved merge says who approved.
+func TestTheHandOffNamesTheOneAction(t *testing.T) {
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"}, Spec: v1alpha1.TaskSpec{Repository: "Smana/x"},
+		Status: v1alpha1.TaskStatus{PullRequest: &v1alpha1.PullRequestRef{Number: 12}}}
+	if got := WaitingForApproval(tk, "class_unarmed").Body; !strings.Contains(got, "To merge: approve this pull request") || strings.Contains(got, "--admin") {
+		t.Fatalf("%q", got)
+	}
+	if got := WaitingForHuman(tk, "gate_path").Body; !strings.Contains(got, "--admin") {
+		t.Fatalf("%q", got)
+	}
+	if got := ArmedByApproval(tk, "Smana").Body; !strings.Contains(got, "@Smana approved") {
+		t.Fatalf("%q", got)
+	}
+}
+
+// The hand-back comment never shows a raw reason: every return and stale reason has prose.
+func TestTheNewReturnReasonsReadAsProse(t *testing.T) {
+	for _, r := range []string{"approval_stale", "reentered_approved", "reentered_day_turned", "reentered_unpaused"} {
+		if got := Reason(r); got == r || got == "" {
+			t.Errorf("%s reads raw: %q", r, got)
+		}
+	}
+}
