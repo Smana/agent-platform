@@ -127,7 +127,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	d := DecideArm(in)
-	if (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
+	// A maintainer's approval arms on a human's judgement of the head, never on its diff: reading it
+	// again could only hand the approved head off for the diff the approval already covered (AM1).
+	approved := d.Verdict == "arm" && d.Reason == "maintainer_approved"
+	if !approved && (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
 		r.Cfg.SteeringOn()) {
 		// The diff is read late (steering on: always, to refuse a changed note): only a decision that would arm or shadow a class with a condition
 		// on its diff pays its 2N+1 API calls. The first pass held those conditions vacuously;
@@ -215,11 +218,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-		ev := narrate.WaitingForHuman(t, d.Reason)
-		if r.repo(t).Merge.ApproveToMerge && !adopted && !byHandReasons[d.Reason] {
-			ev = narrate.WaitingForApproval(t, d.Reason)
-		}
-		narrateLater(t, ev)
+		narrateLater(t, r.handOff(t, d.Reason, adopted))
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
@@ -273,8 +272,20 @@ const maxGateReentries = 3
 // byHandReasons are the hand-offs a human fixes on the pull request itself, which no approval
 // returns to the gate (human path AM2): the gate would refuse them again, or GitHub would.
 // changes_requested is refused while the request is outstanding only (see approvalReturn).
+// human_commit_in_pr is the ninth, beyond the spec's eight: the push check reads the same head
+// the same way after any approval, so only a human's merge takes it (final review I1).
 var byHandReasons = map[string]bool{"not_agent_authored": true, "gate_path": true, "contract_modified": true, "not_owned": true,
-	"steering_path": true, "foreign_trailer": true, "not_mergeable": true, "changes_requested": true}
+	"steering_path": true, "foreign_trailer": true, "not_mergeable": true, "changes_requested": true, "human_commit_in_pr": true}
+
+// handOff is the gate's hand-off comment (AM3): with approveToMerge, "approve this pull request"
+// for an agents pull request an approval can merge; the bypass instructions for an adopted one and
+// for the by-hand reasons, which no approval returns.
+func (r *Reconciler) handOff(t *v1alpha1.Task, reason string, adopted bool) narrate.Event {
+	if r.repo(t).Merge.ApproveToMerge && !adopted && !byHandReasons[reason] {
+		return narrate.WaitingForApproval(t, reason)
+	}
+	return narrate.WaitingForHuman(t, reason)
+}
 
 // approvalReturn is AM2's return: a maintainer's APPROVED review of the hand-off head, submitted
 // after the hand-off and not yet handled, on a repository with approveToMerge. Once per review,

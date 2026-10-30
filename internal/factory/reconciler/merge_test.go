@@ -742,6 +742,7 @@ func TestAnApprovalReturnsATaskToTheGate(t *testing.T) {
 	}{
 		{"class_unarmed", true}, {"patch_too_large", true}, {"no_approving_verdict", true}, {"maintainer_approved", true},
 		{"policy_pending", true}, {"gate_path", false}, {"not_mergeable", false}, {"steering_path", false}, {"foreign_trailer", false},
+		{"human_commit_in_pr", false},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
@@ -870,5 +871,86 @@ func TestAPausedTaskReturnsWhenThePauseLifts(t *testing.T) {
 				t.Fatalf("off: %s %s", got.Status.Phase, got.Status.Reason)
 			}
 		})
+	}
+}
+
+// AM3 (final review I1): the hand-off names the one action. With approveToMerge, an agents pull
+// request's hand-off says "approve this pull request" unless its reason is one a human fixes by
+// hand; off, or adopted, every hand-off keeps the bypass instructions.
+func TestTheHandOffTextFollowsTheReason(t *testing.T) {
+	approvable := []string{"class_unarmed", "patch_too_large", "policy_pending", "policy_absent", "no_approving_verdict",
+		"maintainer_approved", "approval_stale", "closes_parent", "auto_merge_cap", "class_paused", "file_not_allowed"}
+	byHand := []string{"not_agent_authored", "gate_path", "contract_modified", "not_owned", "steering_path", "foreign_trailer",
+		"not_mergeable", "changes_requested", "human_commit_in_pr"}
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	for _, on := range []bool{true, false} {
+		g.r.Cfg.Merge.ApproveToMerge = on
+		for _, adopted := range []bool{false, true} {
+			for _, reason := range append(slices.Clone(approvable), byHand...) {
+				want := on && !adopted && slices.Contains(approvable, reason)
+				body := g.r.handOff(&tk, reason, adopted).Body
+				if got := strings.Contains(body, "approve this pull request"); got != want || got == strings.Contains(body, "bypass rules") {
+					t.Errorf("on=%t adopted=%t %s: %q", on, adopted, reason, body)
+				}
+			}
+		}
+	}
+}
+
+// Final review I1: a human's push under a maintainer's approval hands off human_commit_in_pr with
+// the bypass instructions, and the approval does not send it back: the push check would refuse
+// the same head again on every approval.
+func TestAHumanCommitUnderAnApprovalIsHandedOffByHand(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: "Smana", Before: "c1", After: "abc"},
+		forge.Push{Type: "branch_creation", Actor: "ogenki-agents[bot]", After: "c1"})
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "human_commit_in_pr" || len(g.f.Armed()) != 0 {
+		t.Fatalf("%s %s %v", got.Status.Phase, got.Status.Reason, g.f.Armed())
+	}
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "bypass rules") || strings.Contains(c, "approve this pull request") {
+		t.Fatalf("the hand-off names the bypass: %q", c)
+	}
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "human_commit_in_pr" {
+		t.Fatalf("no approval returns it: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// Final review I1: a page-filling diff hands a class's decision off patch_too_large, saying
+// "approve"; the approval that follows arms on the human's judgement without reading the diff
+// again, so it merges instead of handing the same head off once more.
+func TestAnApprovalMergesAPatchTooLargeToRead(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.f.SetDiffError(fmt.Errorf("wrapped: %w", forge.ErrDiffTooLarge))
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "patch_too_large" {
+		t.Fatalf("hand-off: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "approve this pull request") {
+		t.Fatalf("the hand-off says approve: %q", c)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+		t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	if a := g.f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
+		t.Fatalf("merged %q", a)
 	}
 }
