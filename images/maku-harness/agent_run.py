@@ -1500,6 +1500,33 @@ def evidence(env: dict, task: str) -> tuple[str, set[str]]:
     return redact(text), offered  # every part is the agent's: file names, check titles, the diff
 
 
+# HR5: a not_yet whose only objection is the guard's pending check is nothing the implementer can act on (#224
+# spent a continuation on it). The harness waits for the checks itself, inside the box a continuation would
+# have had, and asks the judge again.
+PENDING_POLL_S = 30
+CHECKS_PENDING = "checks still pending after %d minutes"
+
+
+def pending_only(v, guarded, offered) -> bool:
+    """The judge said met and the guard's only objection is a pending check."""
+    return (v.kind == "met" and guarded.kind == "not_yet" and isinstance(offered, loop_policy.Offered) and bool(offered.pending)
+            and not (offered.failing or offered.missing or offered.unmakeable or offered.unpushed))
+
+
+def await_checks(env: dict, task: str, seconds: int, clock=time.monotonic, sleep=time.sleep):
+    """The rebuilt evidence once none of the head's check runs is pending, or None when the box of seconds
+    ends first. The box's end is fixed once, so the wait always ends. GitHub not answering ends the wait
+    too: the rebuilt evidence then says so, and the guard reads it."""
+    until, sha = clock() + seconds, head()
+    while True:
+        runs = check_runs(env, sha)
+        if runs is None or all(r["status"] == "completed" for r in runs):
+            return evidence(env, task)
+        if clock() + PENDING_POLL_S > until:
+            return None
+        sleep(PENDING_POLL_S)
+
+
 JUDGE_PATH = re.compile(r"/v1/?$")
 
 
@@ -1747,19 +1774,33 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             new_commit = n is None or n > 0
             message, offered = evidence(env, task)
             failing = getattr(offered, "failing", ())
-            answer = ask_judge(env, policy.judge_model, message)
-            if answer is None:
-                if failing:
-                    return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
-                return 0, None, ""  # no answer: the run ends as it would with no policy
-            rounds += 1
-            v = loop_policy.verdict(answer[0], offered)
-            guarded = loop_policy.guard(v, offered) if isinstance(offered, loop_policy.Offered) else v
-            if guarded is not v:
-                print("agent-run judge %d: override %s -> %s, failing %s, pending %s, unpushed %s" % (
-                    rounds, v.kind, guarded.kind, ",".join(offered.failing) or "-", ",".join(offered.pending) or "-", offered.unpushed),
-                    flush=True)
-                v = guarded
+            waited = False  # HR5: at most one wait for pending checks per round
+            while True:
+                answer = ask_judge(env, policy.judge_model, message)
+                if answer is None:
+                    if failing:
+                        return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
+                    return 0, None, ""  # no answer: the run ends as it would with no policy
+                rounds += 1
+                v = loop_policy.verdict(answer[0], offered)
+                guarded = loop_policy.guard(v, offered) if isinstance(offered, loop_policy.Offered) else v
+                if guarded is not v:
+                    print("agent-run judge %d: override %s -> %s, failing %s, pending %s, unpushed %s" % (
+                        rounds, v.kind, guarded.kind, ",".join(offered.failing) or "-", ",".join(offered.pending) or "-",
+                        offered.unpushed), flush=True)
+                if waited or not pending_only(v, guarded, offered):
+                    v = guarded
+                    break
+                waited, seconds = True, box_for(deadline, clock)
+                if seconds is None:
+                    return 1, "not_met", TOO_LATE % _short(guarded.reason, loop_policy.REASON_MAX)
+                print("agent-run judge %d: waiting up to %d minutes for pending checks %s, no continuation spent" % (
+                    rounds, seconds // 60, ",".join(offered.pending)), flush=True)
+                rebuilt = await_checks(env, task, seconds, clock, sleep)
+                if rebuilt is None:
+                    return 1, "not_met", CHECKS_PENDING % (seconds // 60)
+                message, offered = rebuilt
+                failing = getattr(offered, "failing", ())
             if notes is not None and v.kind != "invalid":
                 notes.judge(v.kind, v.reason, v.evidence)
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",

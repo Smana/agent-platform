@@ -40,7 +40,7 @@ says why on stderr.
 | the judge answers `met`, `judgeModel` is `none`, or no judge answers | 0 | none | none |
 | the judge answers `impossible`, or a second verdict in the run is discarded | 1 | `judge_impossible` | the judge's reason |
 | the agent has made no commit by `stallSteps` steps, a continuation adds no commit within its time box, or two continuations in a row end with no new commit | 1 | `stalled` | which of the three |
-| the judge answers `not_yet` and the continuations are spent, a continuation that committed does not finish within its time box, or too little of the run is left for one | 1 | `not_met` | the last reason |
+| the judge answers `not_yet` and the continuations are spent, a continuation that committed does not finish within its time box, too little of the run is left for one, or the head's checks are still pending when a wait's box ends | 1 | `not_met` | the last reason, or `checks still pending after N minutes` |
 
 - **A continuation is boxed in time**: at most 15 minutes, ending 3 minutes before `AGENT_RUN_SECONDS`
   runs out, and the message names the box. A conversation that has not finished again by then is
@@ -63,6 +63,10 @@ says why on stderr.
   discarded: the first counts `not_yet`, the second `judge_impossible`.
 - **`not_yet`** sends one message into the same conversation, with the judge's reason quoted as data,
   and the conversation runs again with its history.
+- **A pending check is waited for, not sent** (HR5): when the judge answered `met` and the guard's only
+  objection is a check that has not completed, no message goes and no continuation is spent. The
+  harness reads the head's check runs every 30 s within the box a continuation would have had, then
+  rebuilds the evidence and asks the judge once more; that answer is guarded and decided as any other.
 - **A commit** is a non-merge commit on `HEAD` or the run's branch that neither the run's start nor
   the base branch holds: a fetch or a rebase onto the base counts nothing. The stall rule holds until
   the first commit. The start and the counts are kept in `/workspace/.agent-loop.json`, so a
