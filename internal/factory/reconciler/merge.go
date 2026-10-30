@@ -227,10 +227,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		if adoptedTask(t) {
 			t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA
-			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
+			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
 			return nil
 		}
-		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
+		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
 		return nil
 	}
 	// The decided head, pinned: GitHub checks it at merge time, so a push that landed since the

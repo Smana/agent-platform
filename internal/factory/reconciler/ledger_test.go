@@ -150,7 +150,7 @@ func TestTheShadowRecordCarriesItsHead(t *testing.T) {
 	g.r.Cfg.Classes = map[string]config.Class{"docs-links": {Shadow: true}, "revert": {Shadow: true}}
 	g.f.SetChecks(12, green("SUCCESS"))
 	g.reconcile(t, "3buqdlot", 1)
-	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "event=would-arm-1 head=abc -->") {
+	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "event=would-arm-1 head=abc paused=false capped=false -->") {
 		t.Fatalf("%q", c)
 	}
 }

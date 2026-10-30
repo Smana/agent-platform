@@ -63,8 +63,8 @@ func TestWaitingForHumanSaysHowToMerge(t *testing.T) {
 // WouldArmAdopted names a fence, sizes and a release age only when the class declares them.
 func TestWouldArmAdoptedNamesWhatIsDeclared(t *testing.T) {
 	tk := &v1alpha1.Task{}
-	bare := WouldArmAdopted(tk, config.Class{}, "deps-patch", "h").Body
-	full := WouldArmAdopted(tk, config.Class{AllowedFiles: []string{"x"}, ReleaseAgeCheck: "age"}, "deps-patch", "h").Body
+	bare := WouldArmAdopted(tk, config.Class{}, "deps-patch", "h", false, false).Body
+	full := WouldArmAdopted(tk, config.Class{AllowedFiles: []string{"x"}, ReleaseAgeCheck: "age"}, "deps-patch", "h", false, false).Body
 	if strings.Contains(bare, "files and sizes") || strings.Contains(bare, "release-age") ||
 		!strings.Contains(full, "files and sizes") || !strings.Contains(full, "release-age check") {
 		t.Fatalf("bare %q full %q", bare, full)

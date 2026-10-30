@@ -120,11 +120,11 @@ jq -r --arg class "$class" --arg repo "$repo" --arg factory "$factory" --arg mer
       | . as $pr
       | [ .comments[]
           | select((.author.login | login) == $factory)
-          | select(.body | test("event=would-arm-[0-9]+ head=[0-9a-f]+ -->")) ] as $wa
+          | select(.body | test("event=would-arm-[0-9]+ head=[0-9a-f]+")) ] as $wa
       | select($wa | length > 0)
       | ($wa | sort_by(.createdAt) | last) as $last
       | select($last.body | contains("would auto-merge: `\($class)`"))
-      | ($last.body | capture("event=would-arm-[0-9]+ head=(?<h>[0-9a-f]+) -->").h) as $head
+      | ($last.body | capture("event=would-arm-[0-9]+ head=(?<h>[0-9a-f]+)").h) as $head
       | { n: .number,
           verdict: (if ((.mergedBy.login // "") | login) == $merger then "auto_merged"
                     elif ($reverted | index($pr.number)) != null then "reverted"
