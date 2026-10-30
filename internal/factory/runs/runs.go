@@ -91,7 +91,8 @@ func Scheme(s *runtime.Scheme) {
 }
 
 // Spec is what the factory decides about one run. TaskText and TaskURL are exclusive, as the
-// XRD's CEL requires: a URL wins. SourceURL is the GitHub issue or PR the task narrates on
+// XRD's CEL requires, a URL winning, except for a reviewer: its claim carries both, the brief
+// (harness roles HR4) and the pull request it reviews. SourceURL is the GitHub issue or PR the task narrates on
 // (R28), and is written as AnnTaskURL whatever the task field holds. StartSeq and Head are the
 // CREATE-only annotations' sources (R48).
 type Spec struct {
@@ -173,6 +174,9 @@ func Build(s Spec) *unstructured.Unstructured {
 	task := map[string]any{"text": s.TaskText}
 	if s.TaskURL != "" {
 		task = map[string]any{"url": s.TaskURL}
+		if s.Role == "reviewer" && s.TaskText != "" { // HR4: the factory's brief beside the pull request
+			task["text"] = s.TaskText
+		}
 	}
 	spec := map[string]any{
 		"role": s.Role, "repository": s.Repository, "principal": s.Principal, "dataClass": s.DataClass,

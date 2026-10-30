@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/factory/runs"
 	"github.com/Smana/maku/internal/runwatch"
 )
 
@@ -459,5 +460,60 @@ func TestEnvtestPendingPodLostIsNotRecreated(t *testing.T) {
 	}
 	if err := e.c.Get(e.ctx, key("run-jjjjjjjj"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the agent must not run twice, got %v", err)
+	}
+}
+
+// HR4: the factory's reviewer claim, as runs.Build writes it, carries its brief beside the pull
+// request; the CRD admits it, and the run's task.md is the brief, not "Work on <url>.". Every other
+// role still sets exactly one of the two.
+func TestEnvtestAReviewerClaimCarriesItsBriefBesideThePullRequest(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	const pr = "https://github.com/o/r/pull/12"
+	claim := func(name, role, text, url string) *unstructured.Unstructured {
+		u := runs.Build(runs.Spec{RunID: name[len("run-"):], Role: role, Repository: "o/r", BaseRef: "main",
+			Branch: "agent/3buqdlot", TaskText: text, TaskURL: url, Principal: runs.PrincipalFactory, DataClass: "public",
+			Model: "agent-default", MaxTokens: 1000, MaxMinutes: 30})
+		u.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("AgentRun"))
+		u.SetNamespace("agents")
+		u.SetName(name)
+		return u
+	}
+	if err := e.c.Create(e.ctx, claim("run-rvwrrvwr", "reviewer", "You are the reviewer\n", pr)); err != nil {
+		t.Fatalf("a reviewer claim with its brief: %v", err)
+	}
+	e.reconcile(t, "run-rvwrrvwr")
+	cm := &corev1.ConfigMap{}
+	if err := e.c.Get(e.ctx, key("run-rvwrrvwr-task"), cm); err != nil || cm.Data["task.md"] != "You are the reviewer\n" {
+		t.Fatalf("task.md %q, %v", cm.Data["task.md"], err)
+	}
+	p := &corev1.Pod{}
+	if err := e.c.Get(e.ctx, key("run-rvwrrvwr"), p); err != nil {
+		t.Fatal(err)
+	}
+	var taskURL string
+	for _, c := range p.Spec.Containers {
+		for _, v := range c.Env {
+			if c.Name == "harness" && v.Name == "TASK_URL" {
+				taskURL = v.Value
+			}
+		}
+	}
+	if taskURL != pr {
+		t.Fatalf("TASK_URL %q, want the pull request", taskURL)
+	}
+	both := claim("run-mplmmplm", "implementer", "fix it", pr)
+	if err := unstructured.SetNestedStringMap(both.Object, map[string]string{"text": "fix it", "url": pr}, "spec", "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Create(e.ctx, both); !apierrors.IsInvalid(err) {
+		t.Fatalf("an implementer with both task fields: %v, want Invalid", err)
+	}
+	none := claim("run-nnnnnnnn", "implementer", "x", "")
+	if err := unstructured.SetNestedStringMap(none.Object, map[string]string{}, "spec", "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Create(e.ctx, none); !apierrors.IsInvalid(err) {
+		t.Fatalf("a run with no task: %v, want Invalid", err)
 	}
 }
