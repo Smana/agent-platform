@@ -236,6 +236,34 @@ func TestAMaintainersApprovalArmsWhenTheSwitchIsOn(t *testing.T) {
 	}
 }
 
+// AM1, "outside the caps": a maintainer's approval of the head arms even when the day's
+// autoMergesPerDay or the class's maxPerDay is spent. The caps bound the factory's own judgement,
+// not a human's.
+func TestAnApprovalArmsOutsideTheCaps(t *testing.T) {
+	for name, spent := range map[string]func(*ArmInputs){
+		"the day's cap":   func(in *ArmInputs) { in.ArmedToday = in.Cfg.Merge.AutoMergesPerDay },
+		"the class's cap": func(in *ArmInputs) { in.ClassArmedToday = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			cfg.Classes["docs-links"] = config.Class{Live: true, MaxPerDay: 1}
+			pr := agentPR()
+			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: now}}
+			in := ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
+			spent(&in)
+			if d := DecideArm(in); d.Verdict != "arm" || d.Reason != "maintainer_approved" {
+				t.Fatalf("%+v, want arm maintainer_approved", d)
+			}
+			in.PR.Reviews = nil
+			if d := DecideArm(in); d.Reason != "auto_merge_cap" {
+				t.Fatalf("without the approval: %+v, want auto_merge_cap", d)
+			}
+		})
+	}
+}
+
 // R-B1 (AM1, "adopted classes keep today's path"): with the switch on, a maintainer's approval of
 // an adopted pull request's head still hands off; it never arms the merger.
 func TestAnAdoptedPullRequestsApprovalHandsOffWithTheSwitchOn(t *testing.T) {
