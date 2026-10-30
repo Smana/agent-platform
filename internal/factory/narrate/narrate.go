@@ -655,11 +655,25 @@ func CIExhausted(t *v1alpha1.Task, names []string) Event {
 		Body: fmt.Sprintf("Agent factory task `%s` used its %d CI fix runs; still failing: %s.", t.Name, t.Status.FixRuns, strings.Join(names, ", "))}
 }
 
-// RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4).
-func RevertOpened(t *v1alpha1.Task, number int, why string) Event {
+// RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4). A drill's
+// says the breaker does not count it (AM6).
+func RevertOpened(t *v1alpha1.Task, number int, why string, drill bool) Event {
+	if drill { // AM6: the breaker does not count a drill, so the class is not sent back to human review
+		return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
+			"The pull request carries `factory/drill`, so the revert is a drill: the class's breaker does not count it (AM6).",
+			t.Name, number, Reason(why))}
+	}
 	return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
 		"Auto-merge of the class `%s` goes back to human review until its recent merges pass without a revert (R41).",
 		t.Name, number, Reason(why), t.Spec.PredictedClass)}
+}
+
+// ClassDrill goes to the control issue in ClassDemoted's place for a drill revert: the breaker does
+// not count it (AM6).
+func ClassDrill(t *v1alpha1.Task) Event {
+	return Event{Key: "drill-" + t.Name, Body: fmt.Sprintf("Agent factory: an auto-merge of `%s` was reverted as a drill "+
+		"(task `%s`, #%d). The pull request carries `factory/drill`, so the class's breaker does not count the revert (AM6).",
+		t.Spec.PredictedClass, t.Name, t.Status.PullRequest.Number)}
 }
 
 // ClassDemoted goes to the control issue (Task 8.1a): a revert counts toward its class's breaker (R41).

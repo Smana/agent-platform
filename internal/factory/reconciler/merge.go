@@ -909,11 +909,17 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 		}
 	}
 	class := t.Spec.PredictedClass
+	// A drill counts as reverted here too: the outcome is what happened to the pull request, the
+	// breaker's exemption is the ledger's (AM6).
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
-	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
+	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why, ref.Drill))
 	if n := r.controlIssue(t); n > 0 { // R41: where the kill switch lives
-		b := r.repo(t).Merge.Breaker
-		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
+		if ref.Drill {
+			narrateOn(t, n, narrate.ClassDrill(t))
+		} else {
+			b := r.repo(t).Merge.Breaker
+			narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
+		}
 	}
 	r.tellParent(ctx, t, ref.RevertNumber)
 	return r.end(ctx, t, v1alpha1.PhaseReverted, why)

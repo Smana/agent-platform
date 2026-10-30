@@ -332,11 +332,13 @@ func TestFailureBesideCancelledStillFixed(t *testing.T) {
 }
 
 // Human path AM6: with factory/drill, the revert PR carries the label, the Task says drill, and
-// the class is not paused by it.
+// the class is not paused by it. A drill is narrated as one: no demotion on the control issue, and
+// the pull request is told the breaker does not count it.
 func TestAMaintainersRevertAfterDone(t *testing.T) {
 	for _, drill := range []bool{false, true} {
 		t.Run(fmt.Sprintf("drill=%v", drill), func(t *testing.T) {
 			g := mergeRig(t, v1alpha1.PhaseDone)
+			g.r.Cfg.ControlIssue = 1
 			var tk v1alpha1.Task
 			_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
 			merged := metav1.NewTime(now.Add(-48 * time.Hour))
@@ -357,6 +359,14 @@ func TestAMaintainersRevertAfterDone(t *testing.T) {
 			}
 			if paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); err != nil || paused == drill {
 				t.Fatalf("paused %v (drill %v): %v", paused, drill, err)
+			}
+			pr, ctl := strings.Join(g.f.Comments(12), "\n"), strings.Join(g.f.Comments(1), "\n")
+			const drillPR, drillCtl = "a drill: the class's breaker does not count it", "reverted as a drill"
+			if strings.Contains(pr, drillPR) != drill || strings.Contains(pr, "goes back to human review") == drill {
+				t.Fatalf("pull request (drill %v): %q", drill, pr)
+			}
+			if strings.Contains(ctl, drillCtl) != drill || strings.Contains(ctl, "counts toward the class's breaker") == drill {
+				t.Fatalf("control issue (drill %v): %q", drill, ctl)
 			}
 		})
 	}
