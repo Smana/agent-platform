@@ -28,6 +28,7 @@ without case.
 | Label `factory/ready` (`triggerLabel` in the config) on an issue | A Task is created from a sanitised snapshot of the issue's title and body, with the sha256 of the text as labelled; the label is then removed. A pull request carrying it is ignored. Re-labelling the issue later starts a new task, and supersedes (stops) an escalated one | A maintainer |
 | Label `factory/stop` on the issue or its pull request | The running task stops within a poll: its runs are revoked and deleted, the task ends `Stopped`. The label is removed once it hit a task; with no task running it stays, so a task started later stops at once. Anyone else's is removed and answered | A maintainer |
 | Label `factory/revert` on an auto-merged pull request, within `merge.revertWindow` | The factory opens a revert pull request through the merger App and the task ends `Reverted`; the class counts the revert towards its [breaker](#the-merge-gate). A human merge is never reverted | A maintainer |
+| Label `factory/drill` on an auto-merged pull request, **before** `factory/revert` | Marks the revert a [drill](#the-merge-gate): the merger copies the label to the revert pull request and the breaker does not count it (AM6). Read only when `factory/revert` is, so a label added after it changes nothing | A maintainer |
 | Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
 | Comment `/factory split` alone on a line, on the issue of a task escalated `split_proposed` | Approves the proposed [split](#splits); the commenter pays for every part. Read before `/factory retry` | A maintainer with `write` on the repository |
 | Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer with `write` on the repository |
@@ -715,10 +716,15 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
 | 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
 | 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), or `semver-patch` and `semver-minor` for an [adopted class](#adopted-classes) (computed from the diff), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and every finding was a link target on the base and none is on the head, and no target moved but to the exact snapshot its finding gave) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
-| 9 | The class's breaker has not tripped | `class_paused` |
-| 10 | Under `merge.autoMergesPerDay` today, and under the class's `maxPerDay` | `auto_merge_cap` |
+| 9 | A `live` class: its breaker has not tripped | `class_paused` |
+| 10 | A `live` class: under `merge.autoMergesPerDay` today, and under the class's `maxPerDay` | `auto_merge_cap` |
 | 11 | The class is `live` | `shadow_would_arm`: the decision is posted, nothing is merged |
 | 12 | Every push to the branch was the agents App's | `human_commit_in_pr` |
+
+A `shadow` class skips rows 9 and 10: "A shadow class records `shadow_would_arm` whatever the
+breaker and the day's count say; the marker says `paused=` and `capped=`" (AM4). A shadow decision
+arms nothing, so a blocker that only decides whether to arm has nothing to block. `ledger_truncated`
+is the one breaker input that still stops a shadow record: an unread ledger decides nothing.
 
 A condition on the diff (row 8's file conditions and shape) is decided on GitHub's own file list,
 read only when every other row would merge or post a shadow decision. Two rules are stricter than
@@ -738,7 +744,29 @@ auto-merges only while the `revert` class is live; otherwise a maintainer merges
 
 The breaker: a class whose newest `merge.breaker.window` merges hold `merge.breaker.maxReverts`
 reverts goes back to human review, whatever the config. Maintainers' merges of that class refill
-the window, so clean ones lift it. Each revert is announced on the control issue.
+the window, so clean ones lift it. Each revert is announced on the control issue. The gauge
+`maku_factory_class_paused{repository,class}` reads 1 while the class is paused, refreshed at each
+decision and at each monitor pass of one of the class's merges.
+
+**Recovery (AM7).** With `merge.breaker.recoverAfter` set (0, the default, keeps the window rule
+alone), "the class resumes if the `recoverAfter` newest merges are all newer than the newest bad
+merge, carry no revert, follow-up or regression, and are mature". A merge is mature once it is
+older than the class's `monitor.followUpWindow`, or `merge.revertWindow` for a class without a
+monitor. An immature merge is skipped: it neither counts nor blocks. A new bad merge, mature or not,
+trips the class again at once. `recoverAfter` must be below `window`: at `window` or more the bad
+merge leaves the window first. A monitored class whose `followUpWindow` is shorter than
+`revertWindow` counts a merge mature while a maintainer's `factory/revert` of it is still possible.
+Such a revert trips the class again once the breaker sees it: at once for a merge whose Task exists,
+after a restart for one known only from GitHub's labels, which are read once per process.
+
+**Drills (AM6).** A maintainer who reverts on purpose (a runbook drill) labels the pull request
+`factory/drill` before `factory/revert`. The merger copies the label to the revert pull request and
+records `status.pullRequest.drill`: "the ledger does not count that revert". The ledger reads a
+revert pull request's `factory/drill` only when the label is still on it and its newest label event
+is the merger App's or a maintainer's; anyone else's label, or a truncated event list, counts the
+revert. A maintainer's label is trusted: one added by hand to a revert pull request, a past one
+included, makes that revert a drill at the next ledger read. "A `main_red` revert is never a drill":
+the factory never marks one, whatever labels the reverted pull request carries.
 
 The breaker and the daily cap read their merges from the Tasks and from GitHub, so a rebuild that
 loses every Task keeps a demoted class demoted. The merger App labels what it merged
@@ -758,7 +786,9 @@ flowchart LR
   revert --> tasks
   gh -->|"read once, at the first decision"| breaker{"newest window merges<br/>hold maxReverts reverts?"}
   tasks -->|"every decision"| breaker
-  breaker -->|yes| paused["class_paused"]
+  breaker -->|yes| recover{"recoverAfter newest merges<br/>clean, mature, newer than the bad one?"}
+  recover -->|no| paused["class_paused"]
+  recover -->|yes| next
   breaker -->|no| next["the daily cap, then live or shadow"]
 ```
 
@@ -773,7 +803,8 @@ off `merge_gate_off` before the approval is read. The switch also gates AM5: an 
 hand-off returns on the next UTC day, and a `class_paused` one once the pause lifts, only while it
 is on.
 
-A shadow decision's comment carries the head it judged (`event=would-arm-<n> head=<sha>`).
+A shadow decision's comment carries the head it judged and what a live class would have met
+(`event=would-arm-<n> head=<sha> paused=<bool> capped=<bool>`).
 `scripts/shadow-merge-tally.sh --class docs-links` counts the pull requests a maintainer then
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
@@ -870,7 +901,7 @@ GitHub refuses it if Renovate pushed since. A read error of the commit authors o
 | Reason | What happens |
 |---|---|
 | `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded`, `policy_pending`, `policy_absent`, `ci_cancelled`, `ci_wait_expired` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is decided again whole, up to 3 times (`maxGateReentries`, counted) |
-| `auto_merge_cap`, `class_paused` | Same: re-enters on a new head, counted. A `shadow` class meets them too (the cap and the pause bound its would-arm decisions as a live class's merges) and re-enters the same way |
+| `auto_merge_cap`, `class_paused` | Same: re-enters on a new head, counted. A `live` class only: a `shadow` class records `shadow_would_arm` through them (AM4) |
 | `shadow_would_arm` | The shadow decision: returns to `AwaitingCI` on Renovate's next head (`adopted_head_moved`), not counted, since it is no hand-off |
 | Every other reason: `class_unarmed`, `class_mismatch`, `fork_pull_request`, `changes_requested`, `not_adopted_author`, `branch_not_allowed`, `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `not_mergeable`, a class that no longer adopts, and the like | Terminal: the Task stays handed off. A new head does not revive them. A closed or merged pull request ends the Task |
 
@@ -879,7 +910,7 @@ the Task waits for it at most 10 minutes, then hands off. A push made during a l
 such grace. `ci_red` hands off instead of starting a fix run: a red Renovate branch is the
 `renovate-red` schedule's job, not an agent's here. An adopted Task in `AwaitingHuman` never reminds
 a maintainer and never stale-closes Renovate's pull request, which would fight Renovate. A shadow decision is narrated `would auto-merge:
-`<class>`` with `head=<sha>` and no claim of a verdict: no agent reviewed the change.
+`<class>`` with `head=<sha> paused=<bool> capped=<bool>` and no claim of a verdict: no agent reviewed the change.
 
 **The tally.** `scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate` counts, as
 for any class, the pull requests merged at the head a would-arm comment judged
@@ -914,7 +945,7 @@ classes:
       followUpWindow: 72h    # how long later merges are read for a fix of this one; the verdict is final after it
 merge:
   awaitingCIFor: 6h          # bound AwaitingCI on a wait verdict; 0, the default, is no bound
-  breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}   # maxFollowUps 0, the default, counts none
+  breaker: {window: 10, maxReverts: 1, maxFollowUps: 1, recoverAfter: 3}   # maxFollowUps 0 counts none; recoverAfter 0 never recovers early
 ```
 
 `flux.source` must name a Flux **GitRepository** (`namespace/name`, the one that delivers the
@@ -922,7 +953,7 @@ repository to the factory's cluster); an OCIRepository is not read, so the signa
 `inconclusive` (config validation checks only the format). `flux` needs the chart's `monitor.flux.enabled` (off by default). It renders the ClusterRole and
 ClusterRoleBinding `agent-factory-flux-reader`: `get` on `gitrepositories`, `list` on
 `kustomizations` and `helmreleases`, no `watch`, nothing else of the cluster. The reads are uncached.
-Without it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
+Without it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`, `recoverAfter` at least 0 and below `window`.
 
 **The signals.**
 
@@ -1010,6 +1041,10 @@ the window ago) and the inconclusive, and prints the Clopper-Pearson 95% upper b
 ```
 merges=31 mature=30 conclusive=29 inconclusive=1 bad=0 reverted=0 follow_up=0 regression=0 bound=0.098… budget=0.10 widen=yes
 ```
+
+A pause no longer stops a shadow class's would-arm record (AM4): the tally counts through it.
+A drill revert does not count for the breaker (AM6), but `--outcomes` still lists it as `reverted`
+until the tally sets drills apart: subtract the pull requests labelled `factory/drill` by hand.
 
 The rule: widen one step only when `bound < budget` (0.10 by default; `--budget` changes it), by
 the owner's config pull request citing the tally's output. Zero bad merges need 29 conclusive
@@ -1195,7 +1230,7 @@ Each `repositories` entry:
 | `triggerLabel` | The start label, `factory/ready` | Required |
 | `classes` | `<name>: {live, shadow, checks, testFirst, author: {adopt: {logins, branches}}, releaseAgeCheck, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `author.adopt` and the semver shapes: see [adopted classes](#adopted-classes); `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `checks` | `{egress: [profiles]}`: what a check-enabled run requests beyond `github`, at most 4 of `pypi`, `npm`, `golang`, `crates`. The repository's `.github/agent-checks.yaml` never names egress | None: github only |
-| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `contractCheck` (the job that runs a task's test contract: not one of `requiredChecks`, and set whenever a class has `testFirst`), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}`, `approveToMerge` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off; `approveToMerge` optional, false is off: on, a maintainer's `APPROVED` review of an agents pull request's current head arms the merger, AM1. It acts only when a class of any configured repository is live, shadow or monitored (factory-wide, as the merger key is): with none, the task hands off `merge_gate_off` before the approval is read) | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `contractCheck` (the job that runs a task's test contract: not one of `requiredChecks`, and set whenever a class has `testFirst`), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps, recoverAfter}`, `approveToMerge` (`awaitingCIFor`, `maxFollowUps` and `recoverAfter` optional, 0 is off; `recoverAfter` below `window`, AM7; `approveToMerge` optional, false is off: on, a maintainer's `APPROVED` review of an agents pull request's current head arms the merger, AM1. It acts only when a class of any configured repository is live, shadow or monitored (factory-wide, as the merger key is): with none, the task hands off `merge_gate_off` before the approval is read) | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
 `api.repositories`, the run-request API's allowlist, is the entries' names.

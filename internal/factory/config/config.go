@@ -1557,8 +1557,9 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	if b := r.Merge.Breaker; b.MaxFollowUps < 0 || b.MaxFollowUps > b.Window {
 		bad("merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)")
 	}
-	if r.Merge.Breaker.RecoverAfter < 0 {
-		bad("merge.breaker.recoverAfter must be 0 (off) or positive (AM7)")
+	if b := r.Merge.Breaker; b.RecoverAfter < 0 || b.RecoverAfter >= b.Window {
+		// At window or more, the bad merge leaves the window before recovery could lift the pause.
+		bad("merge.breaker needs 0 ≤ recoverAfter < window (AM7)")
 	}
 }
 

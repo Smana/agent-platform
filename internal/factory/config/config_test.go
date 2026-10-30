@@ -670,6 +670,30 @@ func TestMaxFollowUpsParses(t *testing.T) {
 	}
 }
 
+// AM7: recoverAfter parses; it must be 0 (off) or below the window, where the window rule alone
+// would lift the pause first.
+func TestRecoverAfterIsBelowTheWindow(t *testing.T) {
+	with := func(b string) string {
+		return strings.Replace(good, "breaker: {window: 10, maxReverts: 1}", b, 1)
+	}
+	c, err := Parse([]byte(with("breaker: {window: 10, maxReverts: 1, recoverAfter: 3}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RepositoryFor("Smana/cloud-native-ref").Merge.Breaker.RecoverAfter; got != 3 {
+		t.Fatalf("recoverAfter = %d", got)
+	}
+	if c, err = Parse([]byte(good)); err != nil || c.RepositoryFor("Smana/cloud-native-ref").Merge.Breaker.RecoverAfter != 0 {
+		t.Fatalf("absent: %v", err)
+	}
+	for _, b := range []string{"breaker: {window: 10, maxReverts: 1, recoverAfter: -1}",
+		"breaker: {window: 10, maxReverts: 1, recoverAfter: 10}", "breaker: {window: 10, maxReverts: 1, recoverAfter: 11}"} {
+		if _, err := Parse([]byte(with(b))); err == nil || !strings.Contains(err.Error(), "recoverAfter") {
+			t.Errorf("%s: want a recoverAfter error, got %v", b, err)
+		}
+	}
+}
+
 // R14: a config with no runlore block parses, the intake is off, and RunLoreRepository still
 // answers the primary repository.
 func TestRunLoreBlockIsOptional(t *testing.T) {

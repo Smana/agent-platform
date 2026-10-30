@@ -339,7 +339,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		switch why {
 		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded",
 			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired",
-			"auto_merge_cap", "class_paused": // a shadow decision meets the cap and the pause too
+			"auto_merge_cap", "class_paused": // a live class's; a shadow decision meets neither (AM4)
 		default:
 			return false, nil
 		}
@@ -1011,6 +1011,9 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 		merges[i].Mature = r.Now().Sub(merges[i].At) > ripe
 	}
 	demoted, _ := Demoted(merges, rc.Merge.Breaker)
+	// AM9: at once, not after the write: a gauge holds the latest verdict, so a retried pass that
+	// records it again changes nothing.
+	r.Metrics.ClassPaused(ctx, rc.Name, class, demoted)
 	return demoted, nil
 }
 
@@ -1048,10 +1051,10 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 
 // recovered: at least n mature clean merges are newer than the newest bad merge (of any maturity),
 // and none newer than it is bad (AM7, R-I8). An immature clean merge is unknown: skipped, neither
-// counted nor blocking. newestFirst is sorted newest first.
-func recovered(newestFirst []Merge, n int) bool {
+// counted nor blocking. merges is sorted newest first.
+func recovered(merges []Merge, n int) bool {
 	clean := 0
-	for _, m := range newestFirst {
+	for _, m := range merges {
 		if m.Reverted || m.FollowUp || m.Regression {
 			return clean >= n
 		}

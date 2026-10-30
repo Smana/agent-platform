@@ -439,6 +439,42 @@ func TestAHumanMergeOfADemotedClassRefillsTheWindow(t *testing.T) {
 	}
 }
 
+// AM7, AM9 through paused: maturity is the class's followUpWindow, or the revertWindow without a
+// monitor, counted from the merge; the verdict is recorded on the class_paused gauge.
+func TestPausedRecoversOnlyOnMergesOlderThanTheClassMaturity(t *testing.T) {
+	merged := func(name string, n int, ago time.Duration, phase string) *v1alpha1.Task {
+		tk := awaiting()
+		at := metav1.NewTime(now.Add(-ago))
+		tk.Name, tk.Spec.PredictedClass, tk.Status.Phase, tk.Status.Runs = name, "docs-links", phase, nil
+		tk.Status.PullRequest.Number, tk.Status.PullRequest.MergedAt = n, &at
+		return tk
+	}
+	day := 24 * time.Hour
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, merged("1reverted", 9, 20*day, v1alpha1.PhaseReverted),
+		merged("2clean", 10, 5*day, v1alpha1.PhaseDone), merged("3clean", 11, 4*day, v1alpha1.PhaseDone),
+		merged("4clean", 13, 3*day, v1alpha1.PhaseDone))
+	g.r.Cfg.Merge.Breaker = config.Breaker{Window: 10, MaxReverts: 1, RecoverAfter: 3}
+	rc := g.r.Cfg.RepositoryFor("")
+	gauge := func(paused bool) string { return fmt.Sprintf("class_paused %s docs-links %t", rc.Name, paused) }
+	// No monitor: the revertWindow (7 days) decides, and the three clean merges are younger.
+	if paused, err := g.r.paused(t.Context(), rc, "docs-links"); err != nil || !paused {
+		t.Fatalf("merges younger than the revertWindow are immature: paused %v err %v", paused, err)
+	}
+	if !slices.Contains(g.metrics.recorded, gauge(true)) {
+		t.Fatalf("the gauge reads 1: %v", g.metrics.recorded)
+	}
+	// A monitor of 2 days: the same merges are mature.
+	cl := g.r.Cfg.Classes["docs-links"]
+	cl.Monitor = &config.Monitor{FollowUpWindow: config.Duration{Duration: 2 * day}}
+	g.r.Cfg.Classes["docs-links"] = cl
+	if paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); err != nil || paused {
+		t.Fatalf("merges older than the followUpWindow are mature: paused %v err %v", paused, err)
+	}
+	if !slices.Contains(g.metrics.recorded, gauge(false)) {
+		t.Fatalf("the gauge reads 0: %v", g.metrics.recorded)
+	}
+}
+
 // R42 (review G6): a red secret scan is a live credential in a public diff. No fix run: a human.
 func TestARedSecretScanEscalatesWithoutAFixRun(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
