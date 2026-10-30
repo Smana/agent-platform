@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -610,5 +611,369 @@ func TestASubstantiveHandOffStaysWithTheHuman(t *testing.T) {
 				t.Fatalf("%s %s %d %v", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries, g.f.Armed())
 			}
 		})
+	}
+}
+
+// Human path AM1: an approved merge is the merger's merge of the head a maintainer approved. It is
+// outside the caps (no armedAt), labelled factory/merged:<class> and factory/approved-merge, counted
+// approved_merged, and Done at once: no Verifying, so main_red never reverts it. A maintainer's
+// factory/revert still opens the revert (R-B2).
+func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.r.Cfg.Classes["docs-links"] = config.Class{} // unarmed: only the approval can merge it
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+	g.f.SetPR(pr)
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" ||
+		got.Status.PullRequest.ApprovedBy != "Smana" || got.Status.PullRequest.ArmedAt != nil {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.PullRequest)
+	}
+	if a := g.f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
+		t.Fatalf("merged %q, want the approved head", a)
+	}
+	pr, _ = g.f.PullRequest(t.Context(), 12)
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "ogenki-agent-merger[bot]", "m1", now
+	g.f.SetPR(pr)
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.Reason != "merged" || got.Status.PullRequest.AutoMerged {
+		t.Fatalf("%s %s autoMerged=%v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest.AutoMerged)
+	}
+	if a := g.f.Added(12); !slices.Contains(a, MergedLabel("docs-links")) || !slices.Contains(a, ApprovedMergeLabel) ||
+		slices.Contains(a, AutoMergedLabel("docs-links")) {
+		t.Fatalf("labels %q", a)
+	}
+	if !slices.Contains(g.metrics.recorded, "pr docs-links approved_merged") || slices.Contains(g.metrics.recorded, "pr docs-links auto_merged") {
+		t.Fatalf("outcomes %q", g.metrics.recorded)
+	}
+	// R-B2: a maintainer's factory/revert on the approved merge opens the revert, and keeps its two labels.
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" || len(g.f.Reverts()) != 1 {
+		t.Fatalf("%s %s %v", got.Status.Phase, got.Status.Reason, g.f.Reverts())
+	}
+	if slices.Contains(g.f.Added(12), AutoMergedLabel("docs-links")) {
+		t.Fatalf("an approved merge is never labelled auto-merged: %q", g.f.Added(12))
+	}
+}
+
+// AM1: a maintainer's own merge of a pull request the merger was sent on the approval is a human
+// merge: MergedHow is cleared, so factory/revert never opens a revert of it.
+func TestAHumanMergeAfterAnApprovedArmIsNotTheMergers(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAutoMerging)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1", MergedAt: now})
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.MergedHow != "" || got.Status.PullRequest.ApprovedBy != "" ||
+		slices.Contains(g.f.Added(12), ApprovedMergeLabel) {
+		t.Fatalf("%s %+v %q", got.Status.Phase, got.Status.PullRequest, g.f.Added(12))
+	}
+	got.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	if g.r.revertable(got) {
+		t.Fatal("a human's merge is never reverted by the factory")
+	}
+}
+
+// AM1: a push after an approved arm spends the arm. The task returns to the gate with MergedHow
+// cleared, so a maintainer's merge of the new head, through the gate's bypass branch, is never
+// read as the merger's and never reverted by the factory.
+func TestAPushAfterAnApprovedArmSpendsTheArm(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAutoMerging)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.HeadSHA = "def"
+	g.f.SetPR(pr)
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "head_moved" ||
+		got.Status.PullRequest.MergedHow != "" || got.Status.PullRequest.ApprovedBy != "" {
+		t.Fatalf("%s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "Smana", "m1", now
+	g.f.SetPR(pr)
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.MergedHow != "" {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.PullRequest)
+	}
+	got.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	if g.r.revertable(got) {
+		t.Fatal("a maintainer's merge after a spent arm is never reverted by the factory")
+	}
+}
+
+// handedOff puts the rig's task in AwaitingHuman for reason, handed off an hour before now.
+func (g *rig) handedOff(t *testing.T, reason string, reentries int32) {
+	t.Helper()
+	g.patch(t, func(tk *v1alpha1.Task) {
+		since := metav1.NewTime(now.Add(-time.Hour))
+		tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries, tk.Status.PhaseSince = v1alpha1.PhaseAwaitingHuman, reason, reentries, &since
+	})
+}
+
+// Human path AM2: a maintainer's approval of the hand-off head returns an agent task to the gate
+// from any hand-off a human's judgement covers, once per review and uncounted; the eight by-hand
+// reasons never return on it.
+func TestAnApprovalReturnsATaskToTheGate(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		back   bool
+	}{
+		{"class_unarmed", true}, {"patch_too_large", true}, {"no_approving_verdict", true}, {"maintainer_approved", true},
+		{"policy_pending", true}, {"shadow_would_arm", true}, {"gate_path", false}, {"not_mergeable", false}, {"steering_path", false},
+		{"foreign_trailer", false}, {"human_commit_in_pr", false},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+			g.r.Cfg.Merge.ApproveToMerge = true
+			g.handedOff(t, tc.reason, maxGateReentries) // the cap never counts an approval
+			pr, _ := g.f.PullRequest(t.Context(), 12)
+			pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+			g.f.SetPR(pr)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_approved"; back != tc.back {
+				t.Fatalf("%s: %s %s", tc.reason, got.Status.Phase, got.Status.Reason)
+			}
+			if tc.back {
+				if got.Status.GateReentries != maxGateReentries || !slices.Contains(got.Status.Handled, int64(-77)) {
+					t.Fatalf("reentries %d handled %v", got.Status.GateReentries, got.Status.Handled)
+				}
+				g.handedOff(t, tc.reason, maxGateReentries)
+				if again := g.reconcile(t, "3buqdlot", 1); again.Status.Reason == "reentered_approved" {
+					t.Fatal("one review returns once")
+				}
+			}
+		})
+	}
+}
+
+// AM2 with the switch off: an approval returns nothing.
+func TestAnApprovalReturnsNothingWithTheSwitchOff(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+	g.handedOff(t, "class_unarmed", 0)
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+	g.f.SetPR(pr)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_unarmed" {
+		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// AM2, as ruled for Task 2: a changes_requested hand-off returns on a maintainer's approval of the
+// hand-off head once no maintainer's newest review is a request for changes (the request is lifted),
+// and stays with the human while another maintainer's request is still that maintainer's newest.
+func TestALiftedRequestForChangesReturnsOnTheApproval(t *testing.T) {
+	for name, tc := range map[string]struct {
+		others []forge.Review
+		back   bool
+	}{
+		"lifted":      {back: true},
+		"outstanding": {others: []forge.Review{{ID: 71, Author: "octocat", State: "CHANGES_REQUESTED", Commit: "abc", At: now.Add(-30 * time.Minute)}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.r.Cfg.Merge.ApproveToMerge = true
+			g.r.Cfg.Maintainers = []string{"Smana", "octocat"}
+			// Smana asked for changes on the old head; the revision run that answered them pushed abc.
+			request := forge.Review{ID: 70, Author: "Smana", State: "CHANGES_REQUESTED", Commit: "old", At: now.Add(-2 * time.Hour)}
+			g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Handled = []int64{70, 71} })
+			pr := gatePR("abc", rid(0))
+			pr.Reviews = append([]forge.Review{request}, tc.others...)
+			g.f.SetPR(pr)
+			g.f.SetChecks(12, green("SUCCESS"))
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "changes_requested" {
+				t.Fatalf("hand-off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+			pr.Reviews = append(pr.Reviews, forge.Review{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)})
+			g.f.SetPR(pr)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_approved"; back != tc.back {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+			if !tc.back {
+				return
+			}
+			if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+				t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+			}
+		})
+	}
+}
+
+// Human path AM5: with approveToMerge, an agent task capped today returns on the next UTC day, on
+// the same head and counted. Off, it stays with a human as before the switch existed.
+func TestACappedTaskReturnsOnTheNextDay(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approveToMerge=%t", on), func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+			g.r.Cfg.Merge.ApproveToMerge = on
+			g.handedOff(t, "auto_merge_cap", 0)
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "auto_merge_cap" {
+				t.Fatalf("same day: %s", got.Status.Reason)
+			}
+			g.r.Now = func() time.Time { return now.Add(26 * time.Hour) }
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_day_turned" && got.Status.GateReentries == 1; back != on {
+				t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+			}
+			if !on && (got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "auto_merge_cap") {
+				t.Fatalf("off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
+	}
+}
+
+// Human path AM5 (R-I11): with approveToMerge, an agent task handed off class_paused returns,
+// counted, once a clean ledger makes paused read false. Off, it stays with a human.
+func TestAPausedTaskReturnsWhenThePauseLifts(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approveToMerge=%t", on), func(t *testing.T) {
+			old := metav1.NewTime(now.Add(-3 * time.Hour))
+			reverted := awaiting()
+			reverted.Name, reverted.Spec.PredictedClass, reverted.Status.Phase = "1reverted", "docs-links", v1alpha1.PhaseReverted
+			reverted.Status.PullRequest.Number, reverted.Status.PullRequest.AutoMerged = 9, true
+			reverted.Status.PullRequest.MergedAt, reverted.Status.Runs = &old, nil
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, reverted)
+			g.r.Cfg.Merge.ApproveToMerge = on
+			g.handedOff(t, "class_paused", 0)
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused" {
+				t.Fatalf("still paused: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+			if err := g.c.Delete(t.Context(), reverted); err != nil { // the ledger is clean: no revert in the window
+				t.Fatal(err)
+			}
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_unpaused" && got.Status.GateReentries == 1; back != on {
+				t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+			}
+			if !on && (got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused") {
+				t.Fatalf("off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
+	}
+}
+
+// AM3 (final review I1): the hand-off names the one action. With approveToMerge, an agents pull
+// request's hand-off says "approve this pull request" unless its reason is one a human fixes by
+// hand; off, or adopted, every hand-off keeps the bypass instructions.
+func TestTheHandOffTextFollowsTheReason(t *testing.T) {
+	approvable := []string{"class_unarmed", "patch_too_large", "policy_pending", "policy_absent", "no_approving_verdict",
+		"maintainer_approved", "approval_stale", "closes_parent", "auto_merge_cap", "class_paused", "file_not_allowed"}
+	byHand := []string{"not_agent_authored", "gate_path", "contract_modified", "not_owned", "steering_path", "foreign_trailer",
+		"not_mergeable", "changes_requested", "human_commit_in_pr"}
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	for _, on := range []bool{true, false} {
+		g.r.Cfg.Merge.ApproveToMerge = on
+		for _, adopted := range []bool{false, true} {
+			for _, reason := range append(slices.Clone(approvable), byHand...) {
+				want := on && !adopted && slices.Contains(approvable, reason)
+				body := g.r.handOff(&tk, reason, adopted).Body
+				if got := strings.Contains(body, "approve this pull request"); got != want || got == strings.Contains(body, "bypass rules") {
+					t.Errorf("on=%t adopted=%t %s: %q", on, adopted, reason, body)
+				}
+			}
+		}
+	}
+}
+
+// Final review I1: a human's push under a maintainer's approval hands off human_commit_in_pr with
+// the bypass instructions, and the approval does not send it back: the push check would refuse
+// the same head again on every approval.
+func TestAHumanCommitUnderAnApprovalIsHandedOffByHand(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: "Smana", Before: "c1", After: "abc"},
+		forge.Push{Type: "branch_creation", Actor: "ogenki-agents[bot]", After: "c1"})
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "human_commit_in_pr" || len(g.f.Armed()) != 0 {
+		t.Fatalf("%s %s %v", got.Status.Phase, got.Status.Reason, g.f.Armed())
+	}
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "bypass rules") || strings.Contains(c, "approve this pull request") {
+		t.Fatalf("the hand-off names the bypass: %q", c)
+	}
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "human_commit_in_pr" {
+		t.Fatalf("no approval returns it: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// Final review I1: a page-filling diff hands a class's decision off patch_too_large, saying
+// "approve"; the approval that follows arms on the human's judgement without reading the diff
+// again, so it merges instead of handing the same head off once more.
+func TestAnApprovalMergesAPatchTooLargeToRead(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.f.SetDiffError(fmt.Errorf("wrapped: %w", forge.ErrDiffTooLarge))
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "patch_too_large" {
+		t.Fatalf("hand-off: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "approve this pull request") {
+		t.Fatalf("the hand-off says approve: %q", c)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+		t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	if a := g.f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
+		t.Fatalf("merged %q", a)
+	}
+}
+
+// Final review M1: a shadow hand-off records the head it judged, so a maintainer's approval of
+// that head returns the agent task to the gate, which merges it on the approval.
+func TestAnApprovalOfAShadowHandOffReturnsIt(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.r.Cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	g.patch(t, func(tk *v1alpha1.Task) { tk.Status.PullRequest.HeadSHA = "old" }) // what detectPR last wrote
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "shadow_would_arm" || got.Status.PullRequest.HeadSHA != "abc" {
+		t.Fatalf("shadow: %s %s head %q", got.Status.Phase, got.Status.Reason, got.Status.PullRequest.HeadSHA)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+		t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
 	}
 }

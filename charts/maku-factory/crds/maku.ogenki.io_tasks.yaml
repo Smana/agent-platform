@@ -879,6 +879,12 @@ spec:
                 description: PullRequestRef is the task's pull request and what happened
                   to it.
                 properties:
+                  approvedBy:
+                    description: |-
+                      ApprovedBy is the maintainer whose approval of the head the merger merged on (AM1); empty
+                      unless MergedHow is "approved".
+                    maxLength: 64
+                    type: string
                   armedAt:
                     format: date-time
                     type: string
@@ -907,6 +913,15 @@ spec:
                     type: string
                   mergedBy:
                     maxLength: 64
+                    type: string
+                  mergedHow:
+                    description: |-
+                      MergedHow says who judged the merge the merger made (human path AM1): "class", the class's
+                      own conditions (AutoMerged), or "approved", a maintainer's approval of the head, named in
+                      ApprovedBy. Empty for a merge the merger did not make.
+                    enum:
+                    - class
+                    - approved
                     type: string
                   nodeID:
                     maxLength: 128
