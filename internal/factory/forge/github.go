@@ -747,7 +747,8 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 						SubmittedAt *githubv4.DateTime
 						Author      *actor
 						// authorAssociation scopes an adopted pull request's veto to the repository's own.
-						AuthorAssociation string `graphql:"authorAssociation"`
+						AuthorAssociation string                `graphql:"authorAssociation"`
+						Commit            *struct{ Oid string } `graphql:"commit"`
 						Comments          struct {
 							Nodes []struct {
 								Path string
@@ -800,6 +801,9 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	}
 	for _, r := range p.Reviews.Nodes {
 		rv := Review{ID: r.DatabaseID, Author: r.Author.login(), State: r.State, Body: r.Body, Association: r.AuthorAssociation}
+		if r.Commit != nil {
+			rv.Commit = r.Commit.Oid
+		}
 		if r.SubmittedAt != nil {
 			rv.At = r.SubmittedAt.Time
 		}
