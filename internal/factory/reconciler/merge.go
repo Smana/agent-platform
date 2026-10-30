@@ -222,9 +222,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+		// The head judged is the head an approval must be of to return the task (AM2); for an adopted
+		// task (R46), the head awaitingHuman compares with Renovate's next push.
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		if adoptedTask(t) {
-			// R46: the head decided is the head awaitingHuman compares with Renovate's next push.
-			t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+			t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA
 			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
 			return nil
 		}

@@ -741,8 +741,8 @@ func TestAnApprovalReturnsATaskToTheGate(t *testing.T) {
 		back   bool
 	}{
 		{"class_unarmed", true}, {"patch_too_large", true}, {"no_approving_verdict", true}, {"maintainer_approved", true},
-		{"policy_pending", true}, {"gate_path", false}, {"not_mergeable", false}, {"steering_path", false}, {"foreign_trailer", false},
-		{"human_commit_in_pr", false},
+		{"policy_pending", true}, {"shadow_would_arm", true}, {"gate_path", false}, {"not_mergeable", false}, {"steering_path", false},
+		{"foreign_trailer", false}, {"human_commit_in_pr", false},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
@@ -952,5 +952,28 @@ func TestAnApprovalMergesAPatchTooLargeToRead(t *testing.T) {
 	}
 	if a := g.f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
 		t.Fatalf("merged %q", a)
+	}
+}
+
+// Final review M1: a shadow hand-off records the head it judged, so a maintainer's approval of
+// that head returns the agent task to the gate, which merges it on the approval.
+func TestAnApprovalOfAShadowHandOffReturnsIt(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.r.Cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	g.patch(t, func(tk *v1alpha1.Task) { tk.Status.PullRequest.HeadSHA = "old" }) // what detectPR last wrote
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "shadow_would_arm" || got.Status.PullRequest.HeadSHA != "abc" {
+		t.Fatalf("shadow: %s %s head %q", got.Status.Phase, got.Status.Reason, got.Status.PullRequest.HeadSHA)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
+	g.f.SetPR(pr)
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+		t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
 	}
 }
