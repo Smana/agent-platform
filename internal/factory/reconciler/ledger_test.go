@@ -190,6 +190,29 @@ func TestTheShadowRecordCarriesItsHead(t *testing.T) {
 	}
 }
 
+// AM8: the comment a decision posts carries its record on a line of its own (R-m11), the would-arm
+// and the hand-off alike, and leaves the event's marker as the tally reads it.
+func TestTheDecisionCommentCarriesItsRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		class config.Class
+		want  string
+	}{
+		{"would-arm", config.Class{Shadow: true}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=shadow:shadow_would_arm files=0/0 lines=0/0 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=none -->"},
+		{"hand-off", config.Class{}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:class_unarmed files=0/0 lines=0/0 shape=- holdout=- oracle=- age=- evidence=- paused=false capped=false reviewer=none -->"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.r.Cfg.Classes = map[string]config.Class{"docs-links": tc.class, "revert": {Shadow: true}}
+			g.f.SetChecks(12, green("SUCCESS"))
+			g.reconcile(t, "3buqdlot", 1)
+			if c := strings.Join(append(g.f.Comments(12), g.f.Comments(7)...), "\n"); !strings.Contains(c, tc.want) {
+				t.Fatalf("%q\nwant %q", c, tc.want)
+			}
+		})
+	}
+}
+
 // D2: every decision the gate acts on is counted by class, verdict and reason; a wait is not one.
 func TestTheGateCountsItsDecisions(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)

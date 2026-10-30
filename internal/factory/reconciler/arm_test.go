@@ -10,6 +10,7 @@ import (
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/decision"
 	"github.com/Smana/maku/internal/factory/forge"
 )
 
@@ -293,5 +294,41 @@ func TestAnAdoptedPullRequestsApprovalHandsOffWithTheSwitchOn(t *testing.T) {
 	d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("deps-patch", "solo", ""), Cfg: cfg})
 	if d.Verdict != "human" || d.Reason != "maintainer_approved" || d.Approver != "" {
 		t.Fatalf("%+v, want human maintainer_approved", d)
+	}
+}
+
+// Human path AM8: every decision carries its row vector, so the tally can replay a cap and count
+// the refusals a human merged unchanged.
+func TestADecisionCarriesItsRows(t *testing.T) {
+	cfg := armCfg()
+	cfg.Classes["docs-links"] = config.Class{Shadow: true, MaxPatchFiles: 3, MaxModifiedLines: 20}
+	tk := armTask("docs-links", "pair", "approve")
+	tk.Status.Runs = append(tk.Status.Runs, v1alpha1.RunRecord{ID: "r3vnwr3v", Role: "reviewer", Verdict: "approve", HeadSHA: head,
+		Provenance: v1alpha1.RunProvenance{ServedModels: []string{"glm-5.3"}}})
+	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
+		Verifiers: []v1alpha1.RunRecord{tk.Status.Runs[2]}, Stats: []forge.FileStat{{Path: testFile, Additions: 1, Deletions: 1}},
+		Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+	want := decision.Rows{Files: 1, MaxFiles: 3, Lines: 2, MaxLines: 20, Shape: "ok", Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "glm-5.3"}
+	if d.Verdict != "shadow" || d.Rows != want {
+		t.Fatalf("%s %+v\nwant shadow %+v", d.Verdict, d.Rows, want)
+	}
+}
+
+// A refusal records the rows it read and leaves the later ones unread (""), so the marker prints
+// "-" for them (R-m7); the reviewer model is known whatever the refusal, "none" without a run.
+func TestARefusalLeavesItsLaterRowsUnread(t *testing.T) {
+	cfg := armCfg()
+	cfg.Classes["docs-links"] = config.Class{Shadow: true, MaxPatchFiles: 3, MaxModifiedLines: 20}
+	tk := armTask("docs-links", "pair", "approve")
+	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: oldHead})
+	want := decision.Rows{Evidence: "head_unreported", Reviewer: "none"}
+	if d.Reason != "head_unreported" || d.Rows != want {
+		t.Fatalf("%s %+v\nwant head_unreported %+v", d.Reason, d.Rows, want)
+	}
+	d = DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head, DiffRead: true,
+		Stats: []forge.FileStat{{Path: testFile, Additions: 30}}, Files: changed("[a](https://x/old)", "[a](https://x/new)")})
+	want = decision.Rows{Files: 1, MaxFiles: 3, Lines: 30, MaxLines: 20, Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "none"}
+	if d.Reason != "patch_too_large" || d.Rows != want {
+		t.Fatalf("%s %+v\nwant patch_too_large %+v", d.Reason, d.Rows, want)
 	}
 }

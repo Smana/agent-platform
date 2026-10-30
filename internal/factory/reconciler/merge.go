@@ -20,6 +20,7 @@ import (
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/envelope"
 	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/decision"
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/narrate"
 )
@@ -139,7 +140,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		switch {
 		case errors.Is(ferr, forge.ErrDiffTooLarge):
 			// A full page of files is over any class's maxPatchFiles: hand it off, as the gate does.
-			d = ArmDecision{Verdict: "human", Reason: "patch_too_large"}
+			d = ArmDecision{Verdict: "human", Reason: "patch_too_large", Rows: d.Rows}
 		case ferr != nil:
 			return ferr
 		default:
@@ -164,15 +165,16 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			r.log().Info("the head's push is not recorded yet: waiting", "task.id", t.Name, "head", pr.HeadSHA)
 			return nil
 		case pushed != pushFactory:
-			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr"}
+			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr", Rows: d.Rows}
 		}
 	}
 	if d.Verdict == "arm" && closesParent(t, pr.Body) { // a part closes its own issue only: the parent closes with the last part
-		d = ArmDecision{Verdict: "human", Reason: "closes_parent"}
+		d = ArmDecision{Verdict: "human", Reason: "closes_parent", Rows: d.Rows}
 	}
 	if d.Verdict != "wait" {
 		class, verdict, reason := t.Spec.PredictedClass, d.Verdict, cmp.Or(d.Reason, "armed")
 		record(ctx, func(ctx context.Context) { r.Metrics.MergeDecision(ctx, class, verdict, reason) })
+		r.log().Info("merge decision", "task.id", t.Name, "head", pr.HeadSHA, "verdict", d.Verdict, "reason", reason, "rows", d.Rows)
 	}
 	switch d.Verdict {
 	case "wait":
@@ -194,7 +196,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			// it: no fix run, no re-run of its CI. A maintainer or its author takes it from here.
 			t.Status.PullRequest.HeadSHA = pr.HeadSHA
 			r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-			narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
+			narrateLater(t, withRecord(narrate.WaitingForHuman(t, d.Reason), t, d, pr.HeadSHA))
 			return nil
 		}
 		if d.Verdict == "ci_red" {
@@ -202,7 +204,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
-		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
+		narrateOn(t, pr.Number, withRecord(narrate.WaitingForHuman(t, d.Reason), t, d, pr.HeadSHA))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, d.Reason)
 	case "human":
 		if d.Matched != "" && d.Matched != t.Spec.PredictedClass {
@@ -218,7 +220,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-		narrateLater(t, r.handOff(t, d.Reason, adopted))
+		narrateLater(t, withRecord(r.handOff(t, d.Reason, adopted), t, d, pr.HeadSHA))
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
@@ -227,10 +229,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		if adoptedTask(t) {
 			t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA
-			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
+			narrateOn(t, pr.Number, withRecord(narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA, d.Paused, d.Capped), t, d, pr.HeadSHA))
 			return nil
 		}
-		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
+		narrateOn(t, pr.Number, withRecord(narrate.WouldArm(t, d.Matched, pr.HeadSHA, d.Paused, d.Capped), t, d, pr.HeadSHA))
 		return nil
 	}
 	// The decided head, pinned: GitHub checks it at merge time, so a push that landed since the
@@ -243,7 +245,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return nil
 		case errors.Is(err, forge.ErrNotMergeable):
 			r.to(t, v1alpha1.PhaseAwaitingHuman, "not_mergeable")
-			narrateLater(t, narrate.WaitingForHuman(t, "not_mergeable"))
+			narrateLater(t, withRecord(narrate.WaitingForHuman(t, "not_mergeable"), t, d, pr.HeadSHA))
 			return nil
 		default:
 			return err
@@ -256,14 +258,22 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// on main_red; the approval is the record.
 		ref.MergedHow, ref.ApprovedBy = "approved", d.Approver
 		r.to(t, v1alpha1.PhaseAutoMerging, "")
-		narrateOn(t, pr.Number, narrate.ArmedByApproval(t, d.Approver))
+		narrateOn(t, pr.Number, withRecord(narrate.ArmedByApproval(t, d.Approver), t, d, pr.HeadSHA))
 		return nil
 	}
 	armed := metav1.NewTime(r.Now())
 	ref.ArmedAt, ref.MergedHow = &armed, "class"
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
-	narrateOn(t, pr.Number, narrate.Armed(t))
+	narrateOn(t, pr.Number, withRecord(narrate.Armed(t), t, d, pr.HeadSHA))
 	return nil
+}
+
+// withRecord appends the decision's record (AM8) to the comment that narrates it: the hand-off,
+// the would-arm or the arm. It is a marker line of its own (R-m11), so the event's marker, and the
+// tally that reads it, are unchanged.
+func withRecord(ev narrate.Event, t *v1alpha1.Task, d ArmDecision, head string) narrate.Event {
+	ev.Body += "\n\n" + decision.Marker(head, t.Spec.PredictedClass, d.Verdict, cmp.Or(d.Reason, "armed"), d.Rows)
+	return ev
 }
 
 // maxGateReentries bounds the returns to the gate per task: an input that flaps between a

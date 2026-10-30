@@ -9,6 +9,7 @@ import (
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/decision"
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/steering"
 )
@@ -69,6 +70,8 @@ type ArmDecision struct {
 	Approver string
 	// Paused and Capped say what a shadow decision would have met as a live one (AM4).
 	Paused, Capped bool
+	// Rows are what the decision read, row by row (AM8): its record, on every decision.
+	Rows decision.Rows
 }
 
 // CIState over the required checks: FAILURE if one failed or reported a state the rollup's
@@ -100,8 +103,10 @@ func CIState(c forge.Checks, required []string) string {
 
 // DecideArm is §5.1's merge-actor rule: a fixed base no class can remove, one author mode, and
 // the conditions the class declares (merge gate classes MC1). Every "no" fails towards a human
-// (property 3), each with its own reason.
-func DecideArm(in ArmInputs) ArmDecision {
+// (property 3), each with its own reason. Every decision carries the rows it read (AM8).
+func DecideArm(in ArmInputs) (d ArmDecision) {
+	rows := decision.Rows{Reviewer: reviewerModel(in.Task)}
+	defer func() { d.Rows = rows }()
 	rc := in.Cfg.RepositoryFor(in.Task.Spec.Repository)
 	if d, done := baseChecks(in, rc); done {
 		return d
@@ -146,21 +151,27 @@ func DecideArm(in ArmInputs) ArmDecision {
 		return human("class_unarmed", "")
 	}
 	if cl.Adopted() {
-		if reason := adoptEvidence(in, cl); reason != "" {
-			return human(reason, class)
-		}
-	} else if reason := agentEvidence(in); reason != "" {
-		return human(reason, class)
+		rows.Evidence = adoptEvidence(in, cl)
+	} else {
+		rows.Evidence = agentEvidence(in)
 	}
+	if rows.Evidence != "" {
+		return human(rows.Evidence, class)
+	}
+	rows.Evidence = "ok"
 	if in.DiffRead && in.Cfg.SteeringOn() && touchesSteering(in.Stats) {
 		return human("steering_path", class) // no agent pull request changes a note (scoper SC3)
 	}
-	if reason, wait := declared(cl, in); wait {
+	read, reason, wait := declared(cl, in)
+	read.Evidence, read.Reviewer = rows.Evidence, rows.Reviewer
+	rows = read
+	if wait {
 		return ArmDecision{Verdict: "wait", Reason: reason, Matched: class}
 	} else if reason != "" {
 		return human(reason, class)
 	}
 	paused, capped := in.Paused, in.ArmedToday >= rc.Merge.AutoMergesPerDay || (cl.MaxPerDay > 0 && in.ClassArmedToday >= cl.MaxPerDay)
+	rows.Paused, rows.Capped = paused, capped
 	if !cl.Live { // R32, AM4: every condition holds; the gate is in shadow, which nothing blocks
 		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class, Paused: paused, Capped: capped}
 	}
@@ -171,6 +182,17 @@ func DecideArm(in ArmInputs) ArmDecision {
 		return human("auto_merge_cap", class)
 	}
 	return ArmDecision{Verdict: "arm", Matched: class}
+}
+
+// reviewerModel is the record's reviewer (AM8, AM10): the newest reviewer run's served models
+// joined with "+", "none" without a reviewer run, "" (unread) when its provenance names none.
+func reviewerModel(t *v1alpha1.Task) string {
+	for i := len(t.Status.Runs) - 1; i >= 0; i-- {
+		if r := t.Status.Runs[i]; r.Role == "reviewer" {
+			return strings.Join(r.Provenance.ServedModels, "+")
+		}
+	}
+	return "none"
 }
 
 // approval is row 3's read of an agents pull request with merge.approveToMerge on (human path
