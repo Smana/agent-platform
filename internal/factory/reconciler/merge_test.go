@@ -612,3 +612,51 @@ func TestASubstantiveHandOffStaysWithTheHuman(t *testing.T) {
 		})
 	}
 }
+
+// Human path AM1: an approved merge is the merger's merge of the head a maintainer approved. It is
+// outside the caps (no armedAt), labelled factory/merged:<class> and factory/approved-merge, counted
+// approved_merged, and Done at once: no Verifying, so main_red never reverts it. A maintainer's
+// factory/revert still opens the revert (R-B2).
+func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.r.Cfg.Classes["docs-links"] = config.Class{} // unarmed: only the approval can merge it
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+	g.f.SetPR(pr)
+	g.f.SetChecks(12, green("SUCCESS"))
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" ||
+		got.Status.PullRequest.ApprovedBy != "Smana" || got.Status.PullRequest.ArmedAt != nil {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.PullRequest)
+	}
+	if a := g.f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
+		t.Fatalf("merged %q, want the approved head", a)
+	}
+	pr, _ = g.f.PullRequest(t.Context(), 12)
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "ogenki-agent-merger[bot]", "m1", now
+	g.f.SetPR(pr)
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.Reason != "merged" || got.Status.PullRequest.AutoMerged {
+		t.Fatalf("%s %s autoMerged=%v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest.AutoMerged)
+	}
+	if a := g.f.Added(12); !slices.Contains(a, MergedLabel("docs-links")) || !slices.Contains(a, ApprovedMergeLabel) ||
+		slices.Contains(a, AutoMergedLabel("docs-links")) {
+		t.Fatalf("labels %q", a)
+	}
+	if !slices.Contains(g.metrics.recorded, "pr docs-links approved_merged") || slices.Contains(g.metrics.recorded, "pr docs-links auto_merged") {
+		t.Fatalf("outcomes %q", g.metrics.recorded)
+	}
+	// R-B2: a maintainer's factory/revert on the approved merge opens the revert, and keeps its two labels.
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	_ = g.c.Update(t.Context(), &tk)
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" || len(g.f.Reverts()) != 1 {
+		t.Fatalf("%s %s %v", got.Status.Phase, got.Status.Reason, g.f.Reverts())
+	}
+	if slices.Contains(g.f.Added(12), AutoMergedLabel("docs-links")) {
+		t.Fatalf("an approved merge is never labelled auto-merged: %q", g.f.Added(12))
+	}
+}

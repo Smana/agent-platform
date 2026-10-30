@@ -244,8 +244,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
+	ref := t.Status.PullRequest
+	ref.HeadSHA, ref.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+	if d.Reason == "maintainer_approved" {
+		// AM1: a human judged it. Outside the caps (no ArmedAt), Done once merged, never reverted
+		// on main_red; the approval is the record.
+		ref.MergedHow, ref.ApprovedBy = "approved", d.Approver
+		r.to(t, v1alpha1.PhaseAutoMerging, "")
+		narrateOn(t, pr.Number, narrate.Armed(t)) // Task 5 narrates the approval
+		return nil
+	}
 	armed := metav1.NewTime(r.Now())
-	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = &armed, pr.HeadSHA, pr.HeadSHA
+	ref.ArmedAt, ref.MergedHow = &armed, "class"
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
@@ -687,12 +697,20 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 	class := t.Spec.PredictedClass
 	switch {
 	case pr.State == "MERGED":
-		if forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
-			r.label(ctx, pr, AutoMergedLabel(class))
-		}
 		now := r.mergedAt(pr)
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
-		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
+		merger := forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin)
+		if merger && ref.MergedHow == "approved" {
+			// AM1: the merger's merge on a maintainer's approval is a human merge in the ledger.
+			r.label(ctx, pr, MergedLabel(class))
+			r.label(ctx, pr, ApprovedMergeLabel)
+			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "approved_merged") })
+			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
+		}
+		if merger {
+			r.label(ctx, pr, AutoMergedLabel(class))
+		}
+		ref.AutoMerged = merger // AutoMerged: merged by the merger App on the class's conditions (R52)
 		if !ref.AutoMerged {
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
@@ -760,11 +778,12 @@ func (r *Reconciler) verifying(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
-// revertable: a Done, auto-merged task a maintainer asked to revert inside the window.
+// revertable: a Done task the merger merged, on the class's conditions or on a maintainer's
+// approval (AM1), that a maintainer asked to revert inside the window.
 func (r *Reconciler) revertable(t *v1alpha1.Task) bool {
 	ref := t.Status.PullRequest
 	return t.Status.Phase == v1alpha1.PhaseDone && t.Annotations[v1alpha1.AnnotationRevert] != "" &&
-		ref != nil && ref.AutoMerged && ref.RevertNumber == 0 && ref.MergedAt != nil &&
+		ref != nil && (ref.AutoMerged || ref.MergedHow == "approved") && ref.RevertNumber == 0 && ref.MergedAt != nil &&
 		r.Now().Sub(ref.MergedAt.Time) <= r.repo(t).Merge.RevertWindow.Duration
 }
 
@@ -782,7 +801,9 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	if err != nil {
 		return err
 	}
-	r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
+	if ref.AutoMerged { // an approved merge keeps its two labels (AM1)
+		r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
+	}
 	rv, err := r.merger(ctx).RevertPR(ctx, ref.NodeID, fmt.Sprintf("Revert %q", pr.Title),
 		fmt.Sprintf("Reverts #%d (agent factory task `%s`): %s.", ref.Number, t.Name, narrate.Reason(why)))
 	if err != nil {

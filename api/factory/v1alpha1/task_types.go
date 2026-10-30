@@ -795,6 +795,17 @@ type PullRequestRef struct {
 	MergedBy string `json:"mergedBy,omitempty"`
 	// +optional
 	AutoMerged bool `json:"autoMerged,omitempty"`
+	// MergedHow says who judged the merge the merger made (human path AM1): "class", the class's
+	// own conditions (AutoMerged), or "approved", a maintainer's approval of the head, named in
+	// ApprovedBy. Empty for a merge the merger did not make.
+	// +kubebuilder:validation:Enum=class;approved
+	// +optional
+	MergedHow string `json:"mergedHow,omitempty"`
+	// ApprovedBy is the maintainer whose approval of the head the merger merged on (AM1); empty
+	// unless MergedHow is "approved".
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ApprovedBy string `json:"approvedBy,omitempty"`
 	// +optional
 	ArmedAt *metav1.Time `json:"armedAt,omitempty"`
 	// +optional
