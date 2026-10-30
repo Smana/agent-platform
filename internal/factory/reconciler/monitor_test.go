@@ -68,6 +68,17 @@ func monitorRig(t *testing.T) *rig {
 	return g
 }
 
+// AM9, R-I6: a monitor pass refreshes its class's class_paused gauge, so a class with no decision
+// still reports.
+func TestAMonitorPassRefreshesTheClassPausedGauge(t *testing.T) {
+	g := monitorRig(t)
+	g.reconcile(t, "3buqdlot", 1)
+	want := "class_paused " + g.r.Cfg.RepositoryFor("").Name + " dead-links false"
+	if !slices.Contains(g.metrics.recorded, want) {
+		t.Fatalf("want %q in %v", want, g.metrics.recorded)
+	}
+}
+
 func later(n int, author, branch string, labels ...string) forge.MergedPull {
 	return forge.MergedPull{Number: n, Author: author, HeadRef: branch, MergeCommitSHA: "bbbb" + string(rune('0'+n%10)),
 		MergedAt: now.Add(-time.Hour), Labels: labels}

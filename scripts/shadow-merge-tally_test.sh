@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/shadow-merge-tally.sh against a fake gh: only the factory's head-pinned would-arm
 # comments count, the last one decides, and a merge at another head, a revert or an auto-merge
-# is not "merged unchanged".
+# is not "merged unchanged". The marker's paused= and capped= (AM4) follow the head.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -15,7 +15,8 @@ cat > "$tmp/prs.json" <<JSON
  {"number":5,"headRefOid":"eee","mergedBy":{"login":"Smana"},"comments":[$(wa ogenki-agent-factory 2026-10-01T00:00:00Z review eee)]},
  {"number":6,"headRefOid":"fff","mergedBy":{"login":"Smana"},"comments":[$(wa ogenki-agent-factory 2026-10-01T00:00:00Z docs-links fff)]},
  {"number":7,"headRefOid":"abc","mergedBy":{"login":"ogenki-agent-merger"},"comments":[$(wa ogenki-agent-factory 2026-10-01T00:00:00Z docs-links abc)]},
- {"number":8,"headRefOid":"999","mergedBy":{"login":"Smana"},"comments":[{"author":{"login":"ogenki-agent-factory"},"createdAt":"2026-10-01T00:00:00Z","body":"would auto-merge: \`docs-links\` <!-- agent-factory scope=x event=would-arm-1 -->"}]}
+ {"number":8,"headRefOid":"999","mergedBy":{"login":"Smana"},"comments":[{"author":{"login":"ogenki-agent-factory"},"createdAt":"2026-10-01T00:00:00Z","body":"would auto-merge: \`docs-links\` <!-- agent-factory scope=x event=would-arm-1 -->"}]},
+ {"number":9,"headRefOid":"ab9","mergedBy":{"login":"Smana"},"comments":[{"author":{"login":"ogenki-agent-factory"},"createdAt":"2026-10-01T00:00:00Z","body":"would auto-merge: \`docs-links\` <!-- agent-factory scope=x event=would-arm-1 head=ab9 paused=true capped=false -->"}]}
 ]
 JSON
 cat > "$tmp/reverts.json" <<'JSON'
@@ -33,7 +34,8 @@ want='#1 merged_unchanged
 #3 merged_unchanged
 #6 reverted
 #7 auto_merged
-merged_unchanged=2 changed=1 reverted=1 auto_merged=1'
+#9 merged_unchanged
+merged_unchanged=3 changed=1 reverted=1 auto_merged=1'
 if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
 if scripts/shadow-merge-tally.sh 2>/dev/null; then echo "--class is required"; exit 1; fi
 

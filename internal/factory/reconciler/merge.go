@@ -227,10 +227,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		if adoptedTask(t) {
 			t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA
-			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
+			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
 			return nil
 		}
-		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
+		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA, d.Paused, d.Capped))
 		return nil
 	}
 	// The decided head, pinned: GitHub checks it at merge time, so a push that landed since the
@@ -339,7 +339,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		switch why {
 		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded",
 			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired",
-			"auto_merge_cap", "class_paused": // a shadow decision meets the cap and the pause too
+			"auto_merge_cap", "class_paused": // a live class's; a shadow decision meets neither (AM4)
 		default:
 			return false, nil
 		}
@@ -897,17 +897,29 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 		return err
 	}
 	ref.RevertNumber = rv.Number
+	if why == "revert_requested" && t.Annotations[v1alpha1.AnnotationDrill] == "true" { // AM6: never a main_red
+		ref.Drill = true
+		if err := r.merger(ctx).AddLabels(ctx, rv.Number, DrillLabel); err != nil {
+			r.log().Error("label the drill revert", "pr", rv.Number, "err", err)
+		}
+	}
 	if r.repo(t).Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
 		if err := r.merger(ctx).EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
 			return err
 		}
 	}
 	class := t.Spec.PredictedClass
+	// A drill counts as reverted here too: the outcome is what happened to the pull request, the
+	// breaker's exemption is the ledger's (AM6).
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
-	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
+	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why, ref.Drill))
 	if n := r.controlIssue(t); n > 0 { // R41: where the kill switch lives
-		b := r.repo(t).Merge.Breaker
-		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
+		if ref.Drill {
+			narrateOn(t, n, narrate.ClassDrill(t))
+		} else {
+			b := r.repo(t).Merge.Breaker
+			narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
+		}
 	}
 	r.tellParent(ctx, t, ref.RevertNumber)
 	return r.end(ctx, t, v1alpha1.PhaseReverted, why)
@@ -990,7 +1002,7 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 		o := &l.Items[i]
 		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) &&
 			!undecidedAdoptedMerge(o, rc) { // as the label ledger: Renovate's merge of an undecided head is not the class's
-			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
+			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted && !ref.Drill,
 				Auto: ref.ArmedAt != nil}
 			// The running process's own monitor outcomes: the GitHub ledger is read once per process,
 			// so without them the breaker under-demotes until a restart.
@@ -1000,15 +1012,31 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 			tasks = append(tasks, mg)
 		}
 	}
-	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)
+	merges, ripe := uniteMerges(tasks, gh[class]), maturity(rc, class)
+	for i := range merges { // on the united view, so GitHub's merge time decides (AM7)
+		merges[i].Mature = r.Now().Sub(merges[i].At) > ripe
+	}
+	demoted, _ := Demoted(merges, rc.Merge.Breaker)
+	// AM9: at once, not after the write: a gauge holds the latest verdict, so a retried pass that
+	// records it again changes nothing.
+	r.Metrics.ClassPaused(ctx, rc.Name, class, demoted)
 	return demoted, nil
+}
+
+// maturity is how long after a merge its outcome is known (AM7): the class's follow-up window, or
+// the revert window for a class without a monitor.
+func maturity(rc *config.Repository, class string) time.Duration {
+	if m := rc.Classes[class].Monitor; m != nil && m.FollowUpWindow.Duration > 0 {
+		return m.FollowUpWindow.Duration
+	}
+	return rc.Merge.RevertWindow.Duration
 }
 
 // Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, or (when
 // b.MaxFollowUps is set) that many merges with a follow-up or a regression, and how many reverts
 // they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
 // and Validate keep it off the production path, so a test rig that builds config.Merge by hand
-// must set a breaker.
+// must set a breaker. With b.RecoverAfter set, a demoted class resumes once recovered (AM7).
 func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 	newestFirst(merges)
 	reverts, followUps := 0, 0
@@ -1020,7 +1048,27 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 			followUps++
 		}
 	}
-	return reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps), reverts
+	demoted := reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps)
+	if demoted && b.RecoverAfter > 0 && recovered(merges, b.RecoverAfter) {
+		return false, reverts
+	}
+	return demoted, reverts
+}
+
+// recovered: at least n mature clean merges are newer than the newest bad merge (of any maturity),
+// and none newer than it is bad (AM7, R-I8). An immature clean merge is unknown: skipped, neither
+// counted nor blocking. merges is sorted newest first.
+func recovered(merges []Merge, n int) bool {
+	clean := 0
+	for _, m := range merges {
+		if m.Reverted || m.FollowUp || m.Regression {
+			return clean >= n
+		}
+		if m.Mature {
+			clean++
+		}
+	}
+	return false // no bad merge in sight: demoted on none, so nothing to recover from
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the

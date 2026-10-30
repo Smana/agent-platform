@@ -53,6 +53,41 @@ func TestARebuiltFactoryReadsADemotedClassFromGitHub(t *testing.T) {
 	}
 }
 
+// Human path AM6: a revert PR carrying factory/drill does not count as a revert of what it
+// reverts, on GitHub's side (a rebuild) as on the Task's, when the merger or a maintainer added
+// the label: verified as factory/revert is. Anyone else's, or an unverified one, counts.
+func TestADrillRevertDoesNotTripTheBreaker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		actors []string // who added factory/drill to the revert PR, oldest first
+		paused bool
+	}{
+		{"the merger's copy", []string{"ogenki-agent-merger[bot]"}, false},
+		{"a maintainer's", []string{"Smana"}, false},
+		{"a non-maintainer's", []string{"mallory"}, true},
+		{"a non-maintainer's re-add after a maintainer's", []string{"Smana", "mallory"}, true},
+		{"no event read", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.f.SetChecks(12, green("SUCCESS"))
+			g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "ogenki-agent-merger[bot]", MergedAt: now.Add(-48 * time.Hour),
+				Labels: []string{AutoMergedLabel("docs-links")}})
+			g.f.SetPR(forge.PR{Number: 30, State: "MERGED", MergedAt: now.Add(-47 * time.Hour), Labels: []string{RevertOfLabel(9), DrillLabel}})
+			var evs []forge.LabelEvent
+			for i, a := range tc.actors {
+				evs = append(evs, forge.LabelEvent{Actor: a, Label: DrillLabel, At: now.Add(time.Duration(i-47) * time.Hour)})
+			}
+			g.f.SetEvents(30, evs...)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if paused := got.Status.Reason == "class_paused"; paused != tc.paused ||
+				(!paused && got.Status.Phase != v1alpha1.PhaseAutoMerging) {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
+	}
+}
+
 // D1: the daily cap counts today's labelled merges of every class, which a rebuild keeps.
 func TestTheDailyCapCountsTodaysLabelledMerges(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
@@ -150,7 +185,7 @@ func TestTheShadowRecordCarriesItsHead(t *testing.T) {
 	g.r.Cfg.Classes = map[string]config.Class{"docs-links": {Shadow: true}, "revert": {Shadow: true}}
 	g.f.SetChecks(12, green("SUCCESS"))
 	g.reconcile(t, "3buqdlot", 1)
-	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "event=would-arm-1 head=abc -->") {
+	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "event=would-arm-1 head=abc paused=false capped=false -->") {
 		t.Fatalf("%q", c)
 	}
 }
@@ -187,5 +222,52 @@ func TestDemotedUnitesTheTaskAndGitHubViews(t *testing.T) {
 	}
 	if d, _ := Demoted(uniteMerges(append(tasks, at(11, 2, false)), gh), b); d {
 		t.Fatal("two clean merges after it push it out of the window")
+	}
+}
+
+// Human path AM7: with recoverAfter, a tripped class resumes once its recoverAfter newest merges
+// are all newer than the newest bad one, clean and mature; immature ones count neither way, and a
+// new bad merge trips it again.
+func TestATrippedClassRecoversOnCleanMatureMerges(t *testing.T) {
+	b := config.Breaker{Window: 10, MaxReverts: 1, RecoverAfter: 3}
+	at := func(i int, reverted, mature bool) Merge {
+		return Merge{Number: i + 1, At: now.Add(time.Duration(i) * time.Hour), Reverted: reverted, Mature: mature}
+	}
+	bad := []Merge{at(0, true, true)}
+	if d, _ := Demoted(bad, b); !d {
+		t.Fatal("one revert trips")
+	}
+	two := append(slices.Clone(bad), at(1, false, true), at(2, false, true))
+	if d, _ := Demoted(two, b); !d {
+		t.Fatal("two clean merges are not three")
+	}
+	immature := append(slices.Clone(two), at(3, false, false))
+	if d, _ := Demoted(immature, b); !d {
+		t.Fatal("an immature merge does not count")
+	}
+	threeImmature := append(slices.Clone(bad), at(1, false, false), at(2, false, false), at(3, false, false))
+	if d, _ := Demoted(threeImmature, b); !d {
+		t.Fatal("three clean immature merges do not recover")
+	}
+	three := append(slices.Clone(two), at(3, false, true))
+	if d, _ := Demoted(three, b); d {
+		t.Fatal("three clean mature merges after the bad one recover")
+	}
+	if d, _ := Demoted(append(slices.Clone(three), at(4, false, false)), b); d {
+		t.Fatal("a newer immature merge is skipped, not blocking (R-I8)")
+	}
+	again := append(slices.Clone(three), at(4, true, true))
+	if d, _ := Demoted(again, b); !d {
+		t.Fatal("a new bad merge trips again")
+	}
+	if d, _ := Demoted(append(slices.Clone(three), at(4, true, false)), b); !d {
+		t.Fatal("a new bad merge trips again, mature or not")
+	}
+	followUp := append(slices.Clone(two), Merge{Number: 4, At: now.Add(3 * time.Hour), FollowUp: true, Mature: true})
+	if d, _ := Demoted(followUp, b); !d {
+		t.Fatal("a follow-up is a bad merge")
+	}
+	if d, _ := Demoted(three, config.Breaker{Window: 10, MaxReverts: 1}); !d {
+		t.Fatal("recoverAfter 0 keeps today's rule")
 	}
 }

@@ -372,3 +372,25 @@ func TestRunCostCarriesTheRole(t *testing.T) {
 		}
 	}
 }
+
+// AM9, R-I3: the class_paused gauge reads the breaker's last verdict per class; an unlisted
+// repository reads other.
+func TestClassPausedIsAGauge(t *testing.T) {
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	s.ListRepositories("Smana/cloud-native-ref")
+	s.ClassPaused(t.Context(), "Smana/cloud-native-ref", "docs-links", true)
+	s.ClassPaused(t.Context(), "Smana/unlisted", "dead-links", true)
+	body := scrape()
+	for _, want := range []string{
+		`maku_factory_class_paused{class="docs-links",repository="Smana/cloud-native-ref"} 1`,
+		`maku_factory_class_paused{class="dead-links",repository="other"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s\n%s", want, body)
+		}
+	}
+	s.ClassPaused(t.Context(), "Smana/cloud-native-ref", "docs-links", false)
+	if body := scrape(); !strings.Contains(body, `maku_factory_class_paused{class="docs-links",repository="Smana/cloud-native-ref"} 0`) {
+		t.Fatalf("%s", body)
+	}
+}

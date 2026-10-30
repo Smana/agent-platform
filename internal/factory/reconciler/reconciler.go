@@ -77,6 +77,8 @@ type TaskForge interface {
 	RemoveLabel(ctx context.Context, number int, label string) error
 	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
 	Issue(ctx context.Context, number int) (forge.Issue, error)
+	// LabelEvents verifies who added factory/drill to a revert PR (AM6), as intake verifies factory/revert.
+	LabelEvents(ctx context.Context, number int, label string) ([]forge.LabelEvent, error)
 	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
 	IssuesLabelled(ctx context.Context, label string) ([]forge.Issue, error)
 	IssuesLabelledSince(ctx context.Context, label string, since time.Time) ([]forge.Issue, error)
@@ -103,6 +105,7 @@ type metrics interface {
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	MergeDecision(ctx context.Context, class, verdict, reason string)
+	ClassPaused(ctx context.Context, repository, class string, paused bool)
 	Resumed(ctx context.Context, reason string)
 	LoopRun(ctx context.Context, class, end string)
 	ContractEnd(ctx context.Context, class, end string)

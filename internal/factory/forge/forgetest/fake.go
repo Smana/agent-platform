@@ -829,7 +829,7 @@ func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.Labelled
 	var out []forge.LabelledPull
 	for _, n := range slices.Sorted(maps.Keys(f.prs)) {
 		if p := f.prs[n]; slices.Contains(p.Labels, label) {
-			out = append(out, forge.LabelledPull{Number: n, State: p.State, MergedAt: p.MergedAt})
+			out = append(out, forge.LabelledPull{Number: n, State: p.State, MergedAt: p.MergedAt, Labels: slices.Clone(p.Labels)})
 		}
 	}
 	slices.Reverse(out)

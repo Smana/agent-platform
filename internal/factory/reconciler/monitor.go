@@ -225,6 +225,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	} else {
 		r.mon.passed(t.Name, r.Now())
 	}
+	// AM9, R-I6: refresh the class's class_paused gauge, so a class with no decision still reports.
+	// paused records it; a failed read leaves the last value and never fails the pass.
+	if _, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass); err != nil {
+		r.log().Warn("class_paused refresh failed", "task.id", t.Name, "class", t.Spec.PredictedClass, "err", err)
+	}
 	return nil
 }
 

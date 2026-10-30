@@ -322,6 +322,9 @@ func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string
 func (m *fakeMetrics) MergeDecision(_ context.Context, class, verdict, reason string) {
 	m.add("merge_decision " + class + " " + verdict + " " + reason)
 }
+func (m *fakeMetrics) ClassPaused(_ context.Context, repository, class string, paused bool) {
+	m.add("class_paused " + repository + " " + class + " " + strconv.FormatBool(paused))
+}
 func (m *fakeMetrics) LoopRun(_ context.Context, class, end string) {
 	m.add("loop_run " + class + " " + end)
 }

@@ -38,6 +38,11 @@ const AnnotationStop = "agents.ogenki.io/stop"
 // AnnotationRevert records a maintainer's factory/revert on an auto-merged PR, within the window (§6.4).
 const AnnotationRevert = "agents.ogenki.io/revert"
 
+// AnnotationDrill records a maintainer's factory/drill on the PR to revert (human path AM6): its
+// revert is a drill, which the breaker does not count. "true", set by the poller with
+// AnnotationRevert.
+const AnnotationDrill = "agents.ogenki.io/drill"
+
 // LabelIssue carries the number of the issue a task narrates on.
 const LabelIssue = "agents.ogenki.io/issue"
 

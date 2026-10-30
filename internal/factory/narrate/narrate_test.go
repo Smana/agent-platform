@@ -593,3 +593,10 @@ func TestTheNewReturnReasonsReadAsProse(t *testing.T) {
 		}
 	}
 }
+
+func TestTheWouldArmMarkerSaysWhatBlocked(t *testing.T) {
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"}}
+	if k := WouldArm(tk, "docs-links", "abc", true, false).Key; k != "would-arm-0 head=abc paused=true capped=false" {
+		t.Fatalf("%q", k)
+	}
+}

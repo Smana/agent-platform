@@ -163,7 +163,7 @@ func TestWouldArmAdopted(t *testing.T) {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	c := strings.Join(g.f.Comments(30), "\n")
-	if !strings.Contains(c, "event=would-arm-0 head="+adoptHead+" -->") || !strings.Contains(c, "would auto-merge: `deps-patch`") ||
+	if !strings.Contains(c, "event=would-arm-0 head="+adoptHead+" paused=false capped=false -->") || !strings.Contains(c, "would auto-merge: `deps-patch`") ||
 		strings.Contains(c, "verdict approve") || !strings.Contains(c, "The class is in shadow: nothing is merged by the factory.") {
 		t.Fatalf("%q", c)
 	}

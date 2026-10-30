@@ -171,6 +171,24 @@ func TestAShadowClassWouldArmAndNeverArms(t *testing.T) {
 	}
 }
 
+// Human path AM4: a shadow class arms nothing, so the breaker and the caps block nothing: it
+// records shadow_would_arm and the decision says what a live class would have met.
+func TestAShadowDecisionIgnoresThePauseAndTheCaps(t *testing.T) {
+	cfg := armCfg()
+	cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	cfg.Merge.AutoMergesPerDay = 1
+	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg,
+		ReportedHead: head, Paused: true, ArmedToday: 1, Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+	if d.Verdict != "shadow" || d.Reason != "shadow_would_arm" || !d.Paused || !d.Capped {
+		t.Fatalf("%+v", d)
+	}
+	cfg.Classes["docs-links"] = config.Class{Live: true}
+	if d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg,
+		ReportedHead: head, Paused: true, Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}); d.Reason != "class_paused" {
+		t.Fatalf("a live class is paused: %+v", d)
+	}
+}
+
 // The merge gate reads the task's repository (v2 D1): the same PR arms on A, where docs-links is
 // live, would only on B, where it is shadow, and waits on C, whose own required check has not run.
 func TestDecideArmReadsTheTasksRepository(t *testing.T) {

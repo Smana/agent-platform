@@ -331,18 +331,62 @@ func TestFailureBesideCancelledStillFixed(t *testing.T) {
 	}
 }
 
+// Human path AM6: with factory/drill, the revert PR carries the label, the Task says drill, and
+// the class is not paused by it. A drill is narrated as one: no demotion on the control issue, and
+// the pull request is told the breaker does not count it.
 func TestAMaintainersRevertAfterDone(t *testing.T) {
-	g := mergeRig(t, v1alpha1.PhaseDone)
+	for _, drill := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drill=%v", drill), func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseDone)
+			g.r.Cfg.ControlIssue = 1
+			var tk v1alpha1.Task
+			_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+			merged := metav1.NewTime(now.Add(-48 * time.Hour))
+			tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = true, &merged
+			_ = g.c.Status().Update(t.Context(), &tk)
+			tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+			if drill {
+				tk.Annotations[v1alpha1.AnnotationDrill] = "true"
+			}
+			_ = g.c.Update(t.Context(), &tk)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+			rv := got.Status.PullRequest.RevertNumber
+			if got.Status.PullRequest.Drill != drill || slices.Contains(g.f.Added(rv), DrillLabel) != drill {
+				t.Fatalf("drill %v, revert #%d labelled %q", got.Status.PullRequest.Drill, rv, g.f.Added(rv))
+			}
+			if paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); err != nil || paused == drill {
+				t.Fatalf("paused %v (drill %v): %v", paused, drill, err)
+			}
+			pr, ctl := strings.Join(g.f.Comments(12), "\n"), strings.Join(g.f.Comments(1), "\n")
+			const drillPR, drillCtl = "a drill: the class's breaker does not count it", "reverted as a drill"
+			if strings.Contains(pr, drillPR) != drill || strings.Contains(pr, "goes back to human review") == drill {
+				t.Fatalf("pull request (drill %v): %q", drill, pr)
+			}
+			if strings.Contains(ctl, drillCtl) != drill || strings.Contains(ctl, "counts toward the class's breaker") == drill {
+				t.Fatalf("control issue (drill %v): %q", drill, ctl)
+			}
+		})
+	}
+}
+
+// AM6: "A main_red revert is never a drill", whatever the Task's annotation says.
+func TestAMainRedRevertIsNeverADrill(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseVerifying)
 	var tk v1alpha1.Task
 	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
-	merged := metav1.NewTime(now.Add(-48 * time.Hour))
-	tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = true, &merged
+	merged := metav1.NewTime(now)
+	tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = "m1", true, &merged
 	_ = g.c.Status().Update(t.Context(), &tk)
-	tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	tk.Annotations = map[string]string{v1alpha1.AnnotationDrill: "true"}
 	_ = g.c.Update(t.Context(), &tk)
+	g.f.SetCommitChecks("m1", forge.Check{Name: required[0], State: "FAILURE"})
 	got := g.reconcile(t, "3buqdlot", 1)
-	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" {
-		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	rv := got.Status.PullRequest.RevertNumber
+	if got.Status.Reason != "main_red" || got.Status.PullRequest.Drill || slices.Contains(g.f.Added(rv), DrillLabel) {
+		t.Fatalf("%s drill %v, revert #%d labelled %q", got.Status.Reason, got.Status.PullRequest.Drill, rv, g.f.Added(rv))
 	}
 }
 
@@ -402,6 +446,42 @@ func TestAHumanMergeOfADemotedClassRefillsTheWindow(t *testing.T) {
 	}
 	if paused, _ := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); paused {
 		t.Fatal("R41: clean merges of the demoted class must refill the window until the revert leaves it")
+	}
+}
+
+// AM7, AM9 through paused: maturity is the class's followUpWindow, or the revertWindow without a
+// monitor, counted from the merge; the verdict is recorded on the class_paused gauge.
+func TestPausedRecoversOnlyOnMergesOlderThanTheClassMaturity(t *testing.T) {
+	merged := func(name string, n int, ago time.Duration, phase string) *v1alpha1.Task {
+		tk := awaiting()
+		at := metav1.NewTime(now.Add(-ago))
+		tk.Name, tk.Spec.PredictedClass, tk.Status.Phase, tk.Status.Runs = name, "docs-links", phase, nil
+		tk.Status.PullRequest.Number, tk.Status.PullRequest.MergedAt = n, &at
+		return tk
+	}
+	day := 24 * time.Hour
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, merged("1reverted", 9, 20*day, v1alpha1.PhaseReverted),
+		merged("2clean", 10, 5*day, v1alpha1.PhaseDone), merged("3clean", 11, 4*day, v1alpha1.PhaseDone),
+		merged("4clean", 13, 3*day, v1alpha1.PhaseDone))
+	g.r.Cfg.Merge.Breaker = config.Breaker{Window: 10, MaxReverts: 1, RecoverAfter: 3}
+	rc := g.r.Cfg.RepositoryFor("")
+	gauge := func(paused bool) string { return fmt.Sprintf("class_paused %s docs-links %t", rc.Name, paused) }
+	// No monitor: the revertWindow (7 days) decides, and the three clean merges are younger.
+	if paused, err := g.r.paused(t.Context(), rc, "docs-links"); err != nil || !paused {
+		t.Fatalf("merges younger than the revertWindow are immature: paused %v err %v", paused, err)
+	}
+	if !slices.Contains(g.metrics.recorded, gauge(true)) {
+		t.Fatalf("the gauge reads 1: %v", g.metrics.recorded)
+	}
+	// A monitor of 2 days: the same merges are mature.
+	cl := g.r.Cfg.Classes["docs-links"]
+	cl.Monitor = &config.Monitor{FollowUpWindow: config.Duration{Duration: 2 * day}}
+	g.r.Cfg.Classes["docs-links"] = cl
+	if paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); err != nil || paused {
+		t.Fatalf("merges older than the followUpWindow are mature: paused %v err %v", paused, err)
+	}
+	if !slices.Contains(g.metrics.recorded, gauge(false)) {
+		t.Fatalf("the gauge reads 0: %v", g.metrics.recorded)
 	}
 }
 

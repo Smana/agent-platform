@@ -32,6 +32,11 @@ func MergedLabel(class string) string { return "factory/merged:" + class }
 // beside MergedLabel: a human merge in the breaker's window, outside the daily caps.
 const ApprovedMergeLabel = "factory/approved-merge"
 
+// DrillLabel marks a pull request a maintainer reverts as a drill (human path AM6): the merger
+// copies it to the revert PR, and a revert carrying it is no revert to the breaker. Maintainer-only,
+// read as factory/revert is.
+const DrillLabel = "factory/drill"
+
 // FollowUpOfLabel marks a pull request that fixes pull request n after it merged (MC8).
 func FollowUpOfLabel(n int) string { return fmt.Sprintf("factory/follow-up-of:#%d", n) }
 
@@ -79,7 +84,8 @@ func (r *Reconciler) pageTruncated(ps []forge.LabelledPull, window int) bool {
 // whether a revert of it was opened.
 //
 // FollowUp: a later merge fixed it (MC8). Regression: the monitor found one (MC7). Auto: the
-// merger merged it, so it counts against the daily caps.
+// merger merged it, so it counts against the daily caps. Mature: merged longer ago than the
+// class's follow-up window (or the revert window without a monitor): its outcome is known (AM7).
 type Merge struct {
 	Number     int
 	At         time.Time
@@ -87,6 +93,7 @@ type Merge struct {
 	FollowUp   bool
 	Regression bool
 	Auto       bool
+	Mature     bool
 }
 
 // mergeLedger is GitHub's labelled merges per class, read once per process: everything the
@@ -161,13 +168,19 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 			if ext && len(rg) >= ledgerPage && ms[i].Number < oldestRegressed {
 				return nil, errLedgerTruncated // its regression label may be past the page
 			}
-			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
-			// change the breaker's verdict.
+			// A revert PR counts, as a Task counts from the revert's opening: a rebuild must not
+			// change the breaker's verdict. A drill's does not (AM6).
 			rv, err := r.merger(ctx).PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))
 			if err != nil {
 				return nil, fmt.Errorf("read the merge ledger: %w", err)
 			}
-			ms[i].Reverted = len(rv) > 0
+			for _, p := range rv {
+				drill, err := r.drill(ctx, rc, p)
+				if err != nil {
+					return nil, fmt.Errorf("read the merge ledger: %w", err)
+				}
+				ms[i].Reverted = ms[i].Reverted || !drill
+			}
 			if !ext {
 				continue
 			}
@@ -226,4 +239,23 @@ func (r *Reconciler) label(ctx context.Context, pr forge.PR, l string) {
 	if err := r.merger(ctx).AddLabels(ctx, pr.Number, l); err != nil {
 		r.log().Error("label the merge ledger", "pr", pr.Number, "label", l, "err", err)
 	}
+}
+
+// drill reports whether a revert PR is a drill (AM6): it carries factory/drill, and the newest
+// label event adding it is the merger's (which copies only a maintainer's) or a maintainer's,
+// verified as factory/revert is. Anyone else's label, or truncated events, make no drill: the
+// revert counts.
+func (r *Reconciler) drill(ctx context.Context, rc *config.Repository, p forge.LabelledPull) (bool, error) {
+	if !slices.Contains(p.Labels, DrillLabel) {
+		return false, nil
+	}
+	evs, err := r.gh(ctx).LabelEvents(ctx, p.Number, DrillLabel)
+	if errors.Is(err, forge.ErrEventsTruncated) {
+		return false, nil
+	}
+	if err != nil || len(evs) == 0 {
+		return false, err
+	}
+	by := evs[len(evs)-1].Actor
+	return forge.SameLogin(by, rc.Merge.MergerLogin) || rc.IsMaintainer(by), nil
 }

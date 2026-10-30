@@ -402,6 +402,9 @@ type Breaker struct {
 	// MaxFollowUps: follow-up fixes and monitor regressions in the last Window merges that demote
 	// a class (MC8); 0 counts none.
 	MaxFollowUps int `json:"maxFollowUps,omitempty"`
+	// RecoverAfter: a tripped class resumes once this many of its newest merges, all newer than the
+	// newest bad one, are clean and mature (human path AM7); 0 keeps the window rule alone.
+	RecoverAfter int `json:"recoverAfter,omitempty"`
 }
 
 // Tier is a model and its budgets. RunUSD and TaskUSD cap a run and a task in USD, priced by
@@ -1553,6 +1556,10 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	}
 	if b := r.Merge.Breaker; b.MaxFollowUps < 0 || b.MaxFollowUps > b.Window {
 		bad("merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)")
+	}
+	if b := r.Merge.Breaker; b.RecoverAfter < 0 || b.RecoverAfter >= b.Window {
+		// At window or more, the bad merge leaves the window before recovery could lift the pause.
+		bad("merge.breaker needs 0 ≤ recoverAfter < window (AM7)")
 	}
 }
 

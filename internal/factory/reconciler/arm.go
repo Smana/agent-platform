@@ -67,6 +67,8 @@ type ArmDecision struct {
 	Matched string
 	// Approver is the maintainer whose approval armed row 3 (AM1); "" otherwise.
 	Approver string
+	// Paused and Capped say what a shadow decision would have met as a live one (AM4).
+	Paused, Capped bool
 }
 
 // CIState over the required checks: FAILURE if one failed or reported a state the rollup's
@@ -158,14 +160,15 @@ func DecideArm(in ArmInputs) ArmDecision {
 	} else if reason != "" {
 		return human(reason, class)
 	}
-	if in.Paused {
+	paused, capped := in.Paused, in.ArmedToday >= rc.Merge.AutoMergesPerDay || (cl.MaxPerDay > 0 && in.ClassArmedToday >= cl.MaxPerDay)
+	if !cl.Live { // R32, AM4: every condition holds; the gate is in shadow, which nothing blocks
+		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class, Paused: paused, Capped: capped}
+	}
+	if paused {
 		return human("class_paused", class)
 	}
-	if in.ArmedToday >= rc.Merge.AutoMergesPerDay || (cl.MaxPerDay > 0 && in.ClassArmedToday >= cl.MaxPerDay) {
+	if capped {
 		return human("auto_merge_cap", class)
-	}
-	if !cl.Live { // R32: every condition holds, and the gate is in shadow until the wave
-		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class}
 	}
 	return ArmDecision{Verdict: "arm", Matched: class}
 }

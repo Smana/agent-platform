@@ -558,9 +558,10 @@ func Armed(t *v1alpha1.Task) Event {
 
 // WouldArm is the shadow gate's record (R32): the same decision as Armed, and nothing armed. Its
 // key, and so its marker, carries the head it judged (v2 D2): a maintainer's later merge at that
-// head is a merge of what the gate would have merged, and a new head is a new decision.
-func WouldArm(t *v1alpha1.Task, class, head string) Event {
-	return Event{Key: fmt.Sprintf("would-arm-%d head=%s", len(t.Status.Runs), head), Body: fmt.Sprintf("Agent factory task `%s`: "+
+// head is a merge of what the gate would have merged, and a new head is a new decision. It also
+// says whether the breaker had paused the class and whether the day's count had capped it (AM4).
+func WouldArm(t *v1alpha1.Task, class, head string, paused, capped bool) Event {
+	return Event{Key: fmt.Sprintf("would-arm-%d head=%s paused=%t capped=%t", len(t.Status.Runs), head, paused, capped), Body: fmt.Sprintf("Agent factory task `%s`: "+
 		"would auto-merge: `%s`, checks green, verdict approve. The merge gate is in shadow until the "+
 		"merge wave, so nothing is armed: a maintainer merges or closes this pull request.", t.Name, class)}
 }
@@ -568,8 +569,8 @@ func WouldArm(t *v1alpha1.Task, class, head string) Event {
 // WouldArmAdopted is WouldArm for an adopted pull request (R46): the same key, so the same marker
 // the shadow tally reads, and no claim of a verdict, since no agent reviewed Renovate's change. It
 // names a file fence, sizes and a release age only when the class declares them.
-func WouldArmAdopted(t *v1alpha1.Task, cl config.Class, class, head string) Event {
-	e := WouldArm(t, class, head)
+func WouldArmAdopted(t *v1alpha1.Task, cl config.Class, class, head string, paused, capped bool) Event {
+	e := WouldArm(t, class, head, paused, capped)
 	what := "the diff a semver bump"
 	if len(cl.AllowedFiles) > 0 || len(cl.ProtectedFiles) > 0 || cl.ModifyOnly || cl.MaxPatchFiles > 0 || cl.MaxModifiedLines > 0 {
 		what += " within the class's files and sizes"
@@ -654,11 +655,25 @@ func CIExhausted(t *v1alpha1.Task, names []string) Event {
 		Body: fmt.Sprintf("Agent factory task `%s` used its %d CI fix runs; still failing: %s.", t.Name, t.Status.FixRuns, strings.Join(names, ", "))}
 }
 
-// RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4).
-func RevertOpened(t *v1alpha1.Task, number int, why string) Event {
+// RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4). A drill's
+// says the breaker does not count it (AM6).
+func RevertOpened(t *v1alpha1.Task, number int, why string, drill bool) Event {
+	if drill { // AM6: the breaker does not count a drill, so the class is not sent back to human review
+		return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
+			"The pull request carries `factory/drill`, so the revert is a drill: the class's breaker does not count it (AM6).",
+			t.Name, number, Reason(why))}
+	}
 	return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
 		"Auto-merge of the class `%s` goes back to human review until its recent merges pass without a revert (R41).",
 		t.Name, number, Reason(why), t.Spec.PredictedClass)}
+}
+
+// ClassDrill goes to the control issue in ClassDemoted's place for a drill revert: the breaker does
+// not count it (AM6).
+func ClassDrill(t *v1alpha1.Task) Event {
+	return Event{Key: "drill-" + t.Name, Body: fmt.Sprintf("Agent factory: an auto-merge of `%s` was reverted as a drill "+
+		"(task `%s`, #%d). The pull request carries `factory/drill`, so the class's breaker does not count the revert (AM6).",
+		t.Spec.PredictedClass, t.Name, t.Status.PullRequest.Number)}
 }
 
 // ClassDemoted goes to the control issue (Task 8.1a): a revert counts toward its class's breaker (R41).

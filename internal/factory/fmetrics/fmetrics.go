@@ -135,6 +135,7 @@ type Set struct {
 	loopRuns             metric.Int64Counter
 	contracts            metric.Int64Counter
 	noHoldout            metric.Int64Gauge
+	classPaused          metric.Int64Gauge
 	roomsCapped          metric.Int64Counter
 	usageErrors          metric.Int64Counter
 	meterSuccess         metric.Int64Gauge
@@ -344,6 +345,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.noHoldout, err = meter.Int64Gauge("agent_factory_class_without_holdout",
 		metric.WithDescription("1 for a live class that declares no holdoutChecks: refused from the next minor (test-first tester TO5)."))
+	check(err)
+	s.classPaused, err = meter.Int64Gauge("agent_factory_class_paused",
+		metric.WithDescription("1 while the breaker holds the class paused (human path AM9)."))
 	check(err)
 	s.loopRuns, err = meter.Int64Counter("agent_factory_loop_runs_total",
 		metric.WithDescription("Implementer runs under the loop policy, by class and how they ended: judge_impossible, stalled, not_met, finished or other (loops design L2, L3)."))
@@ -791,6 +795,17 @@ func (s *Set) ContractEnd(ctx context.Context, class, end string) {
 // ClassWithoutHoldout sets agent_factory_class_without_holdout to 1 for a live class with no holdoutChecks (TO5).
 func (s *Set) ClassWithoutHoldout(ctx context.Context, repository, class string) {
 	s.noHoldout.Record(ctx, 1, metric.WithAttributes(attribute.String("repository", s.repository(repository)),
+		attribute.String("class", class)))
+}
+
+// ClassPaused records the breaker's verdict for a class (AM9), at each decision and each monitor
+// pass; the repository is bounded as every other series' is (R-I3).
+func (s *Set) ClassPaused(ctx context.Context, repository, class string, paused bool) {
+	v := int64(0)
+	if paused {
+		v = 1
+	}
+	s.classPaused.Record(ctx, v, metric.WithAttributes(attribute.String("repository", s.repository(repository)),
 		attribute.String("class", class)))
 }
 

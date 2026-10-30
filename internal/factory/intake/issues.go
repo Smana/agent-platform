@@ -41,6 +41,10 @@ const LabelStop = "factory/stop"
 // LabelRevert asks the factory to revert the auto-merged task whose PR carries it (§6.4).
 const LabelRevert = "factory/revert"
 
+// LabelDrill marks the revert factory/revert asks for as a maintainer's drill (human path AM6):
+// read with factory/revert, so it must be on the pull request before factory/revert is.
+const LabelDrill = "factory/drill"
+
 // maxSnapshot bounds the stored text for etcd (the Task CRD's maxLength); admission refuses
 // anything above caps.maxTextBytes anyway (R6).
 const maxSnapshot = 65536
@@ -50,6 +54,9 @@ type issueForge interface {
 	Labeled(ctx context.Context, label string) ([]forge.Item, error)
 	LabelEvents(ctx context.Context, number int, label string) ([]forge.LabelEvent, error)
 	Issue(ctx context.Context, number int) (forge.Issue, error)
+	// PullRequest reads a pull request's current labels: a factory/drill removed after it was added
+	// makes no drill (AM6). Issue cannot: GraphQL's issue(number:) does not resolve a pull request.
+	PullRequest(ctx context.Context, number int) (forge.PR, error)
 	RemoveLabel(ctx context.Context, number int, label string) error
 	RecentComments(ctx context.Context, number int) ([]forge.Comment, error)
 	Comment(ctx context.Context, number int, body string) error
@@ -539,7 +546,9 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 }
 
 // reverts maps a maintainer's factory/revert on an auto-merged PR to its task (§6.4). Merged
-// PRs are closed, so this lists labelled items in every state.
+// PRs are closed, so this lists labelled items in every state. A maintainer's factory/drill on the
+// same PR, newest event, marks the revert a drill (AM6); it is read here only, so it must be on
+// the PR before factory/revert.
 func (p *IssuePoller) reverts(ctx context.Context) error {
 	items, err := p.Forge.Labeled(ctx, LabelRevert)
 	if err != nil || len(items) == 0 {
@@ -561,10 +570,18 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		if w, err := p.writer(ctx, actor); err != nil || !w {
 			continue // a revert opens a pull request: a write, so D5's check holds it too
 		}
+		ann := map[string]string{v1alpha1.AnnotationRevert: "label"}
+		drill, err := p.drill(ctx, it.Number)
+		if err != nil {
+			continue // unread, the drill is unknown: the revert waits rather than count as a revert
+		}
+		if drill {
+			ann[v1alpha1.AnnotationDrill] = "true"
+		}
 		for i := range l.Items {
 			t := &l.Items[i]
 			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && (ref.AutoMerged || ref.MergedHow == "approved") && p.owns(t) {
-				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{v1alpha1.AnnotationRevert: "label"}}})
+				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": ann}})
 				obj := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: t.Name, Namespace: t.Namespace}}
 				if err := p.Client.Patch(ctx, obj, client.RawPatch(types.MergePatchType, body)); err != nil {
 					return fmt.Errorf("revert task %s: %w", t.Name, err)
@@ -576,4 +593,26 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// drill reports whether the revert of pull request n is a maintainer's drill (AM6): the newest
+// factory/drill event is a maintainer's and the label is still on the pull request. Truncated
+// events verify nothing: the revert is a plain one, which counts towards the breaker.
+func (p *IssuePoller) drill(ctx context.Context, n int) (bool, error) {
+	evs, err := p.Forge.LabelEvents(ctx, n, LabelDrill)
+	if errors.Is(err, forge.ErrEventsTruncated) {
+		p.log().Warn("drill label events truncated: the revert is not a drill", "pr", n, "events", len(evs))
+		if p.Errors != nil {
+			p.Errors.LabelEventsTruncated(ctx, LabelDrill)
+		}
+		return false, nil
+	}
+	if err != nil || len(evs) == 0 || !p.repo().IsMaintainer(evs[len(evs)-1].Actor) {
+		return false, err
+	}
+	pr, err := p.Forge.PullRequest(ctx, n)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(pr.Labels, LabelDrill), nil
 }
