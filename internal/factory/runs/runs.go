@@ -63,6 +63,12 @@ const (
 	AnnFactoryVersion = "agents.ogenki.io/factory-version"
 )
 
+// ScoperMarkerPrefix opens a scoping run's brief (harness roles HR2): its first line is this prefix,
+// then "nudgeAt=N maxToolCalls=M -->". The harness reads the bounds from it, and a reader of a
+// claim tells a scoping run apart by it, at offset 0 only: the rest of a brief carries untrusted
+// issue text, which could write the same line.
+const ScoperMarkerPrefix = "<!-- agent-factory scoper "
+
 // The AgentRun's status.reason for a run's pod (disruption design §3). The factory resumes a run
 // lost to its infrastructure (Disrupted, PodLost), never one whose pod failed on its own.
 const (

@@ -129,6 +129,7 @@ type Config struct {
 	Caps      Caps                `json:"caps"`
 	Budgets   Budgets             `json:"budgets"`
 	Resume    Resume              `json:"resume"`
+	Scoper    Scoper              `json:"scoper,omitzero"`
 	Meter     Meter               `json:"meter"`
 	Tracing   Tracing             `json:"tracing"`
 	API       API                 `json:"api"`
@@ -559,6 +560,34 @@ type Resume struct {
 	// MaxPerTask is how many runs of one task the factory resumes on its own; past it the task
 	// escalates as before. Defaulted when omitted.
 	MaxPerTask int `json:"maxPerTask"`
+}
+
+// Scoper bounds a scoping run's exploration (harness roles HR2): the harness nudges the scoper to
+// hand off at NudgeAt tool calls and ends the run at MaxToolCalls, as budget_calls. The factory
+// writes both into the scoper brief's first line, which the harness reads. Each is defaulted alone
+// when omitted.
+type Scoper struct {
+	NudgeAt      int `json:"nudgeAt,omitempty"`
+	MaxToolCalls int `json:"maxToolCalls,omitempty"`
+}
+
+// The scoper's bounds when the config omits them (HR2), and the most a config may ask for.
+const (
+	DefaultScoperNudgeAt      = 25
+	DefaultScoperMaxToolCalls = 40
+	maxScoperToolCalls        = 200
+)
+
+// WithDefaults is s with each omitted bound at its default: Parse applies it, and so does a reader
+// of a Config built without Parse, so a zero bound never reaches the harness.
+func (s Scoper) WithDefaults() Scoper {
+	if s.NudgeAt == 0 {
+		s.NudgeAt = DefaultScoperNudgeAt
+	}
+	if s.MaxToolCalls == 0 {
+		s.MaxToolCalls = DefaultScoperMaxToolCalls
+	}
+	return s
 }
 
 // Meter is where the run meter reads token usage (R12) and the gateway's 429s (R13).
@@ -1017,6 +1046,7 @@ func Parse(raw []byte) (*Config, error) {
 	if c.Resume.MaxPerTask == 0 {
 		c.Resume.MaxPerTask = defaultResumesPerTask
 	}
+	c.Scoper = c.Scoper.WithDefaults()
 	if len(c.Meter.Prices) > 0 { // without prices, a tier keeps its token cap (one release of compatibility)
 		for name, t := range c.Tiers {
 			if t.RunUSD == 0 {
@@ -1311,6 +1341,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
 		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)
+	}
+	if s := c.Scoper; s.NudgeAt < 1 || s.NudgeAt >= s.MaxToolCalls || s.MaxToolCalls > maxScoperToolCalls {
+		bad("scoper: 1 <= nudgeAt < maxToolCalls <= %d, got nudgeAt %d maxToolCalls %d (harness roles HR2)",
+			maxScoperToolCalls, s.NudgeAt, s.MaxToolCalls)
 	}
 	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
 	// block is as required as the rest of this file. A human caller is verified against the

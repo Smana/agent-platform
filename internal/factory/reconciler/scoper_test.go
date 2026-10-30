@@ -21,7 +21,14 @@ import (
 // scoperRig is a scoper-mode task with the review note, past its first run's start.
 func scoperRig(t *testing.T) *rig {
 	t.Helper()
+	return scoperRigWith(t, config.Scoper{})
+}
+
+// scoperRigWith is scoperRig with the config's scoper bounds b, set before the scoper starts.
+func scoperRigWith(t *testing.T, b config.Scoper) *rig {
+	t.Helper()
 	g := scopeRig(t, config.ScopeScoper)
+	g.r.Cfg.Scoper = b
 	g.r.Cfg.Tiers["light"] = config.Tier{Model: "agent-default", RunTokens: 300_000, TaskTokens: 600_000, RunMinutes: 20}
 	g.f.SetFile(".github/agent-factory/steering/review.md", reviewNote)
 	g.reconcile(t, "3buqdlot", 3)
@@ -234,6 +241,27 @@ func TestAResumedScopersNoticeNamesNoBranch(t *testing.T) {
 	}
 }
 
+// Harness roles HR2, preflight R4: the scoper's claim opens with the marker line, and a resumed one
+// keeps it as its first line, the notice after it, so the harness still reads its bounds at offset
+// 0. Lost twice: one marker and one notice, never two.
+func TestAScopersMarkerStaysItsFirstLineOnResume(t *testing.T) {
+	g := scoperRigWith(t, config.Scoper{NudgeAt: 10, MaxToolCalls: 20})
+	marker := "<!-- agent-factory scoper nudgeAt=10 maxToolCalls=20 -->\n"
+	if s := g.runs.specs[rid(0)]; !strings.HasPrefix(s.TaskText, marker+"You are the scoper") {
+		t.Fatalf("the scoper's claim %q", s.TaskText[:min(len(s.TaskText), 200)])
+	}
+	for n := range 2 {
+		g.runs.lose(rid(n))
+		g.log.end(rid(n), "Failed", "pod_lost")
+		tk := g.reconcile(t, "3buqdlot", 2)
+		s := g.runs.specs[rid(n+1)]
+		if s.Role != "triager" || !strings.HasPrefix(s.TaskText, marker+ResumeNotice(tk)+"You are the scoper") ||
+			strings.Count(s.TaskText, runs.ScoperMarkerPrefix) != 1 || strings.Count(s.TaskText, "interrupted by the platform") != 1 {
+			t.Fatalf("resume %d: %q", n+1, s.TaskText[:min(len(s.TaskText), 600)])
+		}
+	}
+}
+
 // SC11: a stuck scoper's claim is deleted and the implementer starts unscoped.
 func TestAStuckScoperFailsOpen(t *testing.T) {
 	g := scoperRig(t)
@@ -365,7 +393,7 @@ func TestOnlyAMaintainersRetryProceeds(t *testing.T) {
 // Drill 6ysg5vvt (cnref #2666, v0.30.2): the scoper made 72 tool calls, re-read the same files and was
 // revoked budget-run before any room_handoff. The brief orders the hand-off before more exploration.
 func TestTheScoperBriefHandsOffBeforeItExplores(t *testing.T) {
-	b := ScoperBrief(issueTask("3buqdlot", 7, parentText), "n0nce234")
+	b := ScoperBrief(issueTask("3buqdlot", 7, parentText), "n0nce234", config.Scoper{})
 	for _, want := range []string{"Call room_handoff as soon as you have the scope", "at most 25 tool calls",
 		"hand off what you have", "Never re-read a file you already read"} {
 		if !strings.Contains(b, want) {

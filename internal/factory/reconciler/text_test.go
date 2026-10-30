@@ -15,8 +15,10 @@ import (
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
 	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
@@ -427,5 +429,36 @@ func TestReviseBriefAsksForProgressNotes(t *testing.T) {
 	instructionPos := strings.Index(b, "room_progress")
 	if instructionPos < 0 || instructionPos > fencePos {
 		t.Fatalf("progress instruction should appear before the fence, but instruction is at %d, fence at %d", instructionPos, fencePos)
+	}
+}
+
+// Harness roles HR2: the scoper brief's first line carries the two bounds the harness reads, and the
+// hand-off prose names the same nudge.
+func TestTheScoperBriefStartsWithItsMarker(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, parentText)
+	for _, c := range []struct {
+		name   string
+		s      config.Scoper
+		marker string
+		nudge  string
+	}{
+		{"the config's bounds", config.Scoper{NudgeAt: 10, MaxToolCalls: 20}, "<!-- agent-factory scoper nudgeAt=10 maxToolCalls=20 -->\n", "at most 10 tool calls"},
+		// A Config built without Parse (a test rig's literal) never writes a zero bound the harness
+		// would stop at.
+		{"a zero config reads the defaults", config.Scoper{}, "<!-- agent-factory scoper nudgeAt=25 maxToolCalls=40 -->\n", "at most 25 tool calls"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := ScoperBrief(tk, "n0nce234", c.s)
+			if !strings.HasPrefix(got, c.marker) || strings.Count(got, runs.ScoperMarkerPrefix) != 1 || !strings.Contains(got, c.nudge) {
+				t.Fatalf("%q", got[:min(len(got), 200)])
+			}
+		})
+	}
+}
+
+// The marker is built from the prefix the meter matches a scoping run by (preflight R11).
+func TestScoperMarkerFormat(t *testing.T) {
+	if got := ScoperMarker(25, 40); got != "<!-- agent-factory scoper nudgeAt=25 maxToolCalls=40 -->\n" || !strings.HasPrefix(got, runs.ScoperMarkerPrefix) {
+		t.Fatalf("%q", got)
 	}
 }

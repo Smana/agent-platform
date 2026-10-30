@@ -627,7 +627,8 @@ func (r *Reconciler) handedOff(ctx context.Context, t *v1alpha1.Task) (bool, err
 // resumeBrief is a resumed run's brief: ResumeNotice before the lost run's own, read back from its
 // claim. A brief built now would miss what the lost one carried: the queued messages it quoted are
 // consumed, and the room after its start holds no verdict it revises. ok is false for a run that
-// resumes nothing, and once the lost run's claim is gone.
+// resumes nothing, and once the lost run's claim is gone. A scoper's marker line stays first, the
+// notice after it (HR2): the harness reads it at offset 0 only.
 func (r *Reconciler) resumeBrief(ctx context.Context, t *v1alpha1.Task) (string, bool, error) {
 	if nextTrigger(t) != "resume" || len(t.Status.Runs) == 0 {
 		return "", false, nil
@@ -636,7 +637,13 @@ func (r *Reconciler) resumeBrief(ctx context.Context, t *v1alpha1.Task) (string,
 	if err != nil || !found || x.TaskText == "" {
 		return "", false, err
 	}
-	return ResumeNotice(t) + strings.TrimPrefix(x.TaskText, ResumeNotice(t)), true, nil
+	marker, text := "", x.TaskText
+	if scoperRun(t) && strings.HasPrefix(text, runs.ScoperMarkerPrefix) {
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			marker, text = text[:i+1], text[i+1:]
+		}
+	}
+	return marker + ResumeNotice(t) + strings.TrimPrefix(text, ResumeNotice(t)), true, nil
 }
 
 // resume sends the task back to Queued for a new run of the lost run's role, on the same branch

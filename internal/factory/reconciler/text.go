@@ -15,8 +15,10 @@ import (
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/brief"
 	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
 	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
@@ -190,15 +192,23 @@ func TriagerBrief(t *v1alpha1.Task, nonce string) string {
 		t.Name, t.Spec.Repository, fence, fence, t.Spec.Text, fence)
 }
 
+// ScoperMarker is the scoper brief's first line (harness roles HR2): the harness reads the two
+// bounds from it and counts the run's tool calls; a brief without it is not a scoper's.
+func ScoperMarker(nudgeAt, maxToolCalls int) string {
+	return fmt.Sprintf("%snudgeAt=%d maxToolCalls=%d -->\n", runs.ScoperMarkerPrefix, nudgeAt, maxToolCalls)
+}
+
 // ScoperBrief is a scoped task's first run (scoper design SC1, SC7): a triager run that turns the
-// snapshot into a bounded task, or one question, read-only, and hands it to the implementer.
-func ScoperBrief(t *v1alpha1.Task, nonce string) string {
+// snapshot into a bounded task, or one question, read-only, and hands it to the implementer. Its
+// first line is ScoperMarker with b's bounds, defaulted where b omits one (HR2).
+func ScoperBrief(t *v1alpha1.Task, nonce string, b config.Scoper) string {
+	b = b.WithDefaults()
 	fence := "TASK-DATA-" + nonce
-	head := fmt.Sprintf("You are the scoper for agent factory task %s in %s: a read-only run before any code is written. "+
+	head := ScoperMarker(b.NudgeAt, b.MaxToolCalls) + fmt.Sprintf("You are the scoper for agent factory task %s in %s: a read-only run before any code is written. "+
 		"Read the task below and the repository with your read-only tools; change nothing and open nothing.\n%s",
 		t.Name, t.Spec.Repository, scoperHow)
 	s := t.Spec.Split
-	head += scoperHandoff(s != nil)
+	head += scoperHandoff(s != nil, b.NudgeAt)
 	if s != nil {
 		head += splitHow(s.MaxChildren)
 	}
@@ -221,11 +231,12 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 
 // scoperHandoff is SC6's one binding call. Offered a split, it names split as an argument of that same
 // call: drill ziawgisq's scoper wrote its split in room_post and the summary only, and the task ran whole.
-func scoperHandoff(split bool) string {
+func scoperHandoff(split bool, nudgeAt int) string {
 	// Drill 6ysg5vvt: 72 tool calls, the same files re-read, and the run cap before any handoff. Every turn
 	// re-sends the whole context, so exploration is what a scoper's budget buys least of.
 	s := "Call room_handoff as soon as you have the scope, then finish: exploring further only spends your budget. " +
-		"Explore in at most 25 tool calls. If you are unsure past them, hand off what you have, with state ready and your " +
+		fmt.Sprintf("Explore in at most %d tool calls. ", nudgeAt) +
+		"If you are unsure past them, hand off what you have, with state ready and your " +
 		"guesses as assumptions, or state question. Never re-read a file you already read: the whole conversation is " +
 		"re-sent each turn, so one read is enough. " +
 		"End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
