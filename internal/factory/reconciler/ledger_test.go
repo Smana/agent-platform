@@ -203,3 +203,50 @@ func TestDemotedUnitesTheTaskAndGitHubViews(t *testing.T) {
 		t.Fatal("two clean merges after it push it out of the window")
 	}
 }
+
+// Human path AM7: with recoverAfter, a tripped class resumes once its recoverAfter newest merges
+// are all newer than the newest bad one, clean and mature; immature ones count neither way, and a
+// new bad merge trips it again.
+func TestATrippedClassRecoversOnCleanMatureMerges(t *testing.T) {
+	b := config.Breaker{Window: 10, MaxReverts: 1, RecoverAfter: 3}
+	at := func(i int, reverted, mature bool) Merge {
+		return Merge{Number: i + 1, At: now.Add(time.Duration(i) * time.Hour), Reverted: reverted, Mature: mature}
+	}
+	bad := []Merge{at(0, true, true)}
+	if d, _ := Demoted(bad, b); !d {
+		t.Fatal("one revert trips")
+	}
+	two := append(slices.Clone(bad), at(1, false, true), at(2, false, true))
+	if d, _ := Demoted(two, b); !d {
+		t.Fatal("two clean merges are not three")
+	}
+	immature := append(slices.Clone(two), at(3, false, false))
+	if d, _ := Demoted(immature, b); !d {
+		t.Fatal("an immature merge does not count")
+	}
+	threeImmature := append(slices.Clone(bad), at(1, false, false), at(2, false, false), at(3, false, false))
+	if d, _ := Demoted(threeImmature, b); !d {
+		t.Fatal("three clean immature merges do not recover")
+	}
+	three := append(slices.Clone(two), at(3, false, true))
+	if d, _ := Demoted(three, b); d {
+		t.Fatal("three clean mature merges after the bad one recover")
+	}
+	if d, _ := Demoted(append(slices.Clone(three), at(4, false, false)), b); d {
+		t.Fatal("a newer immature merge is skipped, not blocking (R-I8)")
+	}
+	again := append(slices.Clone(three), at(4, true, true))
+	if d, _ := Demoted(again, b); !d {
+		t.Fatal("a new bad merge trips again")
+	}
+	if d, _ := Demoted(append(slices.Clone(three), at(4, true, false)), b); !d {
+		t.Fatal("a new bad merge trips again, mature or not")
+	}
+	followUp := append(slices.Clone(two), Merge{Number: 4, At: now.Add(3 * time.Hour), FollowUp: true, Mature: true})
+	if d, _ := Demoted(followUp, b); !d {
+		t.Fatal("a follow-up is a bad merge")
+	}
+	if d, _ := Demoted(three, config.Breaker{Window: 10, MaxReverts: 1}); !d {
+		t.Fatal("recoverAfter 0 keeps today's rule")
+	}
+}

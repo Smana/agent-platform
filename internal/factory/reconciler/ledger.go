@@ -84,7 +84,8 @@ func (r *Reconciler) pageTruncated(ps []forge.LabelledPull, window int) bool {
 // whether a revert of it was opened.
 //
 // FollowUp: a later merge fixed it (MC8). Regression: the monitor found one (MC7). Auto: the
-// merger merged it, so it counts against the daily caps.
+// merger merged it, so it counts against the daily caps. Mature: merged longer ago than the
+// class's follow-up window (or the revert window without a monitor): its outcome is known (AM7).
 type Merge struct {
 	Number     int
 	At         time.Time
@@ -92,6 +93,7 @@ type Merge struct {
 	FollowUp   bool
 	Regression bool
 	Auto       bool
+	Mature     bool
 }
 
 // mergeLedger is GitHub's labelled merges per class, read once per process: everything the

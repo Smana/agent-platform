@@ -1006,15 +1006,28 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 			tasks = append(tasks, mg)
 		}
 	}
-	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)
+	merges, ripe := uniteMerges(tasks, gh[class]), maturity(rc, class)
+	for i := range merges { // on the united view, so GitHub's merge time decides (AM7)
+		merges[i].Mature = r.Now().Sub(merges[i].At) > ripe
+	}
+	demoted, _ := Demoted(merges, rc.Merge.Breaker)
 	return demoted, nil
+}
+
+// maturity is how long after a merge its outcome is known (AM7): the class's follow-up window, or
+// the revert window for a class without a monitor.
+func maturity(rc *config.Repository, class string) time.Duration {
+	if m := rc.Classes[class].Monitor; m != nil && m.FollowUpWindow.Duration > 0 {
+		return m.FollowUpWindow.Duration
+	}
+	return rc.Merge.RevertWindow.Duration
 }
 
 // Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, or (when
 // b.MaxFollowUps is set) that many merges with a follow-up or a regression, and how many reverts
 // they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
 // and Validate keep it off the production path, so a test rig that builds config.Merge by hand
-// must set a breaker.
+// must set a breaker. With b.RecoverAfter set, a demoted class resumes once recovered (AM7).
 func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 	newestFirst(merges)
 	reverts, followUps := 0, 0
@@ -1026,7 +1039,27 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 			followUps++
 		}
 	}
-	return reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps), reverts
+	demoted := reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps)
+	if demoted && b.RecoverAfter > 0 && recovered(merges, b.RecoverAfter) {
+		return false, reverts
+	}
+	return demoted, reverts
+}
+
+// recovered: at least n mature clean merges are newer than the newest bad merge (of any maturity),
+// and none newer than it is bad (AM7, R-I8). An immature clean merge is unknown: skipped, neither
+// counted nor blocking. newestFirst is sorted newest first.
+func recovered(newestFirst []Merge, n int) bool {
+	clean := 0
+	for _, m := range newestFirst {
+		if m.Reverted || m.FollowUp || m.Regression {
+			return clean >= n
+		}
+		if m.Mature {
+			clean++
+		}
+	}
+	return false // no bad merge in sight: demoted on none, so nothing to recover from
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
