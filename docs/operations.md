@@ -231,7 +231,7 @@ absent rather than 0.
 | `maku_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
 | `maku_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
 | `maku_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve`, `split` |
-| `maku_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
+| `maku_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason`, `repository` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none. Each also leaves a [decision record](factory.md#the-merge-gate) in its comment |
 | `maku_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
 | `maku_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
 | `maku_factory_intake_errors_total` | counter | `source`, `repository` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
@@ -244,7 +244,8 @@ absent rather than 0.
 | `maku_factory_model_cost_usd_total` | counter | `model` | USD the runs spent, by served model, added as each run's cost is reported |
 | `maku_factory_charged_usd_total` | counter | `principal`, `kind` | USD the day ledgers charged, by the run's payer and `kind` (`task`, `room`), added when the write that settles it succeeds ([spend per identity](#spend-per-identity)) |
 | `maku_factory_run_charge_info` | gauge | `run`, `principal`, `task`, `room` | 1 for each run not ended, and each ended one for two minutes after its `finishedAt`; leader only. `task` is absent for a room's run |
-| `maku_factory_human_wait_seconds_total` | counter | `principal`, `phase` | Seconds tasks waited in `AwaitingHuman` or `Escalated`, added as each leaves the phase, under the task's payer |
+| `maku_factory_human_wait_seconds_total` | counter | `principal`, `phase`, `reason`, `class` | Seconds tasks waited in `AwaitingHuman` or `Escalated`, added as each leaves the phase, under the task's payer, by the hand-off's reason and the task's class. `reason` is one of the factory's wait reasons, `other` for any other (an Escalated run's free-text end), and absent when the phase has none |
+| `maku_factory_handoff_to_merge_seconds` | histogram | `class`, `reason`, `how` | From a pull request's first hand-off (`status.pullRequest.handedOffAt`) to its merge, as `_bucket`, `_sum` and `_count`; buckets 5 min, 15 min, 1 h, 4 h, 1 d, 3 d, 7 d. `how` is `approved` (the merger, on a maintainer's approval) or `human`; `reason` is bounded as above. A task already in `AwaitingHuman` at upgrade has no start, so records nothing; a hand-off into `Escalated` does not start it |
 | `maku_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
 | `maku_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
 | `maku_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
