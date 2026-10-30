@@ -39,7 +39,7 @@ func (r *Reconciler) roomState(ctx context.Context, t *v1alpha1.Task) (due bool,
 		}
 		capped = capFactsDue
 	}
-	if ref := t.Status.PullRequest; t.Status.Phase == v1alpha1.PhaseDone && ref != nil && ref.AutoMerged &&
+	if ref := t.Status.PullRequest; t.Status.Phase == v1alpha1.PhaseDone && ref != nil && mergerMerged(ref) &&
 		ref.RevertNumber == 0 && ref.MergedAt != nil {
 		if left := ref.MergedAt.Add(r.repo(t).Merge.RevertWindow.Duration).Sub(r.Now()); left > 0 {
 			return false, "", left, nil // a maintainer may still ask for the revert, which posts facts again

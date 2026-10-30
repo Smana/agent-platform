@@ -649,9 +649,13 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 	}
 	// R-B2: a maintainer's factory/revert on the approved merge opens the revert, and keeps its two labels.
 	var tk v1alpha1.Task
-	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
 	tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
-	_ = g.c.Update(t.Context(), &tk)
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
 	got = g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" || len(g.f.Reverts()) != 1 {
 		t.Fatalf("%s %s %v", got.Status.Phase, got.Status.Reason, g.f.Reverts())
@@ -666,9 +670,13 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 func TestAHumanMergeAfterAnApprovedArmIsNotTheMergers(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAutoMerging)
 	var tk v1alpha1.Task
-	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
 	tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
-	_ = g.c.Status().Update(t.Context(), &tk)
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1", MergedAt: now})
 	got := g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.MergedHow != "" || got.Status.PullRequest.ApprovedBy != "" ||
@@ -678,5 +686,38 @@ func TestAHumanMergeAfterAnApprovedArmIsNotTheMergers(t *testing.T) {
 	got.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
 	if g.r.revertable(got) {
 		t.Fatal("a human's merge is never reverted by the factory")
+	}
+}
+
+// AM1: a push after an approved arm spends the arm. The task returns to the gate with MergedHow
+// cleared, so a maintainer's merge of the new head, through the gate's bypass branch, is never
+// read as the merger's and never reverted by the factory.
+func TestAPushAfterAnApprovedArmSpendsTheArm(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAutoMerging)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.HeadSHA = "def"
+	g.f.SetPR(pr)
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "head_moved" ||
+		got.Status.PullRequest.MergedHow != "" || got.Status.PullRequest.ApprovedBy != "" {
+		t.Fatalf("%s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "Smana", "m1", now
+	g.f.SetPR(pr)
+	got = g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.MergedHow != "" {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.PullRequest)
+	}
+	got.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	if g.r.revertable(got) {
+		t.Fatal("a maintainer's merge after a spent arm is never reverted by the factory")
 	}
 }

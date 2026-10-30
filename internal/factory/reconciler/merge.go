@@ -722,9 +722,18 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	case pr.HeadSHA != ref.HeadSHA:
+		// The arm is spent: whoever merges the new head, the gate decides it again (AM1). A stale
+		// "approved" would make a maintainer's later merge read as the merger's, and revertable.
+		ref.MergedHow, ref.ApprovedBy = "", ""
 		r.to(t, v1alpha1.PhaseAwaitingCI, "head_moved")
 	}
 	return nil
+}
+
+// mergerMerged: the merger made the task's merge, on the class's conditions (AutoMerged) or on a
+// maintainer's approval (AM1); only such a merge is the factory's to revert.
+func mergerMerged(ref *v1alpha1.PullRequestRef) bool {
+	return ref.AutoMerged || ref.MergedHow == "approved"
 }
 
 // mergedAt is when the pull request merged, as GitHub says (L6): every window of the merge, the
@@ -784,14 +793,14 @@ func (r *Reconciler) verifying(ctx context.Context, t *v1alpha1.Task) error {
 func (r *Reconciler) revertable(t *v1alpha1.Task) bool {
 	ref := t.Status.PullRequest
 	return t.Status.Phase == v1alpha1.PhaseDone && t.Annotations[v1alpha1.AnnotationRevert] != "" &&
-		ref != nil && (ref.AutoMerged || ref.MergedHow == "approved") && ref.RevertNumber == 0 && ref.MergedAt != nil &&
+		ref != nil && mergerMerged(ref) && ref.RevertNumber == 0 && ref.MergedAt != nil &&
 		r.Now().Sub(ref.MergedAt.Time) <= r.repo(t).Merge.RevertWindow.Duration
 }
 
 // revert opens the merger-authored revert PR and arms it: the policy's `revert` rule carries
 // docs-links' paths and caps, so GitHub merges it once its checks are green (§6.4). Human
-// merges are never reverted: only an auto-merged task reaches here, so before the wave (R32)
-// no revert is ever opened.
+// merges are never reverted: only a task the merger merged reaches here (revertable), so before
+// the wave (R32) and with approveToMerge off no revert is ever opened.
 func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) error {
 	ref := t.Status.PullRequest
 	if ref.RevertNumber > 0 { // a lost write's replay: the revert exists; end, never open a second
