@@ -220,8 +220,9 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 	"components it touches; the paths to leave alone (the steering note's and the task's); an ordered plan of at most " +
 	"7 steps; every assumption you made; and 1 to 5 acceptance checks, each a command (the steering note's ## Verify " +
 	"first) or an observation, with what it proves. The acceptance checks come from the task's own acceptance " +
-	"section (a heading starting with Acceptance): copy or tighten what the author wrote, and never invent one. When the " +
-	"task has no such section, or it is empty, ask the one question \"which command or observation proves it is done?\" " +
+	"section (a heading starting with Acceptance), else from a paragraph whose first line starts \"Acceptance:\", up to " +
+	"the next blank line: copy or tighten what the author wrote, and never invent one. When the task has neither, or " +
+	"it is empty, ask the one question \"which command or observation proves it is done?\" " +
 	"with your best proposal as the first assumption; the factory also bounces such a task whatever state you hand off.\n" +
 	"Ask or assume. Fill every gap a reasonable default fills, and list it as an assumption. Ask only when the answer " +
 	"changes what gets built and no reasonable default exists; then ask exactly one question, answerable in a sentence, " +

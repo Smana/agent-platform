@@ -1,0 +1,9 @@
+{
+  "heading.md": {"states": true, "text": "`task links` passes.\nThe index names the new path."},
+  "inline.md": {"states": true, "text": "task links passes"},
+  "inline-multiline.md": {"states": true, "text": "the page renders\nand the nav lists it."},
+  "none.md": {"states": false, "text": null},
+  "heading-wins.md": {"states": true, "text": "The heading wins."},
+  "heading-empty.md": {"states": true, "text": "an empty heading falls through to this line"},
+  "fence-ends.md": {"states": true, "text": "stops at a fence line"}
+}

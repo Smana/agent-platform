@@ -104,25 +104,42 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	return r.bounce(ctx, t, sc, seq)
 }
 
-// acceptanceHeading is the section the issue template and the judge read (loop_policy.acceptance):
-// a heading starting with "acceptance"; its body runs to the next heading.
+// The acceptance the issue states, read as the judge reads it (loop_policy.acceptance, HR3): a heading
+// starting with "acceptance", its body running to the next heading or fence line; else a paragraph whose
+// first line starts "Acceptance:", running to the next blank line or fence line. The two readers share
+// images/maku-harness/tests/acceptance.
 var (
 	acceptanceHeading = regexp.MustCompile(`(?im)^#{1,6}[ \t]*acceptance\b[^\n]*$`)
-	nextHeading       = regexp.MustCompile(`(?m)^#{1,6}[ \t]`)
+	sectionEnd        = regexp.MustCompile(`(?m)^(?:#{1,6}[ \t]|TASK-DATA-)`)
+	inlineAcceptance  = regexp.MustCompile(`(?im)^[ \t]*acceptance:[ \t]*(\S.*)$`)
+	paragraphEnd      = regexp.MustCompile(`(?m)\n[ \t]*\n|^TASK-DATA-\S+$`)
 )
 
-// statesAcceptance: the issue text carries a non-empty acceptance section.
-func statesAcceptance(text string) bool {
-	m := acceptanceHeading.FindStringIndex(text)
-	if m == nil {
-		return false
+// acceptanceText is the acceptance the issue states: the heading's section when non-empty, else the
+// inline paragraph, else "". Pure text matching: nothing in the issue is followed or run.
+func acceptanceText(text string) string {
+	if m := acceptanceHeading.FindStringIndex(text); m != nil {
+		rest := text[m[1]:]
+		if n := sectionEnd.FindStringIndex(rest); n != nil {
+			rest = rest[:n[0]]
+		}
+		if s := strings.TrimSpace(rest); s != "" {
+			return s
+		}
 	}
-	rest := text[m[1]:]
-	if n := nextHeading.FindStringIndex(rest); n != nil {
-		rest = rest[:n[0]]
+	if m := inlineAcceptance.FindStringSubmatchIndex(text); m != nil {
+		rest := text[m[2]:]
+		if n := paragraphEnd.FindStringIndex(rest); n != nil {
+			rest = rest[:n[0]]
+		}
+		return strings.TrimSpace(rest)
 	}
-	return strings.TrimSpace(rest) != ""
+	return ""
 }
+
+// statesAcceptance: the issue text carries a non-empty acceptance section or an inline Acceptance:
+// paragraph (HR3).
+func statesAcceptance(text string) bool { return acceptanceText(text) != "" }
 
 // askForAcceptance turns a ready scope of an issue that states no acceptance into the question the
 // author answers. What the scoper proposed becomes the assumption a maintainer may proceed on.

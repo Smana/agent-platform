@@ -56,7 +56,8 @@ says why on stderr.
   run's cap. The proxy pins the judge's alias from its own `JUDGE_MODEL`; a refusal (403), a proxy
   with no judge path (404) or any other failure leaves the run to end as it would with no judge.
   The judge has no tools and a fresh context. It reads the issue's `## Acceptance check` section
-  (else the fenced issue text), the diff against the base (16 KiB at most) and the head's check runs,
+  (else a paragraph whose first line starts `Acceptance:`, to the next blank line; else the fenced
+  issue text: the factory's scoper reads the same two rules), the diff against the base (16 KiB at most) and the head's check runs,
   read with the run's own `gh` after waiting up to 5 minutes for them to complete. It answers one
   JSON object; a verdict with no parse or that cites none of the evidence ids it was given is
   discarded: the first counts `not_yet`, the second `judge_impossible`.

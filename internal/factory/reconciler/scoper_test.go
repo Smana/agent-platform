@@ -5,6 +5,8 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -446,5 +448,44 @@ func TestAScoperOutOfBudgetBeforeItsHandoffIsSaid(t *testing.T) {
 				t.Fatalf("note %q, metrics %v", note, g.metrics.recorded)
 			}
 		})
+	}
+}
+
+// TestAcceptanceFixturesAgreeWithTheHarness reads the fixtures the harness's
+// tests/test_acceptance_fixtures.py reads (HR3): the scoper never bounces what the judge would read.
+func TestAcceptanceFixturesAgreeWithTheHarness(t *testing.T) {
+	dir := filepath.Join("..", "..", "..", "images", "maku-harness", "tests", "acceptance")
+	raw, err := os.ReadFile(filepath.Join(dir, "expected.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected map[string]struct {
+		States *bool   `json:"states"`
+		Text   *string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatal(err)
+	}
+	if len(expected) < 5 {
+		t.Fatalf("expected.json lists %d fixtures, want at least 5", len(expected))
+	}
+	for name, want := range expected {
+		if want.States == nil {
+			t.Fatalf("%s: no states", name)
+		}
+		text, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := statesAcceptance(string(text)); got != *want.States {
+			t.Errorf("%s: states %v, want %v", name, got, *want.States)
+		}
+		wantText := ""
+		if want.Text != nil {
+			wantText = *want.Text
+		}
+		if got := acceptanceText(string(text)); got != wantText {
+			t.Errorf("%s: text %q, want %q", name, got, wantText)
+		}
 	}
 }

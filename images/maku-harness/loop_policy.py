@@ -56,12 +56,25 @@ ACCEPTANCE_MAX = 4 << 10
 HEADING = re.compile(r"^#{1,6}[ \t]*acceptance\b[^\n]*$", re.I | re.M)
 SECTION_END = re.compile(r"^(?:#{1,6}[ \t]|TASK-DATA-)", re.M)
 FENCE = re.compile(r"^TASK-DATA-\S+$", re.M)
+# HR3: a paragraph whose first line starts `Acceptance:`, up to the next blank line or fence line.
+INLINE = re.compile(r"^[ \t]*acceptance:[ \t]*(\S.*)$", re.I | re.M)
+PARAGRAPH_END = re.compile(r"\n[ \t]*\n|^TASK-DATA-\S+$", re.M)
+
+
+def _inline_acceptance(task: str) -> str:
+    """The inline paragraph's text, or "". The factory's acceptanceText reads the same rule (HR3)."""
+    m = INLINE.search(task)
+    if not m:
+        return ""
+    rest = task[m.start(1):]
+    stop = PARAGRAPH_END.search(rest)
+    return (rest[: stop.start()] if stop else rest).strip()
 
 
 def acceptance(task: str) -> str:
     """The checks the judge holds the run to (L2, until the scoper writes them): the issue's acceptance
-    section (the factory-handoff template's `## Acceptance check`), else the fenced issue text, else the
-    whole brief. At most ACCEPTANCE_MAX characters."""
+    section (the factory-handoff template's `## Acceptance check`), else a paragraph starting
+    `Acceptance:` (HR3), else the fenced issue text, else the whole brief. At most ACCEPTANCE_MAX characters."""
     m = HEADING.search(task)
     if m:
         rest = task[m.end():]
@@ -69,6 +82,9 @@ def acceptance(task: str) -> str:
         section = (rest[: stop.start()] if stop else rest).strip()
         if section:
             return section[:ACCEPTANCE_MAX]
+    inline = _inline_acceptance(task)
+    if inline:
+        return inline[:ACCEPTANCE_MAX]
     fences = list(FENCE.finditer(task))
     if len(fences) >= 2:
         return task[fences[0].end(): fences[1].start()].strip()[:ACCEPTANCE_MAX]
