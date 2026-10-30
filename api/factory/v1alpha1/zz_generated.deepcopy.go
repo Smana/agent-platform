@@ -216,6 +216,10 @@ func (in *PullRequestRef) DeepCopyInto(out *PullRequestRef) {
 		in, out := &in.MergedAt, &out.MergedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.HandedOffAt != nil {
+		in, out := &in.HandedOffAt, &out.HandedOffAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Reviewers != nil {
 		in, out := &in.Reviewers, &out.Reviewers
 		*out = make([]string, len(*in))

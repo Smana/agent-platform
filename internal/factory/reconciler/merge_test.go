@@ -702,11 +702,25 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
 	g.r.Cfg.Merge.ApproveToMerge = true
 	g.r.Cfg.Classes["docs-links"] = config.Class{} // unarmed: only the approval can merge it
-	pr, _ := g.f.PullRequest(t.Context(), 12)
-	pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
-	g.f.SetPR(pr)
 	g.f.SetChecks(12, green("SUCCESS"))
 	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_unarmed" ||
+		got.Status.PullRequest.HandedOffAt == nil || !got.Status.PullRequest.HandedOffAt.Time.Equal(now) ||
+		got.Status.PullRequest.HandedOffReason != "class_unarmed" {
+		t.Fatalf("AM9: the first hand-off is recorded: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	// The approval comes ten minutes after the hand-off, and returns the task to the gate.
+	g.r.Now = func() time.Time { return now.Add(10 * time.Minute) }
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(10 * time.Minute)}}
+	g.f.SetPR(pr)
+	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if !slices.Contains(g.metrics.recorded, "wait AwaitingHuman class_unarmed docs-links 600") {
+		t.Fatalf("AM9: the wait carries the hand-off's reason and the class: %q", g.metrics.recorded)
+	}
+	got = g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" ||
 		got.Status.PullRequest.ApprovedBy != "Smana" || got.Status.PullRequest.ArmedAt != nil {
 		t.Fatalf("%s %+v", got.Status.Phase, got.Status.PullRequest)
@@ -715,7 +729,7 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 		t.Fatalf("merged %q, want the approved head", a)
 	}
 	pr, _ = g.f.PullRequest(t.Context(), 12)
-	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "ogenki-agent-merger[bot]", "m1", now
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "ogenki-agent-merger[bot]", "m1", now.Add(10*time.Minute)
 	g.f.SetPR(pr)
 	got = g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.Reason != "merged" || got.Status.PullRequest.AutoMerged {
@@ -727,6 +741,10 @@ func TestAnApprovedMergeIsAHumanMergeTheMergerMade(t *testing.T) {
 	}
 	if !slices.Contains(g.metrics.recorded, "pr docs-links approved_merged") || slices.Contains(g.metrics.recorded, "pr docs-links auto_merged") {
 		t.Fatalf("outcomes %q", g.metrics.recorded)
+	}
+	if h := slices.DeleteFunc(slices.Clone(g.metrics.recorded), func(s string) bool { return !strings.HasPrefix(s, "handoff_to_merge ") }); len(h) != 1 ||
+		h[0] != "handoff_to_merge docs-links class_unarmed approved 600" {
+		t.Fatalf("AM9: one hand-off to merge observation: %q", h)
 	}
 	// R-B2: a maintainer's factory/revert on the approved merge opens the revert, and keeps its two labels.
 	var tk v1alpha1.Task

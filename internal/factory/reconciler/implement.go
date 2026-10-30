@@ -802,6 +802,7 @@ func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		now := r.mergedAt(pr)
 		t.Status.PullRequest.MergedAt = &now
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
+		r.handedOffMerged(ctx, t, "human")
 		_ = r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		return true
 	case "CLOSED":

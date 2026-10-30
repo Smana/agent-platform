@@ -104,6 +104,8 @@ var (
 	taskTokensBuckets = []float64{50_000, 100_000, 200_000, 400_000, 600_000, 1_000_000, 2_000_000, 3_000_000, 5_000_000, 8_000_000, 12_000_000}
 	// The default USD run caps (0.51, 2.55, 6.80) and the v2 cohort's $0.58–0.76 runs.
 	runCostBuckets = []float64{0.1, 0.25, 0.51, 0.75, 1, 1.5, 2, 2.55, 3.5, 5, 6.8, 10}
+	// AM9: 5 m, 15 m, 1 h, 4 h, 1 d, 3 d, 7 d.
+	handoffToMergeBuckets = []float64{300, 900, 3600, 14400, 86400, 259200, 604800}
 )
 
 // Set is the factory's instruments. Record through its methods, which fix each label set.
@@ -151,6 +153,7 @@ type Set struct {
 	charged              metric.Float64Counter
 	prsOpened            metric.Int64Counter
 	humanWait            metric.Float64Counter
+	handoffToMerge       metric.Float64Histogram
 	maxCost              metric.Float64Counter
 	apiIntake            metric.Int64Counter
 
@@ -299,7 +302,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("Predicted class versus the class policy-bot matched (§2)."))
 	check(err)
 	s.mergeDecisions, err = meter.Int64Counter("agent_factory_merge_decisions_total",
-		metric.WithDescription("The merge gate's decisions by class, verdict and reason (v2 D2); a wait is none."))
+		metric.WithDescription("The merge gate's decisions by repository, class, verdict and reason (v2 D2, AM9); a wait is none."))
 	check(err)
 	s.tierFit, err = meter.Int64Counter("agent_factory_tier_fit_total",
 		metric.WithDescription("After-the-fact tier fit per classifier (§7, SC-10)."))
@@ -398,7 +401,11 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("Task pull requests opened, by the task's payer."))
 	check(err)
 	s.humanWait, err = meter.Float64Counter("agent_factory_human_wait_seconds_total",
-		metric.WithDescription("Seconds tasks waited for a human, by the task's payer, added when a task leaves AwaitingHuman or Escalated."))
+		metric.WithDescription("Seconds tasks waited for a human, by the task's payer, the hand-off's reason and the task's class, added when a task leaves AwaitingHuman or Escalated (AM9)."))
+	check(err)
+	s.handoffToMerge, err = meter.Float64Histogram("agent_factory_handoff_to_merge_seconds",
+		metric.WithDescription("From the first hand-off to a human to the merge, by hand-off reason and how it merged (human path AM9)."),
+		metric.WithExplicitBucketBoundaries(handoffToMergeBuckets...))
 	check(err)
 	s.maxCost, err = meter.Float64Counter("agent_factory_max_cost_usd_total",
 		metric.WithDescription("USD of max_cost the intake api admitted, by sponsored principal (spend per identity SI9)."))
@@ -540,12 +547,24 @@ func (s *Set) MonitorVerification(ctx context.Context, class, verdict string) {
 }
 
 // HumanWait adds the time a task waited in AwaitingHuman or Escalated, as it leaves the phase, to
-// its payer's waits (spend per identity SI8). Any other phase is no wait for a human.
-func (s *Set) HumanWait(ctx context.Context, phase string, d time.Duration) {
+// its payer's waits (spend per identity SI8), by the hand-off's reason and the task's class (AM9).
+// Any other phase is no wait for a human.
+func (s *Set) HumanWait(ctx context.Context, phase, reason, class string, d time.Duration) {
 	if !slices.Contains(humanPhases(), phase) || d <= 0 {
 		return
 	}
-	s.humanWait.Add(ctx, d.Seconds(), metric.WithAttributes(attribute.String("phase", phase), principalOf(ctx)))
+	s.humanWait.Add(ctx, d.Seconds(), metric.WithAttributes(attribute.String("phase", phase), principalOf(ctx),
+		attribute.String("reason", reason), attribute.String("class", class)))
+}
+
+// HandoffToMerge records how long a pull request waited from its first hand-off to its merge, by
+// the hand-off's reason and how it merged: approved or human (AM9).
+func (s *Set) HandoffToMerge(ctx context.Context, class, reason, how string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.handoffToMerge.Record(ctx, d.Seconds(), metric.WithAttributes(attribute.String("class", class),
+		attribute.String("reason", reason), attribute.String("how", oneOf(how, []string{"approved", "human"}))))
 }
 
 // Charged adds a run's settled micro-USD, in dollars, to its payer's charges by kind: the run
@@ -582,10 +601,10 @@ func (s *Set) ClassMismatch(ctx context.Context, predicted, matched string) {
 }
 
 // MergeDecision counts one decision of the merge gate (§5.1): arm, shadow, human, escalate,
-// ci_red or ci_cancelled, with its reason code.
+// ci_red or ci_cancelled, with its reason code, by the repository ctx binds (AM9, R-I3).
 func (s *Set) MergeDecision(ctx context.Context, class, verdict, reason string) {
 	s.mergeDecisions.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("verdict", verdict), attribute.String("reason", reason)))
+		attribute.String("verdict", verdict), attribute.String("reason", reason), s.repoOf(ctx)))
 }
 
 // TierFit counts a finished task's tier fit per classifier, OD-14's control group apart.

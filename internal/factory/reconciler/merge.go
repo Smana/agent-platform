@@ -44,6 +44,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			t.Status.PullRequest.MergedAt = &now
 			class := t.Spec.PredictedClass
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
+			r.handedOffMerged(ctx, t, "human")
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		}
 		// …or our own merge landed but its write was lost: it verifies like the auto-merge it is.
@@ -792,6 +793,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 			r.label(ctx, pr, MergedLabel(class))
 			r.label(ctx, pr, ApprovedMergeLabel)
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "approved_merged") })
+			r.handedOffMerged(ctx, t, "approved")
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		}
 		if merger {
@@ -801,6 +803,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		if !ref.AutoMerged {
 			ref.MergedHow, ref.ApprovedBy = "", "" // a human's merge, not the merger's: nothing to revert (AM1)
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
+			r.handedOffMerged(ctx, t, "human")
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		}
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "auto_merged") })

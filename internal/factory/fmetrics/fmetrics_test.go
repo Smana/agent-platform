@@ -160,7 +160,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`maku_factory_human_interventions_total{kind="stop",repository="other"} 1`,
 		`maku_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`maku_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
-		`maku_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",verdict="shadow"} 1`,
+		`maku_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",repository="other",verdict="shadow"} 1`,
 		`maku_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
 		`maku_factory_intake_errors_total{repository="other",source="issue"} 1`,
 		`maku_factory_run_revocations_total{principal="other",reason="budget-run"} 1`,
@@ -392,5 +392,22 @@ func TestClassPausedIsAGauge(t *testing.T) {
 	s.ClassPaused(t.Context(), "Smana/cloud-native-ref", "docs-links", false)
 	if body := scrape(); !strings.Contains(body, `maku_factory_class_paused{class="docs-links",repository="Smana/cloud-native-ref"} 0`) {
 		t.Fatalf("%s", body)
+	}
+}
+
+// AM9: the wait from a pull request's first hand-off to its merge, by the hand-off's reason and
+// how it merged, approved or human.
+func TestHandoffToMergeIsAHistogram(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	s.HandoffToMerge(t.Context(), "docs-links", "policy_pending", "approved", 10*time.Minute)
+	s.HandoffToMerge(t.Context(), "docs-links", "policy_pending", "class", time.Minute) // neither approved nor human
+	got := read()
+	for _, want := range []string{
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="approved",reason="policy_pending",le="900"} 1`,
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="other",reason="policy_pending",le="300"} 1`,
+	} {
+		if !strings.Contains(got, want+"\n") {
+			t.Fatalf("missing %s\n%s", want, got)
+		}
 	}
 }
