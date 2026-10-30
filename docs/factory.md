@@ -28,7 +28,7 @@ without case.
 | Label `factory/ready` (`triggerLabel` in the config) on an issue | A Task is created from a sanitised snapshot of the issue's title and body, with the sha256 of the text as labelled; the label is then removed. A pull request carrying it is ignored. Re-labelling the issue later starts a new task, and supersedes (stops) an escalated one | A maintainer |
 | Label `factory/stop` on the issue or its pull request | The running task stops within a poll: its runs are revoked and deleted, the task ends `Stopped`. The label is removed once it hit a task; with no task running it stays, so a task started later stops at once. Anyone else's is removed and answered | A maintainer |
 | Label `factory/revert` on an auto-merged pull request, within `merge.revertWindow` | The factory opens a revert pull request through the merger App and the task ends `Reverted`; the class counts the revert towards its [breaker](#the-merge-gate). A human merge is never reverted | A maintainer |
-| Label `factory/drill` on an auto-merged pull request, **before** `factory/revert` | Marks the revert a [drill](#the-merge-gate): the merger copies the label to the revert pull request and the breaker does not count it (AM6). Read only when `factory/revert` is, so a label added after it changes nothing | A maintainer |
+| Label `factory/drill` on an auto-merged pull request, **before** `factory/revert` | Marks the revert a [drill](#the-merge-gate): the merger copies the label to the revert pull request and the breaker does not count it (AM6). Read only when `factory/revert` is, so a label added after it changes nothing while the merge's Task exists (see [drills](#the-merge-gate)) | A maintainer |
 | Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
 | Comment `/factory split` alone on a line, on the issue of a task escalated `split_proposed` | Approves the proposed [split](#splits); the commenter pays for every part. Read before `/factory retry` | A maintainer with `write` on the repository |
 | Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer with `write` on the repository |
@@ -764,9 +764,19 @@ after a restart for one known only from GitHub's labels, which are read once per
 records `status.pullRequest.drill`: "the ledger does not count that revert". The ledger reads a
 revert pull request's `factory/drill` only when the label is still on it and its newest label event
 is the merger App's or a maintainer's; anyone else's label, or a truncated event list, counts the
-revert. A maintainer's label is trusted: one added by hand to a revert pull request, a past one
-included, makes that revert a drill at the next ledger read. "A `main_red` revert is never a drill":
-the factory never marks one, whatever labels the reverted pull request carries.
+revert. "A `main_red` revert is never a drill": the factory never marks one, whatever labels the
+reverted pull request carries. A drill is narrated as one: the reverted pull request is told the
+breaker does not count it, and the control issue gets a drill notice instead of the demotion one.
+`maku_factory_pr_outcomes_total{outcome="reverted"}` still counts it: the pull request was reverted.
+
+A maintainer's label is trusted, but a `factory/drill` added after the revert (by hand to the revert
+pull request, a past one included) lifts a pause only through GitHub's labels: when no Task for the
+reverted merge exists, as on a rebuilt factory, at the next process start, since the labels are read
+once per process. While the merge's Task exists it still records the revert as counted, and the
+class stays paused: label the pull request `factory/drill` before `factory/revert`.
+
+A drill-reverted merge counts as a clean merge: it refills the window and, once mature, counts
+towards `recoverAfter`. The merge was fine and the revert was planned.
 
 The breaker and the daily cap read their merges from the Tasks and from GitHub, so a rebuild that
 loses every Task keeps a demoted class demoted. The merger App labels what it merged
