@@ -338,3 +338,21 @@ func TestContractEndsAndClassesWithoutHoldoutAreExposed(t *testing.T) {
 		}
 	}
 }
+
+// HR2: a scoper the harness stopped at its tool-call limit is counted as budget_calls, not other.
+func TestScoperRunsCountTheToolCallLimit(t *testing.T) {
+	ctx := WithRepository(t.Context(), "Smana/cloud-native-ref")
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return false })
+	s.ListRepositories("Smana/cloud-native-ref")
+	s.ScoperRun(ctx, "docs", "budget_calls")
+	s.ScoperRun(ctx, "docs", "bogus")
+	body := scrape()
+	for _, want := range []string{
+		`maku_factory_scoper_runs_total{class="docs",outcome="budget_calls",repository="Smana/cloud-native-ref"} 1`,
+		`maku_factory_scoper_runs_total{class="docs",outcome="other",repository="Smana/cloud-native-ref"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s\n%s", want, body)
+		}
+	}
+}

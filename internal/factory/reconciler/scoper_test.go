@@ -127,16 +127,21 @@ func TestAReadyScopeStartsTheImplementer(t *testing.T) {
 
 // SC11, SO3 (a): no scope, the caps or a stuck run start the implementer unscoped.
 func TestAScoperWithoutAScopeFailsOpen(t *testing.T) {
-	for name, c := range map[string]struct{ phase, reason, state string }{
-		"finished without one": {"Succeeded", "agent_finished", "missing"},
-		"its run cap":          {"BudgetExhausted", "budget-run", "failed"},
-		"an agent error":       {"Failed", "agent_error", "failed"},
+	for name, c := range map[string]struct{ phase, reason, state, outcome string }{
+		"finished without one": {"Succeeded", "agent_finished", "missing", "missing"},
+		"its run cap":          {"BudgetExhausted", "budget-run", "failed", "budget"},
+		"an agent error":       {"Failed", "agent_error", "failed", "failed"},
+		// HR2: the harness stopped the scoper at its tool-call limit.
+		"its tool-call limit": {"Failed", "budget_calls", "failed", "budget_calls"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := scoperRig(t)
 			tk := endScoper(t, g, c.phase, c.reason)
 			if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != c.state {
 				t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+			if !slices.Contains(g.metrics.recorded, "scoper review "+c.outcome) {
+				t.Fatalf("want outcome %s, metrics %v", c.outcome, g.metrics.recorded)
 			}
 			g.reconcile(t, "3buqdlot", 1)
 			if s := g.runs.specs[rid(1)]; s.Role != "implementer" || !strings.Contains(s.TaskText, "STEERING-") ||

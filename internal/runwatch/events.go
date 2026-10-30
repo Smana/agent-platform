@@ -18,7 +18,7 @@ import (
 type Appender interface {
 	Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	LastHarnessStatus(ctx context.Context, roomID, runID string) (string, error)
-	// LastHarnessEnd is the loop policy's end reason the bridge recorded for the run, "" if none.
+	// LastHarnessEnd is the harness end reason (envelope.LoopEnd) the bridge recorded for the run, "" if none.
 	LastHarnessEnd(ctx context.Context, roomID, runID string) (string, error)
 	// Cursor is the highest seq stored for an idempotency scope, 0 if none: here,
 	// whether the bridge API ever refused the run (BusyScope).

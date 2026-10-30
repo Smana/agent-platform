@@ -37,7 +37,7 @@ func (b *Bridge) finals() chan finalRead {
 // answer or ctx. agent-run calls it on SIGTERM before it stops agent-server (F11, the harness half;
 // disruption design §2): the bridge's own SIGTERM drain comes only once the harness has exited, when
 // agent-server is gone. It does not stop the loop.
-// end is the loop policy's end reason agent-run reported, "" for none: one of envelope.LoopEnd's
+// end is the harness end reason agent-run reported, "" for none: one of envelope.LoopEnd's
 // reasons is recorded on the status stream as harness_end before the log is read, any other ignored.
 func (b *Bridge) FinalRead(ctx context.Context, end string) (FinalReadResult, error) {
 	req := finalRead{ctx: ctx, end: end, done: make(chan FinalReadResult, 1)}

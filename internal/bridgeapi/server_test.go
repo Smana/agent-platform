@@ -615,6 +615,9 @@ func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
 			Payload: envelope.StatePayload(kind, fields)})
 	}
+	// HR2: the scoper's tool-call limit is a harness end of its own.
+	items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(len(items) + 1), Type: envelope.StateChanged,
+		Payload: envelope.StatePayload(envelope.HarnessEnd, map[string]any{"reason": "budget_calls"})})
 	items = append(items,
 		chat(1, "hi"),
 		wire.Item{Stream: wire.StreamEvents, Seq: 2, Type: envelope.Message, Payload: json.RawMessage(`{"kind":"chat","text":"x"}`)},

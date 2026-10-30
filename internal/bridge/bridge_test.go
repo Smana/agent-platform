@@ -874,7 +874,8 @@ func TestAFinalReadAnswersBeforeItsDeadline(t *testing.T) {
 }
 
 // Part 2 of the loop policy: a final read carrying a loop end records it once as harness_end on
-// the status stream, before it answers; any other value records nothing.
+// the status stream, before it answers; any other value records nothing. HR2: the scoper's
+// tool-call limit, budget_calls, is recorded as the loop's ends are.
 func TestAFinalReadRecordsTheLoopEnd(t *testing.T) {
 	f := &fakeAgentServer{pageSize: 2, status: "paused"}
 	fb := &fakeBroker{}
@@ -882,7 +883,7 @@ func TestAFinalReadRecordsTheLoopEnd(t *testing.T) {
 	r.b.Interval = time.Hour
 	ctx, _ := r.run(t)
 	eventually(ctx, t, "the first step mirrors the status", func() bool { return len(fb.stored(wire.StreamStatus)) > 0 })
-	for _, end := range []string{"stalled", "stalled", "met", "bogus"} {
+	for _, end := range []string{"stalled", "stalled", "budget_calls", "met", "bogus"} {
 		if _, err := r.b.FinalRead(ctx, end); err != nil {
 			t.Fatal(err)
 		}
@@ -894,7 +895,7 @@ func TestAFinalReadRecordsTheLoopEnd(t *testing.T) {
 			ends = append(ends, p.Reason)
 		}
 	}
-	if !slices.Equal(ends, []string{"stalled"}) {
-		t.Fatalf("harness_end recorded %v, want [stalled] once", ends)
+	if !slices.Equal(ends, []string{"stalled", "budget_calls"}) {
+		t.Fatalf("harness_end recorded %v, want [stalled budget_calls], each once", ends)
 	}
 }

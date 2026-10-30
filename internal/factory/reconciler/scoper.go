@@ -162,13 +162,17 @@ func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope
 	return nil, nil, 0, "", nil
 }
 
-// scoperFailed is a scoper run that ended without a handoff, on its run cap or any other end that
-// fails open: the task runs whole, unscoped, and the room says so (drill 6ysg5vvt). A run cap is
+// scoperFailed is a scoper run that ended without a handoff, on its run cap, its tool-call limit
+// (HR2: the harness's budget_calls) or any other end that fails open: the task runs whole,
+// unscoped, and the room says so (drill 6ysg5vvt). A run cap and the tool-call limit are each
 // counted apart from other failures. The note is best effort.
 func (r *Reconciler) scoperFailed(ctx context.Context, t *v1alpha1.Task, reason string) error {
 	what, outcome := "the scoper's run ended before handing off ("+narrate.Reason(reason)+")", "failed"
-	if reason == "budget-run" {
+	switch reason {
+	case "budget-run":
 		what, outcome = "the scoper ran out of budget before handing off", "budget"
+	case envelope.EndBudgetCalls:
+		what, outcome = "the scoper reached its tool-call limit before handing off", envelope.EndBudgetCalls
 	}
 	r.log().Warn("the scoper ended without a handoff; the task runs whole", "task.id", t.Name, "reason", reason)
 	if err := narrate.Room(ctx, r.Rooms, t, "scope-failed", "Agent factory: "+what+"; the task runs whole, with no scope or split.",

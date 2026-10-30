@@ -86,3 +86,16 @@ func TestPayloadFieldNamesFollowAppendixA(t *testing.T) {
 		t.Errorf("oversize = %s", raw)
 	}
 }
+
+// HR2: the scoper's tool-call limit is a harness end the bridge, the broker and runwatch carry, as
+// the loop policy's three are.
+func TestLoopEndHoldsTheHarnessEnds(t *testing.T) {
+	for reason, want := range map[string]bool{
+		EndJudgeImpossible: true, EndStalled: true, EndNotMet: true, EndBudgetCalls: true,
+		"met": false, "deadline": false, "": false,
+	} {
+		if got := LoopEnd(reason); got != want {
+			t.Errorf("LoopEnd(%q) = %v, want %v", reason, got, want)
+		}
+	}
+}

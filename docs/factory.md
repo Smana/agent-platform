@@ -1236,9 +1236,11 @@ tier's run caps (at the task's own tier when it was offered a [split](#splits), 
 every part), and hands the implementer a bounded task through `room_handoff`'s `scope`: the
 change, the files, the paths to leave alone, a plan, its assumptions and its acceptance checks.
 Every implementer brief carries it after the steering note. The brief asks for the handoff as soon
-as the scope is known, within `scoper.nudgeAt` tool calls (25 by default). A scoper that leaves none starts the
+as the scope is known, within `scoper.nudgeAt` tool calls (25 by default). The harness bounds its
+exploration: a nudge at `scoper.nudgeAt` tool calls (25) and the end at `scoper.maxToolCalls` (40),
+as `budget_calls`; the task then runs unscoped, as after a missing scope. A scoper that leaves none starts the
 implementer unscoped, and the room says so (a run cap counts as `budget` in
-`maku_factory_scoper_runs_total`); a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
+`maku_factory_scoper_runs_total`, the tool-call limit as `budget_calls`); a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
 (`run_unschedulable`), no budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
 default answers bounces the task to the issue's author (`needs_author`); a task without an issue
 takes the scoper's first assumption instead.

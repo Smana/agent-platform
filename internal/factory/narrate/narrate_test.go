@@ -561,3 +561,10 @@ func TestPublishNarration(t *testing.T) {
 		}
 	}
 }
+
+// HR2: the scoper's tool-call limit reads as prose wherever a run's end is told.
+func TestTheScopersToolCallLimitReadsAsProse(t *testing.T) {
+	if got := Reason("budget_calls"); !strings.Contains(got, "tool-call limit") {
+		t.Fatalf("Reason(budget_calls) = %q", got)
+	}
+}

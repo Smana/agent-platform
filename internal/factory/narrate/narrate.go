@@ -178,6 +178,7 @@ func reasons() map[string]string {
 		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet (the run claim was refused), so no run started",
 		"stalled":                   "the run made no commit within its step limit, a judge continuation added none within its time box, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation, or a continuation did not finish within its time box",
+		"budget_calls":              "the scoper reached its tool-call limit before handing off",
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
 		"contract_invalid":          "the tester's branch was not the tester's alone, or its contract commit was malformed",
 		"contract_disputed":         "the implementer says the tester's tests are wrong; a maintainer decides",
