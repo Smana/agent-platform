@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -1056,7 +1057,73 @@ func TestTheReviewerBriefLeavesTheHandoffInTheRoom(t *testing.T) {
 	if !strings.HasPrefix(got, "You are the reviewer") || strings.Contains(got, sentinel) {
 		t.Fatalf("the reviewer's brief:\n%s", got)
 	}
-	if data, ok := fenced(got, "ACCEPTANCE-DATA-n0nce234"); !ok || data != "task links passes." {
+	if data, ok := fenced(got, "ACCEPTANCE-DATA-n0nce234"); !ok || data != untrustedHeader+"\ntask links passes." {
 		t.Fatalf("the issue's acceptance %q is not quoted:\n%s", data, got)
+	}
+}
+
+// reviewerRefusingRig is the pair team on a class with checks, whose cluster refuses a reviewer
+// claim carrying text beside url (a schema before HR4) and, when urlOnly is also refused, every
+// reviewer claim. It counts the reviewer creates.
+func reviewerRefusingRig(t *testing.T, urlOnlyRefused bool) (*rig, *int) {
+	t.Helper()
+	creates := 0
+	g := teamRigFor(t, "pair", issueTask("3buqdlot", 7, "x"), func(g *rig) {
+		repo := g.r.Cfg.Repos()[0]
+		repo.Classes = map[string]config.Class{"docs-links": {Shadow: true}, "revert": {}, "review": {Checks: true}}
+		g.r.Cfg.Repositories = []config.Repository{repo}
+		g.runs.refuse = func(s runs.Spec) error {
+			if s.Role != "reviewer" {
+				return nil
+			}
+			creates++
+			if s.TaskText != "" || urlOnlyRefused {
+				return apierrors.NewInvalid(schema.GroupKind{Group: "cloud.ogenki.io", Kind: "AgentRun"}, "x",
+					field.ErrorList{field.Invalid(field.NewPath("spec", "task"), "x", "set exactly one of task.text or task.url")})
+			}
+			return nil
+		}
+	})
+	return g, &creates
+}
+
+// Review I1: a schema that refuses the reviewer's brief beside its pull request degrades the run to
+// today's reviewer, the URL alone, said once in the room; the task reviews, never requeues forever,
+// and never escalates as loop_unsupported.
+func TestARefusedReviewerBriefFallsBackToThePullRequest(t *testing.T) {
+	g, creates := reviewerRefusingRig(t, false)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	s, ok := g.runs.specs[rid(1)]
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || !ok || s.TaskText != "" || s.TaskURL != "https://github.com/Smana/cloud-native-ref/pull/12" || !s.Checks {
+		t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Reason, s)
+	}
+	if *creates != 2 {
+		t.Fatalf("%d reviewer creates, want 2: the brief, then the URL alone", *creates)
+	}
+	notes := 0
+	for _, text := range g.log.states {
+		if strings.Contains(text, "the reviewer runs without its brief") && strings.Contains(text, "AgentRun schema needs the update") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("%d room notes, want 1: %v", notes, g.log.states)
+	}
+	if rec := tk.Status.Runs[1]; rec.Role != "reviewer" || rec.Trigger != "review" {
+		t.Fatalf("the reviewer run is not recorded: %+v", tk.Status.Runs)
+	}
+}
+
+// When the URL-only claim is refused too, the brief was not the cause: the existing path escalates.
+func TestARefusedReviewerClaimStillEscalates(t *testing.T) {
+	g, creates := reviewerRefusingRig(t, true)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "loop_unsupported" || *creates != 2 {
+		t.Fatalf("%s %s after %d creates, want Escalated loop_unsupported after 2", tk.Status.Phase, tk.Status.Reason, *creates)
+	}
+	for _, text := range g.log.states {
+		if strings.Contains(text, "the reviewer runs without its brief") {
+			t.Fatal("no run started, so no note says one runs")
+		}
 	}
 }

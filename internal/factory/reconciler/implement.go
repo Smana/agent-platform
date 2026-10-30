@@ -231,13 +231,23 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	// keys only when its loop is on.
 	s.Search = t.Spec.Search && s.Role == "implementer"
 	source := r.pinModel(t, &s)
-	if err := r.Runs.Create(ctx, s); err != nil {
+	err = r.Runs.Create(ctx, s)
+	unbriefed := false
+	if refusedSchema(err) && s.Role == "reviewer" && s.TaskText != "" && s.TaskURL != "" {
+		// HR4: a schema that predates it (the host's XRD, or an AgentRun CRD not upgraded) refuses
+		// text beside url. Degrade to today's reviewer, the URL alone, rather than block the task.
+		r.log().Warn("the AgentRun schema refuses the reviewer's brief beside its pull request; the reviewer runs without it",
+			"task.id", t.Name, "run.id", s.RunID, "err", err)
+		s.TaskText, unbriefed = "", true
+		err = r.Runs.Create(ctx, s)
+	}
+	if err != nil {
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
 		if !apierrors.IsAlreadyExists(err) {
 			// The cluster refused a claim carrying spec.loop, checks included (Strict validation: the host's XRD lacks it).
 			// Retrying cannot help; hand the task to a maintainer instead of backing off forever.
-			if (s.Loop != nil || s.Checks || s.Search) && (apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
+			if (s.Loop != nil || s.Checks || s.Search) && refusedSchema(err) {
 				r.log().Warn("loop, repository checks or search claim refused by the cluster", "task.id", t.Name, "err", err)
 				return r.end(ctx, t, v1alpha1.PhaseEscalated, "loop_unsupported")
 			}
@@ -259,7 +269,24 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
+	if unbriefed {
+		r.unbriefedReviewer(ctx, t)
+	}
 	return nil
+}
+
+// refusedSchema: the cluster refused the claim's shape, which no retry of the same claim changes.
+func refusedSchema(err error) bool { return apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) }
+
+// unbriefedReviewer says in the room, once per task and best effort, that a reviewer runs on the
+// pull request alone because the AgentRun schema refuses its brief beside it (HR4).
+func (r *Reconciler) unbriefedReviewer(ctx context.Context, t *v1alpha1.Task) {
+	text := "Agent factory: the reviewer runs without its brief, on the pull request alone: the cluster's AgentRun " +
+		"schema refuses task.text beside task.url. The platform's AgentRun schema needs the update that lets a reviewer carry both."
+	if err := narrate.Room(ctx, r.Rooms, t, "reviewer-unbriefed", text,
+		func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) }); err != nil {
+		r.log().Warn("the unbriefed reviewer's room note not posted", "task.id", t.Name, "err", err)
+	}
 }
 
 // pinModel puts a public run on the provider alias its class's loops.<class>.models names for its

@@ -380,6 +380,10 @@ checks are the scope's, with the files it touches, as fenced data; without a sco
 acceptance section or `Acceptance:` paragraph, quoted up to 4 KiB; without either, the brief says the
 task states none. The reviewer's `AgentRun` carries the brief as `spec.task.text` beside the pull
 request in `spec.task.url`: the CRD admits both for a reviewer only, every other role sets exactly one.
+A cluster whose AgentRun schema predates this (the host's XRD, or a CRD not upgraded) refuses the
+claim; the factory then creates it with the URL alone, today's reviewer, and says once in the room that
+the reviewer runs without its brief and the schema needs the update. A URL-only claim refused too
+takes the usual path.
 
 A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
 a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`

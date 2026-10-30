@@ -61,12 +61,24 @@ func TestTheReviewerBriefFallsBackToTheIssuesAcceptance(t *testing.T) {
 	if !ok || !strings.Contains(data, "- task links passes") || strings.Contains(data, "n0nce234") || strings.Contains(data, "none") {
 		t.Fatalf("the issue's acceptance is not quoted as fenced data:\n%s", got)
 	}
-	if !strings.Contains(got, "untrusted data") {
-		t.Fatalf("an untrusted issue's acceptance is not marked so:\n%s", got)
+	if !strings.Contains(got, untrustedNotice("ACCEPTANCE-DATA-n0nce234")) || !strings.HasPrefix(data, untrustedHeader+"\n") {
+		t.Fatalf("an untrusted issue's acceptance is not marked as the snapshot is:\n%s", got)
 	}
 	big := ReviewerBrief(reviewTask("Acceptance: "+strings.Repeat("a", 6000)), "n0nce234", nil)
-	if data, _ := fenced(big, "ACCEPTANCE-DATA-n0nce234"); strings.Count(data, "a") > 4<<10 || !strings.Contains(data, strings.Repeat("a", 4000)) {
-		t.Fatalf("the quote is capped at 4 KiB: %d bytes", len(data))
+	data, _ = fenced(big, "ACCEPTANCE-DATA-n0nce234")
+	if q := strings.TrimPrefix(data, untrustedHeader+"\n"); len(q) != acceptanceQuoteMax {
+		t.Fatalf("the quote is capped at 4 KiB: %d bytes", len(q))
+	}
+	trusted := reviewTask("Acceptance: run it.")
+	trusted.Spec.Source.Trust = "trusted"
+	if tb := ReviewerBrief(trusted, "n0nce234", nil); !strings.Contains(tb, "reviewed configuration") || strings.Contains(tb, untrustedHeader) {
+		t.Fatalf("a trusted task's acceptance:\n%s", tb)
+	}
+	noChecks := readyScope()
+	noChecks.Acceptance = nil
+	if b := ReviewerBrief(reviewTask("Acceptance: run it."), "n0nce234", &Scoped{Scope: noChecks, Seq: 9}); strings.Contains(b, "SCOPE-DATA-") ||
+		!strings.Contains(b, "ACCEPTANCE-DATA-") {
+		t.Fatalf("a scope without checks falls through to the issue's:\n%s", b)
 	}
 	none := ReviewerBrief(reviewTask("# Fix the links"), "n0nce234", nil)
 	if !strings.Contains(none, "## Acceptance checks\nThe task states none") || strings.Contains(none, "ACCEPTANCE-DATA-") {

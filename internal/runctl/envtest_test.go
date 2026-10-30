@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -506,14 +507,14 @@ func TestEnvtestAReviewerClaimCarriesItsBriefBesideThePullRequest(t *testing.T) 
 	if err := unstructured.SetNestedStringMap(both.Object, map[string]string{"text": "fix it", "url": pr}, "spec", "task"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.c.Create(e.ctx, both); !apierrors.IsInvalid(err) {
+	if err := e.c.Create(e.ctx, both); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "only a reviewer run carries both") {
 		t.Fatalf("an implementer with both task fields: %v, want Invalid", err)
 	}
 	none := claim("run-nnnnnnnn", "implementer", "x", "")
 	if err := unstructured.SetNestedStringMap(none.Object, map[string]string{}, "spec", "task"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.c.Create(e.ctx, none); !apierrors.IsInvalid(err) {
+	if err := e.c.Create(e.ctx, none); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "set task.text, task.url, or both") {
 		t.Fatalf("a run with no task: %v, want Invalid", err)
 	}
 }

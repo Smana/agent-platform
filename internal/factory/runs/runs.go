@@ -91,8 +91,9 @@ func Scheme(s *runtime.Scheme) {
 }
 
 // Spec is what the factory decides about one run. TaskText and TaskURL are exclusive, as the
-// XRD's CEL requires, a URL winning, except for a reviewer: its claim carries both, the brief
-// (harness roles HR4) and the pull request it reviews. SourceURL is the GitHub issue or PR the task narrates on
+// AgentRun CRD's CEL requires, a URL winning, except for a reviewer: its claim carries both, the
+// brief (harness roles HR4) and the pull request it reviews. A schema from before HR4 (the host's
+// XRD until it takes the same rule) refuses that claim; the reconciler then creates it URL-only. SourceURL is the GitHub issue or PR the task narrates on
 // (R28), and is written as AnnTaskURL whatever the task field holds. StartSeq and Head are the
 // CREATE-only annotations' sources (R48).
 type Spec struct {
