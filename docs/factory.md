@@ -224,6 +224,9 @@ starts once the room and the factory are free.
 | `reentered_policy` | Back from a `policy_pending` or `policy_absent` hand-off: policy-bot now passes the head it was handed off at |
 | `reentered_head_reported` | Back from a `head_unreported` hand-off: the room now reports the head as a commit of the task's run |
 | `reentered_ci_green` | Back from a `ci_cancelled` hand-off: the required checks are now green on the same head |
+| `reentered_approved` | Back from a hand-off a human's judgement covers: a maintainer approved the head it was handed off at (`merge.approveToMerge`). Once per review, not counted against the returns limit |
+| `reentered_day_turned` | Back from an `auto_merge_cap` hand-off: the UTC day turned, so the cap is counted again |
+| `reentered_unpaused` | Back from a `class_paused` hand-off: a clean ledger lifted the pause, so the gate decides it again |
 | `head_moved` | A commit landed after the decision; the new head is decided again |
 | `contract_unread` | The factory has not yet read which files changed since the test contract (row 2c) |
 
@@ -233,13 +236,21 @@ with admin ticks "bypass rules" on the pull request, or runs
 `gh pr merge <n> --squash --admin --repo <owner/name>`; the comment names the exact command. A
 **Request changes** review sends the task back for a revision instead.
 
+With `merge.approveToMerge`, a maintainer's approval of the current head is the merge: the merger
+merges it, outside the caps, as a human merge (`factory/approved-merge`, no automatic revert), and
+the comment says "To merge: approve this pull request" instead of naming the bypass. The reasons a
+human fixes on the pull request itself (`not_agent_authored`, `gate_path`, `contract_modified`,
+`not_owned`, `steering_path`, `foreign_trailer`, `not_mergeable`, `changes_requested`) keep the
+bypass instructions: no approval returns them to the gate.
+
 | Reason | Why |
 |---|---|
 | *(none)* | A revision a maintainer asked for is pushed |
 | `merge_gate_off` | No class is live or in shadow, so the factory does not gate the pull request |
 | `policy_pending` | policy-bot's `policy-bot: main` status needs a maintainer's approval |
 | `policy_absent` | policy-bot has not evaluated the pull request, or the status is not from `merge.policyBotLogin` |
-| `maintainer_approved` | A maintainer approved it: a human merges it |
+| `maintainer_approved` | A maintainer approved it. With `merge.approveToMerge` off, a human merges it; on, an approval of the current head is merged by the merger and this reason is for the cases it cannot (adopted classes, an approval after a green run) |
+| `approval_stale` | A maintainer's approval is of an older head. Next step: approve the current head |
 | `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
 | `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
@@ -736,6 +747,13 @@ flowchart LR
   breaker -->|yes| paused["class_paused"]
   breaker -->|no| next["the daily cap, then live or shadow"]
 ```
+
+**Approve-to-merge.** With `merge.approveToMerge`, row 3 arms on a maintainer's `APPROVED` review of
+the current head, for the agents' pull requests only (AM1): the merger merges that head outside the
+caps, labels it `factory/approved-merge`, and records it as a human merge: Done without Verifying,
+never reverted on `main_red`, watched by the monitor. A hand-off a human's judgement covers returns
+to the gate when a maintainer approves the head it was handed off at (AM2). The switch is off by
+default and acts only when the repository has a live, shadow or monitored class.
 
 A shadow decision's comment carries the head it judged (`event=would-arm-<n> head=<sha>`).
 `scripts/shadow-merge-tally.sh --class docs-links` counts the pull requests a maintainer then

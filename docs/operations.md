@@ -222,7 +222,7 @@ absent rather than 0.
 | `maku_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
 | `maku_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
 | `maku_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
-| `maku_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository`, `principal` | `auto_merged`, `approved_merged` (the merger on a maintainer's approval, AM1), `human_merged`, `closed`, `reverted` |
+| `maku_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository`, `principal` | `auto_merged`, `approved_merged` (the merger on a maintainer's approval, AM1; the pull request carries the label `factory/approved-merge`), `human_merged`, `closed`, `reverted` |
 | `maku_factory_prs_opened_total` | counter | `principal`, `repository` | Task pull requests opened, where `maku_factory_time_to_pr_seconds` records |
 | `maku_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
 | `maku_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |

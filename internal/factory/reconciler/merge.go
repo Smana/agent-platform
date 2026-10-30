@@ -215,7 +215,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-		narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
+		ev := narrate.WaitingForHuman(t, d.Reason)
+		if r.repo(t).Merge.ApproveToMerge && !adopted && !byHandReasons[d.Reason] {
+			ev = narrate.WaitingForApproval(t, d.Reason)
+		}
+		narrateLater(t, ev)
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
@@ -251,7 +255,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// on main_red; the approval is the record.
 		ref.MergedHow, ref.ApprovedBy = "approved", d.Approver
 		r.to(t, v1alpha1.PhaseAutoMerging, "")
-		narrateOn(t, pr.Number, narrate.Armed(t)) // Task 5 narrates the approval
+		narrateOn(t, pr.Number, narrate.ArmedByApproval(t, d.Approver))
 		return nil
 	}
 	armed := metav1.NewTime(r.Now())
