@@ -301,6 +301,15 @@ class GuardTest(unittest.TestCase):
         got = dict(lp.named_paths("- docs/a.md is not created\n- docs/a.md is listed\n", {"docs"}))
         self.assertEqual(got["docs/a.md"], "required")
 
+    def test_a_named_path_is_matched_whole_or_not_at_all(self):
+        # task ugqp3szv: the scope's `path: proves` line was read as the path without `.md`
+        line = "- test -f docs/runbooks/agent-factory/12-live-auto-merge-drill.md: proves …\n"
+        self.assertEqual(lp.named_paths(line, {"docs"}),
+                         [("docs/runbooks/agent-factory/12-live-auto-merge-drill.md", "required")])
+        self.assertEqual(lp.named_paths("- docs/a/b.md: proves x", {"docs"}), [("docs/a/b.md", "required")])
+        # a file:line reference is dropped, never shortened into another path
+        self.assertEqual(lp.named_paths("- see docs/a/b.md:12 for it\n- docs/c/d.md:12\n", {"docs"}), [])
+
     def paths(self, *facts):
         return lp.judge_input("task", "abc", [], "", [DRILL_E_RUNS[1]], list(facts))
 
