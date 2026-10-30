@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
@@ -189,5 +190,90 @@ func TestDecideArmReadsTheTasksRepository(t *testing.T) {
 		if d.Verdict != want {
 			t.Errorf("%s: %+v, want %s", repo, d, want)
 		}
+	}
+}
+
+// Human path AM1: with merge.approveToMerge, a maintainer's APPROVED review of the current head
+// arms the merger; off, it hands off as before. Only the current head counts, the newest review of
+// each maintainer counts, and a truncated list is a veto.
+func TestAMaintainersApprovalArmsWhenTheSwitchIsOn(t *testing.T) {
+	review := func(login, state, commit string, at int) forge.Review {
+		return forge.Review{ID: int64(at), Author: login, State: state, Commit: commit, At: now.Add(time.Duration(at) * time.Minute)}
+	}
+	for name, c := range map[string]struct {
+		on              bool
+		reviews         []forge.Review
+		truncated       bool
+		verdict, reason string
+	}{
+		"off: an approval hands off as today":       {false, []forge.Review{review("Smana", "APPROVED", head, 1)}, false, "human", "maintainer_approved"},
+		"on: an approval of the head arms":          {true, []forge.Review{review("Smana", "APPROVED", head, 1)}, false, "arm", "maintainer_approved"},
+		"on: an approval of another head is stale":  {true, []forge.Review{review("Smana", "APPROVED", oldHead, 1)}, false, "human", "approval_stale"},
+		"on: an approval with no commit is stale":   {true, []forge.Review{review("Smana", "APPROVED", "", 1)}, false, "human", "approval_stale"},
+		"on: a newer request for changes vetoes":    {true, []forge.Review{review("Smana", "APPROVED", head, 1), review("Smana", "CHANGES_REQUESTED", head, 2)}, false, "human", "changes_requested"},
+		"on: a later approval lifts the request":    {true, []forge.Review{review("Smana", "CHANGES_REQUESTED", head, 1), review("Smana", "APPROVED", head, 2)}, false, "arm", "maintainer_approved"},
+		"on: a non-maintainer's approval is advice": {true, []forge.Review{review("alice", "APPROVED", head, 1)}, false, "shadow", "shadow_would_arm"},
+		"on: a truncated review list vetoes":        {true, []forge.Review{review("Smana", "APPROVED", head, 1)}, true, "human", "changes_requested"},
+		// R-B1: off, today's loop reads any maintainer approval, even one a newer request for changes follows.
+		"off: an approval before a request for changes hands off as today": {false, []forge.Review{review("Smana", "APPROVED", head, 1), review("Smana", "CHANGES_REQUESTED", head, 2)}, false, "human", "maintainer_approved"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = c.on
+			cfg.Classes["docs-links"] = config.Class{Shadow: true}
+			pr := agentPR()
+			pr.Reviews, pr.ReviewsTruncated = c.reviews, c.truncated
+			tk := armTask("docs-links", "solo", "")
+			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+			if d.Verdict != c.verdict || d.Reason != c.reason {
+				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
+			}
+			if d.Verdict == "arm" && d.Approver != "Smana" {
+				t.Fatalf("approver %q", d.Approver)
+			}
+		})
+	}
+}
+
+// AM1, "outside the caps": a maintainer's approval of the head arms even when the day's
+// autoMergesPerDay or the class's maxPerDay is spent. The caps bound the factory's own judgement,
+// not a human's.
+func TestAnApprovalArmsOutsideTheCaps(t *testing.T) {
+	for name, spent := range map[string]func(*ArmInputs){
+		"the day's cap":   func(in *ArmInputs) { in.ArmedToday = in.Cfg.Merge.AutoMergesPerDay },
+		"the class's cap": func(in *ArmInputs) { in.ClassArmedToday = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			cfg.Classes["docs-links"] = config.Class{Live: true, MaxPerDay: 1}
+			pr := agentPR()
+			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: now}}
+			in := ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
+			spent(&in)
+			if d := DecideArm(in); d.Verdict != "arm" || d.Reason != "maintainer_approved" {
+				t.Fatalf("%+v, want arm maintainer_approved", d)
+			}
+			in.PR.Reviews = nil
+			if d := DecideArm(in); d.Reason != "auto_merge_cap" {
+				t.Fatalf("without the approval: %+v, want auto_merge_cap", d)
+			}
+		})
+	}
+}
+
+// R-B1 (AM1, "adopted classes keep today's path"): with the switch on, a maintainer's approval of
+// an adopted pull request's head still hands off; it never arms the merger.
+func TestAnAdoptedPullRequestsApprovalHandsOffWithTheSwitchOn(t *testing.T) {
+	cfg := armCfg()
+	cfg.Merge.ApproveToMerge = true
+	cfg.Classes["deps-patch"] = depsPatchClass()
+	pr := forge.PR{Author: bot, HeadRef: "renovate/kyverno-3.x", HeadSHA: head,
+		Reviews: []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: now}}}
+	d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("deps-patch", "solo", ""), Cfg: cfg})
+	if d.Verdict != "human" || d.Reason != "maintainer_approved" || d.Approver != "" {
+		t.Fatalf("%+v, want human maintainer_approved", d)
 	}
 }

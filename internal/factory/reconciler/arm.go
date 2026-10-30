@@ -65,6 +65,8 @@ type ArmDecision struct {
 	Verdict string
 	Reason  string
 	Matched string
+	// Approver is the maintainer whose approval armed row 3 (AM1); "" otherwise.
+	Approver string
 }
 
 // CIState over the required checks: FAILURE if one failed or reported a state the rollup's
@@ -114,9 +116,20 @@ func DecideArm(in ArmInputs) ArmDecision {
 	} else if !forge.SameLogin(in.PR.Author, in.Cfg.AgentsLogin) {
 		return human("not_agent_authored", "")
 	}
-	for _, rv := range in.PR.Reviews {
-		if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) {
-			return human("maintainer_approved", "review") // success came from a human: a human merges
+	if !cl.Adopted() && rc.Merge.ApproveToMerge { // R-B1: adopted classes keep today's path (AM1)
+		switch rv, st := approval(in, rc); st {
+		case "veto":
+			return human("changes_requested", "review")
+		case "stale":
+			return human("approval_stale", "review")
+		case "approved":
+			return ArmDecision{Verdict: "arm", Reason: "maintainer_approved", Matched: "review", Approver: rv.Author}
+		}
+	} else {
+		for _, rv := range in.PR.Reviews {
+			if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) {
+				return human("maintainer_approved", "review") // success came from a human: a human merges
+			}
 		}
 	}
 	// An agents pull request answers a veto with a revision run (watch.go). An adopted one has no
@@ -155,6 +168,46 @@ func DecideArm(in ArmInputs) ArmDecision {
 		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class}
 	}
 	return ArmDecision{Verdict: "arm", Matched: class}
+}
+
+// approval is row 3's read of an agents pull request with merge.approveToMerge on (human path
+// AM1, ruling R-B1): the newest review of each maintainer. veto when one of them is a request for
+// changes, or when GitHub cut the list, so a veto may be unseen; stale when the newest approval is
+// of another head, or of no head GitHub named (fail closed); approved when it is of the current
+// head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
+func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
+	if in.PR.ReviewsTruncated {
+		return forge.Review{}, "veto"
+	}
+	newest := map[string]forge.Review{}
+	for _, rv := range in.PR.Reviews {
+		if !rc.IsMaintainer(rv.Author) || rv.State == "COMMENTED" {
+			continue
+		}
+		login := strings.ToLower(rv.Author)
+		if cur, ok := newest[login]; !ok || rv.At.After(cur.At) {
+			newest[login] = rv
+		}
+	}
+	var approved forge.Review
+	for _, rv := range newest {
+		switch rv.State {
+		case "CHANGES_REQUESTED":
+			return rv, "veto"
+		case "APPROVED":
+			if approved.Commit != in.PR.HeadSHA { // an approval of the head wins, whatever the map's order
+				approved = rv
+			}
+		}
+	}
+	switch {
+	case approved.Author == "":
+		return forge.Review{}, ""
+	case approved.Commit == in.PR.HeadSHA:
+		return approved, "approved"
+	default:
+		return approved, "stale"
+	}
 }
 
 // gateOf is the class as the gate reads it: its config, with the diff shape built into

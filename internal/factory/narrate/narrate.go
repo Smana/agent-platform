@@ -281,7 +281,7 @@ func reasons() map[string]string {
 		"not_owned":                 "this repository's .github/agent-factory.yaml does not name this factory",
 		"policy_pending":            "the policy needs a maintainer's approval",
 		"policy_absent":             "policy-bot has not evaluated it",
-		"maintainer_approved":       "a maintainer approved it: a human merges it",
+		"maintainer_approved":       "a maintainer approved it",
 		"no_approving_verdict":      "the reviewer did not approve it",
 		"not_agent_authored":        "it is not the agents' pull request",
 		"not_mergeable":             "GitHub does not allow merging it as it stands",
@@ -289,6 +289,10 @@ func reasons() map[string]string {
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow until the merge wave",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported, so the factory neither fixes nor merges on top of it",
 		"closes_parent":             "its description closes the parent issue (Fixes, Closes or Resolves), which closes only with the last part: edit the description, then merge it yourself",
+		"approval_stale":            "a maintainer's approval is of an older head: approve the current one",
+		"reentered_approved":        "a maintainer approved the head it was handed off at, so the gate decides it again",
+		"reentered_day_turned":      "the UTC day turned, so the cap is counted again",
+		"reentered_unpaused":        "the class's pause lifted, so the gate decides it again",
 		"reentered_policy":          "policy-bot now passes the head it was handed off at",
 		"reentered_head_reported":   "the room now reports its head as a commit of the task's run",
 		"rereview_verdict_stale":    "the factory moved its head after the approval, so it is reviewed again",
@@ -586,6 +590,23 @@ func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 		body += "\n\nTo merge: " + summ.MergeHow(t.Spec.Repository, pr.Number) + "."
 	}
 	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
+}
+
+// WaitingForApproval is WaitingForHuman on a repository with approveToMerge (human path AM3): the
+// one action is a review, and the merger does the merge. The by-hand reasons keep WaitingForHuman.
+func WaitingForApproval(t *v1alpha1.Task, reason string) Event {
+	body := fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))
+	if pr := t.Status.PullRequest; pr != nil && pr.Number > 0 {
+		body += "\n\nTo merge: approve this pull request (a GitHub review by a maintainer). The merger merges the approved head within a minute, or says why not."
+	}
+	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
+}
+
+// ArmedByApproval is Armed for a merge a maintainer's approval decided (AM1).
+func ArmedByApproval(t *v1alpha1.Task, login string) Event {
+	return Event{Key: "armed-" + fmt.Sprint(len(t.Status.Runs)), Body: fmt.Sprintf("Agent factory task `%s`: CI is green, policy-bot "+
+		"passed and @%s approved this head, so it is merged now, at the approved head: GitHub re-checks that head at merge time and refuses "+
+		"a moved one. It counts as a human merge: no automatic revert, the monitor watches it.", t.Name, login)}
 }
 
 // ChecksNeverReported says the wait in AwaitingCI outlasted merge.awaitingCIFor (#182), naming

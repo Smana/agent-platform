@@ -554,6 +554,25 @@ func TestRevertLabelReachesADoneTask(t *testing.T) {
 	}
 }
 
+// AM1 (R-B2): the merger's merge on a maintainer's approval is reverted on factory/revert as an
+// auto-merge is.
+func TestRevertLabelReachesAnApprovedMerge(t *testing.T) {
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone, PullRequest: &v1alpha1.PullRequestRef{Number: 12, MergedHow: "approved", ApprovedBy: "Smana"}}}
+	f := forgetest.NewFake()
+	f.SetLabeled(LabelRevert, forge.Item{Number: 12, PullRequest: true})
+	f.SetEvents(12, forge.LabelEvent{Actor: "Smana", Label: LabelRevert, At: t0})
+	p, c := poller(t, f, tk)
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var got v1alpha1.Task
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+	if got.Annotations[v1alpha1.AnnotationRevert] != "label" {
+		t.Fatalf("%v", got.Annotations)
+	}
+}
+
 func TestControlIssue(t *testing.T) {
 	f := forgetest.NewFake()
 	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})

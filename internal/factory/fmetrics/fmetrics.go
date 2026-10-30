@@ -40,7 +40,7 @@ const other = "other"
 // (tier, template, source, class, classifier, principal) come from the Task CRD's enums or the
 // factory's config.
 func outcomes() []string {
-	return []string{"auto_merged", "human_merged", "closed", "reverted", "follow_up"}
+	return []string{"auto_merged", "approved_merged", "human_merged", "closed", "reverted", "follow_up"}
 }
 func interventions() []string {
 	return []string{"stop", "retry", "request_changes", "steer", "takeover", "approve", "split"}
@@ -267,7 +267,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("From intake to the PR opening (§7, SC-1)."), metric.WithExplicitBucketBoundaries(timeToPRBuckets...))
 	check(err)
 	s.prOutcomes, err = meter.Int64Counter("agent_factory_pr_outcomes_total",
-		metric.WithDescription("PR outcomes by class: auto_merged, human_merged, closed, reverted, follow_up (§7, SC-11)."))
+		metric.WithDescription("PR outcomes by class: auto_merged, approved_merged, human_merged, closed, reverted, follow_up (§7, SC-11, AM1)."))
 	check(err)
 	s.monitorVerdicts, err = meter.Int64Counter("agent_factory_monitor_verdicts_total",
 		metric.WithDescription("Post-merge monitor verdicts (merge gate classes MC7), by class and verdict."))
@@ -511,7 +511,9 @@ func (s *Set) PROpened(ctx context.Context) {
 	s.prsOpened.Add(ctx, 1, metric.WithAttributes(s.repoOf(ctx), principalOf(ctx)))
 }
 
-// PROutcome counts a task PR's outcome: auto_merged, human_merged, closed, reverted or follow_up.
+// PROutcome counts a task PR's outcome: auto_merged (the merger, on the class's conditions),
+// approved_merged (the merger, on a maintainer's approval of the head: AM1), human_merged, closed,
+// reverted or follow_up.
 func (s *Set) PROutcome(ctx context.Context, class, outcome string) {
 	s.prOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("outcome", oneOf(outcome, outcomes())), s.repoOf(ctx), principalOf(ctx)))

@@ -563,7 +563,7 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		}
 		for i := range l.Items {
 			t := &l.Items[i]
-			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && ref.AutoMerged && p.owns(t) {
+			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && (ref.AutoMerged || ref.MergedHow == "approved") && p.owns(t) {
 				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{v1alpha1.AnnotationRevert: "label"}}})
 				obj := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: t.Name, Namespace: t.Namespace}}
 				if err := p.Client.Patch(ctx, obj, client.RawPatch(types.MergePatchType, body)); err != nil {

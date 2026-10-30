@@ -224,6 +224,9 @@ starts once the room and the factory are free.
 | `reentered_policy` | Back from a `policy_pending` or `policy_absent` hand-off: policy-bot now passes the head it was handed off at |
 | `reentered_head_reported` | Back from a `head_unreported` hand-off: the room now reports the head as a commit of the task's run |
 | `reentered_ci_green` | Back from a `ci_cancelled` hand-off: the required checks are now green on the same head |
+| `reentered_approved` | Back from a hand-off a human's judgement covers: a maintainer approved the head it was handed off at (`merge.approveToMerge`). Once per review, not counted against the returns limit |
+| `reentered_day_turned` | Back from an `auto_merge_cap` hand-off: the UTC day turned, so the cap is counted again. With `merge.approveToMerge` only; counted against the returns limit |
+| `reentered_unpaused` | Back from a `class_paused` hand-off: a clean ledger lifted the pause, so the gate decides it again. With `merge.approveToMerge` only; counted against the returns limit |
 | `head_moved` | A commit landed after the decision; the new head is decided again |
 | `contract_unread` | The factory has not yet read which files changed since the test contract (row 2c) |
 
@@ -233,13 +236,23 @@ with admin ticks "bypass rules" on the pull request, or runs
 `gh pr merge <n> --squash --admin --repo <owner/name>`; the comment names the exact command. A
 **Request changes** review sends the task back for a revision instead.
 
+With `merge.approveToMerge`, a maintainer's approval of the current head is the merge: the merger
+merges it, outside the caps, as a human merge (`factory/approved-merge`, no automatic revert), and
+the comment says "To merge: approve this pull request" instead of naming the bypass. The reasons a
+human fixes on the pull request itself (`not_agent_authored`, `gate_path`, `contract_modified`,
+`not_owned`, `steering_path`, `foreign_trailer`, `not_mergeable`, `changes_requested`,
+`human_commit_in_pr`) keep the bypass instructions: no approval returns them to the gate. A
+`changes_requested` hand-off returns on an approval once no maintainer's newest review requests
+changes.
+
 | Reason | Why |
 |---|---|
 | *(none)* | A revision a maintainer asked for is pushed |
 | `merge_gate_off` | No class is live or in shadow, so the factory does not gate the pull request |
 | `policy_pending` | policy-bot's `policy-bot: main` status needs a maintainer's approval |
 | `policy_absent` | policy-bot has not evaluated the pull request, or the status is not from `merge.policyBotLogin` |
-| `maintainer_approved` | A maintainer approved it: a human merges it |
+| `maintainer_approved` | A maintainer approved it. With `merge.approveToMerge` off, a human merges it; on, an approval of the current head arms the merger, so this reason is left for adopted classes and for a task handed off before the switch was turned on: that approval predates the hand-off, so a fresh approval of the head returns the task to the gate |
+| `approval_stale` | A maintainer's approval is of an older head. Next step: approve the current head |
 | `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
 | `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
@@ -737,6 +750,17 @@ flowchart LR
   breaker -->|no| next["the daily cap, then live or shadow"]
 ```
 
+**Approve-to-merge.** With `merge.approveToMerge`, row 3 arms on a maintainer's `APPROVED` review of
+the current head, for the agents' pull requests only (AM1): the merger merges that head outside the
+caps, labels it `factory/approved-merge`, and records it as a human merge: Done without Verifying,
+never reverted on `main_red`, watched by the monitor. A hand-off a human's judgement covers returns
+to the gate when a maintainer approves the head it was handed off at (AM2). The switch is off by
+default and acts only when the factory gates at all: when a class of any configured repository is
+live, shadow or monitored (the factory-wide condition for the merger key). With none, a task hands
+off `merge_gate_off` before the approval is read. The switch also gates AM5: an `auto_merge_cap`
+hand-off returns on the next UTC day, and a `class_paused` one once the pause lifts, only while it
+is on.
+
 A shadow decision's comment carries the head it judged (`event=would-arm-<n> head=<sha>`).
 `scripts/shadow-merge-tally.sh --class docs-links` counts the pull requests a maintainer then
 merged at that head: the gate's evidence that the class would have merged nothing a human would
@@ -1158,7 +1182,7 @@ Each `repositories` entry:
 | `triggerLabel` | The start label, `factory/ready` | Required |
 | `classes` | `<name>: {live, shadow, checks, testFirst, author: {adopt: {logins, branches}}, releaseAgeCheck, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `author.adopt` and the semver shapes: see [adopted classes](#adopted-classes); `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `checks` | `{egress: [profiles]}`: what a check-enabled run requests beyond `github`, at most 4 of `pypi`, `npm`, `golang`, `crates`. The repository's `.github/agent-checks.yaml` never names egress | None: github only |
-| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `contractCheck` (the job that runs a task's test contract: not one of `requiredChecks`, and set whenever a class has `testFirst`), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off) | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `contractCheck` (the job that runs a task's test contract: not one of `requiredChecks`, and set whenever a class has `testFirst`), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}`, `approveToMerge` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off; `approveToMerge` optional, false is off: on, a maintainer's `APPROVED` review of an agents pull request's current head arms the merger, AM1. It acts only when a class of any configured repository is live, shadow or monitored (factory-wide, as the merger key is): with none, the task hands off `merge_gate_off` before the approval is read) | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
 `api.repositories`, the run-request API's allowlist, is the entries' names.
