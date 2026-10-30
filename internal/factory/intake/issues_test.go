@@ -574,18 +574,34 @@ func TestRevertLabelReachesAnApprovedMerge(t *testing.T) {
 }
 
 // AM6: a maintainer's factory/drill on the pull request, read with factory/revert, marks the
-// revert a drill; a non-maintainer's does not.
+// revert a drill; a non-maintainer's does not, nor a maintainer's since removed.
 func TestDrillLabelMarksTheRevertADrill(t *testing.T) {
 	for _, tc := range []struct {
-		actor, want string
-	}{{"Smana", "true"}, {"mallory", ""}} {
-		t.Run(tc.actor, func(t *testing.T) {
+		name    string
+		actors  []string // who added factory/drill, oldest first
+		removed bool
+		want    string
+	}{
+		{"a maintainer's", []string{"Smana"}, false, "true"},
+		{"a non-maintainer's", []string{"mallory"}, false, ""},
+		{"a non-maintainer's re-add after a maintainer's", []string{"Smana", "mallory"}, false, ""},
+		{"a maintainer's since removed", []string{"Smana"}, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
 				Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone, PullRequest: &v1alpha1.PullRequestRef{Number: 12, AutoMerged: true}}}
 			f := forgetest.NewFake()
 			f.SetLabeled(LabelRevert, forge.Item{Number: 12, PullRequest: true})
-			f.SetEvents(12, forge.LabelEvent{Actor: tc.actor, Label: LabelDrill, At: t0},
-				forge.LabelEvent{Actor: "Smana", Label: LabelRevert, At: t0.Add(time.Minute)})
+			labels := []string{LabelRevert}
+			if !tc.removed {
+				labels = append(labels, LabelDrill)
+			}
+			f.SetPR(forge.PR{Number: 12, State: "MERGED", Labels: labels})
+			var evs []forge.LabelEvent
+			for i, a := range tc.actors {
+				evs = append(evs, forge.LabelEvent{Actor: a, Label: LabelDrill, At: t0.Add(time.Duration(i) * time.Second)})
+			}
+			f.SetEvents(12, append(evs, forge.LabelEvent{Actor: "Smana", Label: LabelRevert, At: t0.Add(time.Minute)})...)
 			p, c := poller(t, f, tk)
 			if err := p.Poll(context.Background()); err != nil {
 				t.Fatal(err)

@@ -54,16 +54,37 @@ func TestARebuiltFactoryReadsADemotedClassFromGitHub(t *testing.T) {
 }
 
 // Human path AM6: a revert PR carrying factory/drill does not count as a revert of what it
-// reverts, on GitHub's side (a rebuild) as on the Task's.
+// reverts, on GitHub's side (a rebuild) as on the Task's, when the merger or a maintainer added
+// the label: verified as factory/revert is. Anyone else's, or an unverified one, counts.
 func TestADrillRevertDoesNotTripTheBreaker(t *testing.T) {
-	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
-	g.f.SetChecks(12, green("SUCCESS"))
-	g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "ogenki-agent-merger[bot]", MergedAt: now.Add(-48 * time.Hour),
-		Labels: []string{AutoMergedLabel("docs-links")}})
-	g.f.SetPR(forge.PR{Number: 30, State: "MERGED", MergedAt: now.Add(-47 * time.Hour), Labels: []string{RevertOfLabel(9), DrillLabel}})
-	got := g.reconcile(t, "3buqdlot", 1)
-	if got.Status.Reason == "class_paused" || got.Status.Phase != v1alpha1.PhaseAutoMerging {
-		t.Fatalf("a drill revert paused the class: %s %s", got.Status.Phase, got.Status.Reason)
+	for _, tc := range []struct {
+		name   string
+		actors []string // who added factory/drill to the revert PR, oldest first
+		paused bool
+	}{
+		{"the merger's copy", []string{"ogenki-agent-merger[bot]"}, false},
+		{"a maintainer's", []string{"Smana"}, false},
+		{"a non-maintainer's", []string{"mallory"}, true},
+		{"a non-maintainer's re-add after a maintainer's", []string{"Smana", "mallory"}, true},
+		{"no event read", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.f.SetChecks(12, green("SUCCESS"))
+			g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "ogenki-agent-merger[bot]", MergedAt: now.Add(-48 * time.Hour),
+				Labels: []string{AutoMergedLabel("docs-links")}})
+			g.f.SetPR(forge.PR{Number: 30, State: "MERGED", MergedAt: now.Add(-47 * time.Hour), Labels: []string{RevertOfLabel(9), DrillLabel}})
+			var evs []forge.LabelEvent
+			for i, a := range tc.actors {
+				evs = append(evs, forge.LabelEvent{Actor: a, Label: DrillLabel, At: now.Add(time.Duration(i-47) * time.Hour)})
+			}
+			g.f.SetEvents(30, evs...)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if paused := got.Status.Reason == "class_paused"; paused != tc.paused ||
+				(!paused && got.Status.Phase != v1alpha1.PhaseAutoMerging) {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
 	}
 }
 

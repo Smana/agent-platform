@@ -174,7 +174,13 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 			if err != nil {
 				return nil, fmt.Errorf("read the merge ledger: %w", err)
 			}
-			ms[i].Reverted = slices.ContainsFunc(rv, func(p forge.LabelledPull) bool { return !slices.Contains(p.Labels, DrillLabel) })
+			for _, p := range rv {
+				drill, err := r.drill(ctx, rc, p)
+				if err != nil {
+					return nil, fmt.Errorf("read the merge ledger: %w", err)
+				}
+				ms[i].Reverted = ms[i].Reverted || !drill
+			}
 			if !ext {
 				continue
 			}
@@ -233,4 +239,23 @@ func (r *Reconciler) label(ctx context.Context, pr forge.PR, l string) {
 	if err := r.merger(ctx).AddLabels(ctx, pr.Number, l); err != nil {
 		r.log().Error("label the merge ledger", "pr", pr.Number, "label", l, "err", err)
 	}
+}
+
+// drill reports whether a revert PR is a drill (AM6): it carries factory/drill, and the newest
+// label event adding it is the merger's (which copies only a maintainer's) or a maintainer's,
+// verified as factory/revert is. Anyone else's label, or truncated events, make no drill: the
+// revert counts.
+func (r *Reconciler) drill(ctx context.Context, rc *config.Repository, p forge.LabelledPull) (bool, error) {
+	if !slices.Contains(p.Labels, DrillLabel) {
+		return false, nil
+	}
+	evs, err := r.gh(ctx).LabelEvents(ctx, p.Number, DrillLabel)
+	if errors.Is(err, forge.ErrEventsTruncated) {
+		return false, nil
+	}
+	if err != nil || len(evs) == 0 {
+		return false, err
+	}
+	by := evs[len(evs)-1].Actor
+	return forge.SameLogin(by, rc.Merge.MergerLogin) || rc.IsMaintainer(by), nil
 }
