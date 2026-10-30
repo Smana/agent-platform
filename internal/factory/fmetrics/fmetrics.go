@@ -26,6 +26,7 @@ import (
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/killswitch"
 	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/summary"
 )
 
 const scope = "github.com/Smana/maku/internal/factory"
@@ -89,6 +90,16 @@ func apiOutcomes() []string {
 
 // costRoles are run_cost_usd's role values (harness roles HR6): the four AgentRun roles, and scoper.
 func costRoles() []string { return []string{"implementer", "reviewer", "tester", "triager", "scoper"} }
+
+// handOffReason bounds a hand-off's or an escalation's reason to the wait reasons the factory
+// narrates (summary.Reasons, held to narrate's by its test), "" for none: an Escalated run end
+// can be free text, such as the revoked annotation (AM9).
+func handOffReason(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return oneOf(reason, summary.Reasons())
+}
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -554,7 +565,7 @@ func (s *Set) HumanWait(ctx context.Context, phase, reason, class string, d time
 		return
 	}
 	s.humanWait.Add(ctx, d.Seconds(), metric.WithAttributes(attribute.String("phase", phase), principalOf(ctx),
-		attribute.String("reason", reason), attribute.String("class", class)))
+		attribute.String("reason", handOffReason(reason)), attribute.String("class", class)))
 }
 
 // HandoffToMerge records how long a pull request waited from its first hand-off to its merge, by
@@ -564,7 +575,7 @@ func (s *Set) HandoffToMerge(ctx context.Context, class, reason, how string, d t
 		return
 	}
 	s.handoffToMerge.Record(ctx, d.Seconds(), metric.WithAttributes(attribute.String("class", class),
-		attribute.String("reason", reason), attribute.String("how", oneOf(how, []string{"approved", "human"}))))
+		attribute.String("reason", handOffReason(reason)), attribute.String("how", oneOf(how, []string{"approved", "human"}))))
 }
 
 // Charged adds a run's settled micro-USD, in dollars, to its payer's charges by kind: the run

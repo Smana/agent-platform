@@ -411,3 +411,25 @@ func TestHandoffToMergeIsAHistogram(t *testing.T) {
 		}
 	}
 }
+
+// AM9, review: an Escalated wait's reason can be a run's free-text end (the revoked annotation);
+// the wait and the hand-off to merge read other for anything outside the factory's wait reasons.
+func TestTheHumanPathReasonIsBounded(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	s.HumanWait(t.Context(), "Escalated", "revoked by Smana: please stop, it is looping", "docs-links", time.Minute)
+	s.HumanWait(t.Context(), "Escalated", "ci_red", "docs-links", time.Minute)
+	s.HandoffToMerge(t.Context(), "docs-links", "anything an operator wrote", "human", time.Minute)
+	got := read()
+	for _, want := range []string{
+		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="other"} 60`,
+		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="ci_red"} 60`,
+		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="human",reason="other",le="300"} 1`,
+	} {
+		if !strings.Contains(got, want+"\n") {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(got, "please stop") || strings.Contains(got, "operator wrote") {
+		t.Errorf("free text reached a label\n%s", got)
+	}
+}
