@@ -25,6 +25,7 @@ import (
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/killswitch"
+	"github.com/Smana/maku/internal/factory/narrate"
 	"github.com/Smana/maku/internal/factory/runs"
 	"github.com/Smana/maku/internal/webhook"
 )
@@ -91,12 +92,12 @@ func apiOutcomes() []string {
 // costRoles are run_cost_usd's role values (harness roles HR6): the four AgentRun roles, and scoper.
 func costRoles() []string { return []string{"implementer", "reviewer", "tester", "triager", "scoper"} }
 
-// handOffReasons is the closed vocabulary of a hand-off's or an escalation's reason (AM9): the
-// event reasons the broker already bounds (the summary's wait reasons and the run ends that
-// escalate), the meter's revocations, and the run ends only the reconciler names: a lost or
-// unresumable run, the pod the AgentRun read, and a run's terminal phase lowered.
+// handOffReasons is the closed vocabulary of a hand-off's or an escalation's reason (AM9): every
+// reason narrate has prose for (the gate's refusals, the ends and the stops), the event reasons
+// the broker already bounds, the meter's revocations, and the run ends only the reconciler names:
+// a lost or unresumable run, the pod the AgentRun read, and a run's terminal phase lowered.
 var handOffReasons = sync.OnceValue(func() []string {
-	out := slices.Concat(webhook.Reasons(), revocations(),
+	out := slices.Concat(narrate.Reasons(), webhook.Reasons(), revocations(),
 		[]string{runs.ReasonDisrupted, runs.ReasonPodLost, runs.ReasonPodFailed, "run_lost", "resumes_exhausted",
 			"succeeded", "failed", "budgetexhausted", "revoked"})
 	slices.Sort(out)

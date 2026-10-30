@@ -819,9 +819,10 @@ A shadow decision's comment carries the head it judged and what a live class wou
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
-**The decision record (AM8).** Every non-wait decision the gate's rows reach (arm, shadow, human, escalate,
-`ci_red`, and the adopted-class decisions) also appends one hidden line to its
-comment, with the values each row read, so a tally can replay a cap later:
+**The decision record (AM8).** Every non-wait decision the gate's rows reach (arm, shadow, human,
+escalate, and an adopted task's `ci_red` or `ci_cancelled`) also appends one hidden line to its
+comment, with the values each row read, so a tally can replay a cap later. An agent task's `ci_red`
+or `ci_cancelled` starts a fix run or a re-run instead, and posts no record:
 
 ```
 <!-- agent-factory-decision head=<sha> class=docs-links decision=shadow:shadow_would_arm files=2/3 lines=12/20 shape=ok holdout=ok oracle=ok age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->
@@ -846,14 +847,15 @@ recorded deviation from AM8's single marker (R-m11), which leaves the would-arm 
 tally's regex for it unchanged. The same facts go to the log as `merge decision` with `rows=`.
 
 Some hand-offs carry no record:
-- the ones decided before the rows are read: `merge_gate_off`, `ledger_truncated`, and
-  `class_mismatch` when the prediction differs from the class policy-bot matched;
+- the ones decided before the rows are read: `merge_gate_off`, `ledger_truncated`, and the
+  `class_mismatch` of an adopted task whose class was removed, renamed or lost its author;
 - the waits' own endings, `ci_cancelled` (the re-run budget spent) and `ci_wait_expired`.
 
 A `class_mismatch` raised by the class's declared conditions (row 8) is a decision of the gate and
-carries a record, which is why `--strictness` counts it as a refusing row. `ledger_truncated` is
-decided before the gate (R-m13) and stays the one input that still stops a shadow record. Early
-refusals (the base checks, the author, an unarmed class) carry a record with every count unread.
+carries a record, which is why `--strictness` counts it as a refusing row. A decision where
+policy-bot matched another class than the prediction goes through the gate too, and carries a
+record. `ledger_truncated` is decided before the gate (R-m13) and stays the one input that still
+stops a shadow record. Early refusals (the base checks, the author, an unarmed class) carry a record with every count unread.
 
 **The human path's metrics (AM9)** ([operations](operations.md#factory-metrics)):
 - `maku_factory_merge_decisions_total` gains `repository`.
@@ -864,12 +866,17 @@ refusals (the base checks, the author, an unarmed class) carry a record with eve
 
 The clock starts at the first `AwaitingHuman` entry, recorded in
 `status.pullRequest.handedOffAt`. **A task already in `AwaitingHuman` when Maku is upgraded has
-none, and its merge records no observation.**
+none, and its merge records no observation.** A hand-off the gate later arms on the class's own
+conditions (after `reentered_day_turned` or `reentered_unpaused`) records none either, since `how`
+is only `approved` or `human`; and Renovate's own automerge of an adopted pull request counts as
+`how=human`.
 
 `reason` passes the factory's own closed codes: the wait reasons, the escalation codes
 (`budget-*`, `revoked`, `deleted`, `manual`, and the like), the meter's revocations and the run
 ends (`run_lost`, `resumes_exhausted`, `PodLost`, `Disrupted`, `PodFailed`, and the lowered terminal
-phases). Only free text reads `other`, such as a hand-written `revoked` annotation.
+phases), and every reason narrate has prose for, the gate's refusals (`class_paused`,
+`patch_too_large`, `file_*`, `oracle_*`, …) and the stops included. Only free text reads `other`,
+such as a hand-written `revoked` annotation.
 
 ### Adopted classes
 

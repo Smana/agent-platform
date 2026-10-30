@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -166,6 +167,12 @@ func Tokens(n int64) string {
 		return fmt.Sprintf("%d k", n/1000)
 	}
 	return strconv.FormatInt(n, 10)
+}
+
+// Reasons lists the end, stop and refusal reasons narrate has prose for, sorted: the factory's
+// closed reason codes, which fmetrics bounds the human path's reason label to (AM9).
+func Reasons() []string {
+	return slices.Sorted(maps.Keys(reasons()))
 }
 
 // reasons reads the end, stop and refusal reasons of the factory, SP1 and SP2 (P15) as prose.

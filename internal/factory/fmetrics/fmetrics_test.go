@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/narrate"
 	"github.com/Smana/maku/internal/metrics"
 )
 
@@ -421,7 +422,7 @@ func TestTheHumanPathReasonIsBounded(t *testing.T) {
 	s.HandoffToMerge(t.Context(), "docs-links", "anything an operator wrote", "human", time.Minute)
 	// The factory's own escalation codes pass: a budget revocation, a revoked or lost run, a pod
 	// the AgentRun read, an exhausted resume, a run's lowered terminal phase.
-	codes := []string{"budget-run", "budget-task-shadow", "revoked", "deleted", "manual", "run_lost", "resumes_exhausted",
+	codes := []string{"class_paused", "patch_too_large", "budget-run", "budget-task-shadow", "revoked", "deleted", "manual", "run_lost", "resumes_exhausted",
 		"PodLost", "Disrupted", "PodFailed", "failed"}
 	for _, code := range codes {
 		s.HumanWait(t.Context(), "Escalated", code, "docs-links", time.Minute)
@@ -444,5 +445,20 @@ func TestTheHumanPathReasonIsBounded(t *testing.T) {
 	}
 	if strings.Contains(got, "please stop") || strings.Contains(got, "operator wrote") {
 		t.Errorf("free text reached a label\n%s", got)
+	}
+}
+
+// AM9, final review: every reason narrate has prose for is one of the factory's codes, so none
+// reads other on the human path; a reason added to narrate joins the vocabulary with it.
+func TestEveryNarratedReasonIsAHumanPathReason(t *testing.T) {
+	s, read := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return true })
+	for _, r := range narrate.Reasons() {
+		s.HumanWait(t.Context(), "AwaitingHuman", r, "docs-links", time.Minute)
+	}
+	if got := read(); strings.Contains(got, `reason="other"`) {
+		t.Fatalf("a narrated reason reads other\n%s", got)
+	}
+	if len(narrate.Reasons()) < 100 {
+		t.Fatalf("narrate lists %d reasons: the walk proves nothing", len(narrate.Reasons()))
 	}
 }
