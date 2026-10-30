@@ -1203,11 +1203,13 @@ class StepLog:
     text is redacted first."""
 
     def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None, ledger: str | None = None,
-                 nudge_after: int = 0, scoper: tuple[int, int] | None = None):
+                 nudge_after: int = 0, scoper: tuple[int, int] | None = None, resumed: bool = False):
         self.notes = notes
-        # The scoper's bounds (HR2): one nudge at nudgeAt own tool calls, CallLimit at maxToolCalls; a handoff
-        # ends the count.
-        self.scoper, self.scoper_nudged, self.handed_off = scoper, False, False
+        # The scoper's bounds (HR2): one nudge at nudgeAt own tool calls, CallLimit at maxToolCalls. A handoff
+        # ends the count once its observation comes back with no error; while one is in flight, no stop.
+        # A resumed pod re-reads the first pod's events: past nudgeAt, its nudge was sent.
+        self.scoper, self.scoper_nudged, self.handed_off, self.handoffs = scoper, False, False, set()
+        self.resumed = resumed
         # Search nudge: lookup-ish steps seen with no search call; one note per run, never twice.
         self.nudge_after, self.lookups, self.search_calls, self.nudged = nudge_after, 0, 0, False
         self.cid = cid
@@ -1260,6 +1262,8 @@ class StepLog:
             self.scoper_count(*self.scoper)
 
     def scoper_count(self, nudge_at: int, limit: int) -> None:
+        if self.resumed:
+            self.resumed, self.scoper_nudged = False, self.scoper_nudged or self.own >= nudge_at
         if self.own >= nudge_at and not self.scoper_nudged:
             self.scoper_nudged = True
             try:  # as the search nudge: no run flag, the running conversation reads it at its next step
@@ -1268,7 +1272,7 @@ class StepLog:
                 print("agent-run: scoper nudge sent after %d tool calls" % self.own, flush=True)
             except Exception as exc:  # noqa: BLE001 -- a nudge never fails the run
                 print("agent-run: scoper nudge failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
-        if self.own >= limit:
+        if self.own >= limit and not self.handoffs:
             raise CallLimit(self.own)
 
     def describe(self, event: dict) -> str | None:
@@ -1281,7 +1285,7 @@ class StepLog:
                 self.notes.intend(event.get("tool_call_id") or "", action.get("command") or "")
             tool = event.get("tool_name") or action.get("kind")
             if tool and (tool == HANDOFF_TOOL or tool.endswith("_" + HANDOFF_TOOL)):  # the gateway's prefixes
-                self.handed_off = True
+                self.handoffs.add(event.get("tool_call_id") or "")
             if tool == SEARCH_TOOL:
                 self.search_calls += 1
             elif LOOKUP.search(action.get("command") or "") or tool == "grep":
@@ -1289,8 +1293,19 @@ class StepLog:
             line = "agent-run step %d: %s | %s | %s" % (self.steps, tool, _short(event.get("summary"), 120), _short(target, 200))
             # Correlation only (O22): links the line to its trace in Grafana, attributes nothing.
             return line + (" | trace_id=" + self.trace_id if self.trace_id else "")
-        if kind == "ObservationEvent" and self.notes:
-            self.notes.result(event.get("tool_call_id") or "", event.get("observation") or {})
+        if kind == "ObservationEvent":
+            call = event.get("tool_call_id") or ""
+            if call in self.handoffs:  # a refused handoff is no handoff: the count goes on
+                self.handoffs.discard(call)
+                self.handed_off = self.handed_off or not (event.get("observation") or {}).get("is_error")
+            if self.notes:
+                self.notes.result(call, event.get("observation") or {})
+        if kind == "AgentErrorEvent":
+            call = event.get("tool_call_id") or ""
+            if call:
+                self.handoffs.discard(call)
+            else:
+                self.handoffs.clear()
         if kind == "MessageEvent" and event.get("source") == "agent":
             self.last_message = redact(_text(event.get("llm_message")))
             return "agent-run message: " + _short(self.last_message, 400)
@@ -2034,8 +2049,9 @@ def main() -> int:
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
+        # A scoper's StepLog raises CallLimit, which only scoper_poll catches: a triager has no policy and no hold.
         steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None,
-                       nudge_steps(env) if search else 0, scoper_bounds(env, task))
+                       nudge_steps(env) if search else 0, scoper_bounds(env, task), resumed)
         hold = make_hold(env, base, contract, decl, prefetched) if contract else None
         if policy:
             limit = env.get("AGENT_RUN_SECONDS", "")

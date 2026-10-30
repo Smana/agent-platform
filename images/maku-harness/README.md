@@ -91,8 +91,10 @@ other run, or other bounds, runs unbounded as before.
 | `nudgeAt` tool calls | sends one message, read at the agent's next step: hand off what you have now with `room_handoff`, `ready` with guesses as assumptions or `question` |
 | `maxToolCalls` tool calls | interrupts the agent and ends the run: exit 1, `endReason` `budget_calls` in the final read, and one room note, "the run ended budget_calls: the scoper stopped after N tool calls without a handoff" |
 
-A `room_handoff` call ends the count, and a finish read on the poll that crosses the limit is a
-finish. `agent-run scoper end:` shows the end in the log.
+A `room_handoff` call ends the count once its result comes back with no error; a refused handoff
+does not, and no stop is made while one is in flight. A finish read on the poll that crosses the
+limit is a finish, and a resumed pod already past `nudgeAt` sends no second nudge.
+`agent-run scoper end:` shows the end in the log.
 
 ## The test-first tester
 

@@ -44,9 +44,10 @@ class BoundsTest(unittest.TestCase):
 
 
 class Conversation:
-    """agent-server over http: one action more per events read, the status it is given, the POSTs it got."""
+    """agent-server over http: one action more per events read, the status it is given, the POSTs it got. A tool
+    "name:ok", ":error" or ":agent_error" comes with its result; ":later" gets an ok result one read later."""
 
-    def __init__(self, tools, finished_after=None):
+    def __init__(self, tools, finished_after=50):  # a finish at last: a regression fails, never hangs
         self.tools, self.finished_after = list(tools), finished_after
         self.shown, self.posts, self.interrupted, self.status_reads = 0, [], 0, 0
 
@@ -59,13 +60,27 @@ class Conversation:
             return {}
         if "/events/search" in path:
             self.shown = min(self.shown + 1, len(self.tools))
-            return {"items": [{"id": str(i), "kind": "ActionEvent", "tool_name": t, "action": {"command": "cat f%d" % i}}
-                              for i, t in enumerate(self.tools[:self.shown])], "next_page_id": None}
+            return {"items": self.events(), "next_page_id": None}
         self.status_reads += 1
         if self.interrupted:
             return {"execution_status": "paused"}
         done = self.finished_after is not None and self.status_reads > self.finished_after
         return {"execution_status": "finished" if done else "running"}
+
+    def events(self):
+        items = []
+        for i, t in enumerate(self.tools[:self.shown]):
+            tool, _, result = t.partition(":")
+            items.append({"id": "a%d" % i, "kind": "ActionEvent", "tool_name": tool, "tool_call_id": "c%d" % i,
+                          "action": {"command": "cat f%d" % i}})
+            if result == "later" and i < self.shown - 1:
+                result = "ok"
+            if result in ("ok", "error"):
+                items.append({"id": "o%d" % i, "kind": "ObservationEvent", "tool_call_id": "c%d" % i,
+                              "observation": {"content": [{"type": "text", "text": "x"}], "is_error": result == "error"}})
+            elif result == "agent_error":
+                items.append({"id": "o%d" % i, "kind": "AgentErrorEvent", "tool_call_id": "c%d" % i, "error": "bad args"})
+        return items
 
     def nudges(self):
         return [b for b in self.posts if "Hand off what you have now" in b["content"][0]["text"]]
@@ -91,7 +106,7 @@ class CountTest(unittest.TestCase):
         self.assertEqual(steps.own, 5)
 
     def test_a_handoff_ends_the_count(self):
-        conv = Conversation(["terminal", "terminal", "factory_room_handoff", "terminal", "terminal", "terminal"],
+        conv = Conversation(["terminal", "terminal", "factory_room_handoff:ok", "terminal", "terminal", "terminal"],
                             finished_after=7)
         (code, end, note), _ = self.run_scoper(conv)
         self.assertEqual((code, end, note), (0, None, ""))
@@ -99,10 +114,31 @@ class CountTest(unittest.TestCase):
         self.assertEqual(conv.interrupted, 0)
 
     def test_a_handoff_as_the_last_allowed_call_is_not_stopped(self):
-        conv = Conversation(["terminal"] * 4 + ["room_handoff"], finished_after=6)
-        (code, end, _), _ = self.run_scoper(conv)
+        # In flight at the limit, then it succeeds: no stop mid-flight, and the count is over.
+        conv = Conversation(["terminal"] * 4 + ["room_handoff:later", "terminal", "terminal"], finished_after=8)
+        (code, end, _), steps = self.run_scoper(conv)
         self.assertEqual((code, end), (0, None))
         self.assertEqual(conv.interrupted, 0)
+        self.assertTrue(steps.handed_off)
+
+    def test_a_failed_handoff_is_no_handoff(self):
+        for result in ("error", "agent_error"):
+            with self.subTest(result=result):
+                conv = Conversation(["terminal", "room_handoff:" + result] + ["terminal"] * 6)
+                (code, end, note), steps = self.run_scoper(conv)
+                self.assertEqual((code, end), (1, "budget_calls"))
+                self.assertEqual(note, "the scoper stopped after 5 tool calls without a handoff")
+                self.assertEqual(len(conv.nudges()), 1)
+                self.assertFalse(steps.handed_off)
+
+    def test_a_resumed_pod_past_nudge_at_sends_no_second_nudge(self):
+        conv = Conversation(["terminal"] * 8)
+        conv.shown = 3  # the first pod's three calls, re-read on the first tick
+        steps = agent_run.StepLog("cid", scoper=(3, 5), resumed=True)
+        with mock.patch("agent_run.http", side_effect=conv.http), mock.patch("agent_run.time.sleep"), \
+                mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(agent_run.scoper_poll("cid", steps)[1], "budget_calls")
+        self.assertEqual(conv.nudges(), [])
 
     def test_a_finish_read_on_the_poll_that_crosses_the_limit_is_a_finish(self):
         conv = Conversation(["terminal"] * 5, finished_after=4)
@@ -149,19 +185,19 @@ class MainTest(unittest.TestCase):
                     mock.patch("agent_run.stop", return_value="stopped"), mock.patch("agent_run.revoke"), \
                     mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
                 code = agent_run.main()
-        return code, steps.call_args.args[-1], poll, notes.return_value, final_read
+        return code, steps.call_args.args[-2:], poll, notes.return_value, final_read
 
     def test_a_stopped_scoper_ends_budget_calls_with_one_room_note(self):
         stop = (1, "budget_calls", "the scoper stopped after 5 tool calls without a handoff")
         code, bounds, poll, notes, final_read = self.main("triager", MARKER, stop)
-        self.assertEqual((code, bounds), (1, (3, 5)))
+        self.assertEqual((code, bounds), (1, ((3, 5), False)))
         poll.assert_called_once()
         notes.final.assert_called_once_with("the run ended budget_calls: the scoper stopped after 5 tool calls without a handoff")
         final_read.assert_called_once_with(mock.ANY, end="budget_calls")
 
     def test_another_run_is_todays(self):
         code, bounds, _, notes, final_read = self.main("implementer", MARKER, (0, None, ""))
-        self.assertEqual((code, bounds), (0, None))
+        self.assertEqual((code, bounds), (0, (None, False)))
         notes.final.assert_not_called()
         final_read.assert_called_once_with(mock.ANY, end=None)
 
