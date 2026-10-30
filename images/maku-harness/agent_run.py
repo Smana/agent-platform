@@ -1460,7 +1460,8 @@ def check_runs(env: dict, sha: str) -> list[dict] | None:
     if not isinstance(runs, list):
         return None
     return [{"name": str(r.get("name") or ""), "status": str(r.get("status") or ""),
-             "conclusion": str(r.get("conclusion") or ""), "title": str((r.get("output") or {}).get("title") or "")}
+             "conclusion": str(r.get("conclusion") or ""), "title": str((r.get("output") or {}).get("title") or ""),
+             "details_url": str(r.get("details_url") or "")}
             for r in runs if isinstance(r, dict)]
 
 
@@ -1525,6 +1526,45 @@ def await_checks(env: dict, task: str, seconds: int, clock=time.monotonic, sleep
         if clock() + PENDING_POLL_S > until:
             return None
         sleep(PENDING_POLL_S)
+
+
+# HR5: a failing check's log tail rides the continuation, read with the harness's own gh (#205 spent 36 minutes
+# on a log the sandbox could not reach). The harness shares the sandbox's egress, so the log may be unreachable
+# for it too: then the continuation says so and forbids fetching it.
+ACTIONS_JOB = re.compile(r"/actions/runs/(\d+)(?:/job/(\d+))?")
+LOG_LINES = 60  # per failing job
+LOG_JOBS = 3  # failing jobs read, each within LOG_TIMEOUT_S
+LOG_TIMEOUT_S = 30
+LOG_MAX = 8000  # characters of the whole tail
+LOG_UNREADABLE = ("the CI log is not readable from the sandbox: do not try to fetch it; read the check's name and your "
+                  "diff instead")
+
+
+def failing_log_tail(env: dict, offered, runs) -> tuple[str | None, str | None]:
+    """(the last LOG_LINES lines of each failing check's job log, redacted and cut at LOG_MAX, None), or
+    (None, LOG_UNREADABLE) when gh cannot read one or no failing check ran on GitHub Actions."""
+    failing, tails, seen = set(getattr(offered, "failing", ())), [], set()
+    for run in runs or ():
+        cid = "check:" + str(run.get("name") or "")
+        m = ACTIONS_JOB.search(str(run.get("details_url") or ""))
+        if cid not in failing or not m or m.groups() in seen:
+            continue
+        if len(seen) == LOG_JOBS:
+            break
+        seen.add(m.groups())
+        job = ["--job", m.group(2)] if m.group(2) else []
+        try:
+            p = subprocess.run(["gh", "run", "view", m.group(1), "--repo", env["REPOSITORY"], *job, "--log-failed"],
+                               capture_output=True, text=True, errors="replace", timeout=LOG_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired):
+            return None, LOG_UNREADABLE
+        if p.returncode != 0 or not p.stdout.strip():
+            return None, LOG_UNREADABLE
+        tails.append("## %s\n%s" % (cid, "\n".join(p.stdout.rstrip("\n").split("\n")[-LOG_LINES:])))
+    if not tails:
+        return None, LOG_UNREADABLE
+    text = redact("\n".join(tails))  # before the cut, so a token cut at the limit is still whole when matched
+    return (text if len(text) <= LOG_MAX else "…" + text[-(LOG_MAX - 1):]), None
 
 
 JUDGE_PATH = re.compile(r"/v1/?$")
@@ -1806,6 +1846,9 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
+            log_tail = log_note = None
+            if isinstance(d, loop_policy.Continue) and failing:  # read before the box is timed: it takes time
+                log_tail, log_note = failing_log_tail(env, offered, getattr(offered, "runs", ()))
             seconds = box_for(deadline, clock)
             if isinstance(d, loop_policy.Continue) and seconds is None:
                 state.sent -= 1
@@ -1817,7 +1860,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
             save_state(state, path)
             sent = d.reason
             continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
-                                                                policy.continuations, fence, seconds // 60))
+                                                                policy.continuations, fence, seconds // 60,
+                                                                log_tail, log_note))
             boxed(seconds, _short(d.reason, loop_policy.REASON_MAX))
         except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
             print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)

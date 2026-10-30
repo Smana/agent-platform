@@ -62,7 +62,11 @@ says why on stderr.
   JSON object; a verdict with no parse or that cites none of the evidence ids it was given is
   discarded: the first counts `not_yet`, the second `judge_impossible`.
 - **`not_yet`** sends one message into the same conversation, with the judge's reason quoted as data,
-  and the conversation runs again with its history.
+  and the conversation runs again with its history. When a check failed (HR5), the harness reads the
+  failing jobs' logs with its own `gh run view --log-failed` (at most 3 jobs, 30 s each) and quotes the
+  last 60 lines of each, redacted and cut at 8,000 characters, between the same fence lines; when it
+  cannot (a check outside GitHub Actions, `gh` failing, a log host the sandbox cannot reach), the message
+  says the CI log is not readable from the sandbox and forbids fetching it.
 - **A pending check is waited for, not sent** (HR5): when the judge answered `met` and the guard's only
   objection is a check that has not completed, no message goes and no continuation is spent. The
   harness reads the head's check runs every 30 s within the box a continuation would have had, then

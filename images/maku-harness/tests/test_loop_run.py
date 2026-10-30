@@ -145,12 +145,13 @@ class CheckRunsTest(unittest.TestCase):
         mock.patch.dict(os.environ, {"PATH": self.dir + os.pathsep + os.environ["PATH"]}).start()
         self.addCleanup(mock.patch.stopall)
 
-    def test_reads_name_status_conclusion_and_title(self):
+    def test_reads_name_status_conclusion_title_and_details_url(self):
         api = {"check_runs": [{"name": "check", "status": "completed", "conclusion": "failure",
                                "output": {"title": "2 errors", "summary": "long"}}]}
         self.gh("echo '%s'" % json.dumps(api))
         self.assertEqual(agent_run.check_runs({"REPOSITORY": "o/r"}, "abc"),
-                         [{"name": "check", "status": "completed", "conclusion": "failure", "title": "2 errors"}])
+                         [{"name": "check", "status": "completed", "conclusion": "failure", "title": "2 errors",
+                           "details_url": ""}])
         with open(os.path.join(self.dir, "args")) as f:
             self.assertEqual(f.read().strip(), "api repos/o/r/commits/abc/check-runs?per_page=100")
 
