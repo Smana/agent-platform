@@ -78,6 +78,22 @@ implementer run's steps to its first commit from the room log, and `scripts/stal
 the runs merged pull requests name and prints N, the smallest multiple of 10 above their p90 once
 20 runs have one, and 80 until then.
 
+## The scoper's bound
+
+A scoping run (role `triager`) whose brief starts with the factory's marker line,
+`<!-- agent-factory scoper nudgeAt=25 maxToolCalls=40 -->` (the factory config's `scoper` key), is
+bounded in tool calls (harness roles HR2). The line is read only at the very start of the task text,
+which also carries the untrusted issue, and only within `1 <= nudgeAt < maxToolCalls <= 200`; any
+other run, or other bounds, runs unbounded as before.
+
+| At | The harness |
+|---|---|
+| `nudgeAt` tool calls | sends one message, read at the agent's next step: hand off what you have now with `room_handoff`, `ready` with guesses as assumptions or `question` |
+| `maxToolCalls` tool calls | interrupts the agent and ends the run: exit 1, `endReason` `budget_calls` in the final read, and one room note, "the run ended budget_calls: the scoper stopped after N tool calls without a handoff" |
+
+A `room_handoff` call ends the count, and a finish read on the poll that crosses the limit is a
+finish. `agent-run scoper end:` shows the end in the log.
+
 ## The test-first tester
 
 v3 feature 4, F1. Nothing here binds before F3's merge-gate rows 2b and 2c: the harness's check spares a
