@@ -87,6 +87,9 @@ func apiOutcomes() []string {
 		"principal_task_cap", "daily_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "duplicate", "idempotency_conflict"}
 }
 
+// costRoles are run_cost_usd's role values (harness roles HR6): the four AgentRun roles, and scoper.
+func costRoles() []string { return []string{"implementer", "reviewer", "tester", "triager", "scoper"} }
+
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
 		return v
@@ -616,10 +619,12 @@ func (s *Set) RunRevoked(ctx context.Context, reason, limit string) {
 		attribute.String("limit", oneOf(limit, revocationLimits())), principalOf(ctx)))
 }
 
-// RunCost records a priced run's USD cost at its end, in total by tier and by the model that
-// served it: the run meter's OnCost.
-func (s *Set) RunCost(ctx context.Context, tier string, usd float64, byModel map[string]float64) {
-	s.runCost.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
+// RunCost records a priced run's USD cost at its end, in total by tier and role, and by the model
+// that served it: the run meter's OnCost. The role is the AgentRun's, or scoper for a triager run
+// that scoped a task (harness roles HR6).
+func (s *Set) RunCost(ctx context.Context, tier, role string, usd float64, byModel map[string]float64) {
+	s.runCost.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers())),
+		attribute.String("role", oneOf(role, costRoles()))))
 	s.LateCost(ctx, byModel)
 }
 

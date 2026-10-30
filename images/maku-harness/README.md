@@ -40,7 +40,7 @@ says why on stderr.
 | the judge answers `met`, `judgeModel` is `none`, or no judge answers | 0 | none | none |
 | the judge answers `impossible`, or a second verdict in the run is discarded | 1 | `judge_impossible` | the judge's reason |
 | the agent has made no commit by `stallSteps` steps, a continuation adds no commit within its time box, or two continuations in a row end with no new commit | 1 | `stalled` | which of the three |
-| the judge answers `not_yet` and the continuations are spent, a continuation that committed does not finish within its time box, or too little of the run is left for one | 1 | `not_met` | the last reason |
+| the judge answers `not_yet` and the continuations are spent, a continuation that committed does not finish within its time box, too little of the run is left for one, or the head's checks are still pending when a wait's box ends | 1 | `not_met` | the last reason, or `checks still pending after N minutes` |
 
 - **A continuation is boxed in time**: at most 15 minutes, ending 3 minutes before `AGENT_RUN_SECONDS`
   runs out, and the message names the box. A conversation that has not finished again by then is
@@ -62,7 +62,24 @@ says why on stderr.
   JSON object; a verdict with no parse or that cites none of the evidence ids it was given is
   discarded: the first counts `not_yet`, the second `judge_impossible`.
 - **`not_yet`** sends one message into the same conversation, with the judge's reason quoted as data,
-  and the conversation runs again with its history.
+  and the conversation runs again with its history. When a check failed (HR5), the harness reads the
+  failing jobs' logs with its own `gh run view --log-failed` (at most 3 jobs, 30 s each) and quotes the
+  last 60 lines of each, redacted and cut at 8,000 characters, between the same fence lines; when it
+  cannot (a check outside GitHub Actions, `gh` failing, a log host the sandbox cannot reach), the message
+  says the CI log is not readable from the sandbox and forbids fetching it. Live, expect that note on every
+  failing check until the harness egress (crossplane-configuration `apis/agentrun/kcl/main.k`) allows the
+  Actions log host, `productionresultssa*.blob.core.windows.net`: `gh run view --log-failed` downloads
+  through a redirect to it. The log is read only when a continuation's box would still be left after it.
+- **A pending check is waited for, not sent** (HR5): when the judge answered `met` and the guard's only
+  objection is a check that has not completed, no message goes and no continuation is spent. The
+  harness reads the head's check runs every 30 s within the box a continuation would have had, then
+  rebuilds the evidence and asks the judge once more; that answer is guarded and decided as any other.
+  A check read that fails counts as still pending. The wait keeps inside the factory's 10-minute
+  no-activity window (`StuckAfter`): it posts a room note when it starts and every 5 minutes, and it
+  ends with the judge's call and a minute still left after the last room event, the finish or a note.
+  With no note posted, a window already spent by the first evidence's wait leaves no room to wait, and the
+  continuation goes as before HR5. There is at most one wait per round: a check that appears after the
+  wait still spends a continuation.
 - **A commit** is a non-merge commit on `HEAD` or the run's branch that neither the run's start nor
   the base branch holds: a fetch or a rebase onto the base counts nothing. The stall rule holds until
   the first commit. The start and the counts are kept in `/workspace/.agent-loop.json`, so a
