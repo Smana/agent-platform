@@ -721,3 +721,136 @@ func TestAPushAfterAnApprovedArmSpendsTheArm(t *testing.T) {
 		t.Fatal("a maintainer's merge after a spent arm is never reverted by the factory")
 	}
 }
+
+// handedOff puts the rig's task in AwaitingHuman for reason, handed off an hour before now.
+func (g *rig) handedOff(t *testing.T, reason string, reentries int32) {
+	t.Helper()
+	g.patch(t, func(tk *v1alpha1.Task) {
+		since := metav1.NewTime(now.Add(-time.Hour))
+		tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries, tk.Status.PhaseSince = v1alpha1.PhaseAwaitingHuman, reason, reentries, &since
+	})
+}
+
+// Human path AM2: a maintainer's approval of the hand-off head returns an agent task to the gate
+// from any hand-off a human's judgement covers, once per review and uncounted; the eight by-hand
+// reasons never return on it.
+func TestAnApprovalReturnsATaskToTheGate(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		back   bool
+	}{
+		{"class_unarmed", true}, {"patch_too_large", true}, {"no_approving_verdict", true}, {"maintainer_approved", true},
+		{"policy_pending", true}, {"gate_path", false}, {"not_mergeable", false}, {"steering_path", false}, {"foreign_trailer", false},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+			g.r.Cfg.Merge.ApproveToMerge = true
+			g.handedOff(t, tc.reason, maxGateReentries) // the cap never counts an approval
+			pr, _ := g.f.PullRequest(t.Context(), 12)
+			pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+			g.f.SetPR(pr)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_approved"; back != tc.back {
+				t.Fatalf("%s: %s %s", tc.reason, got.Status.Phase, got.Status.Reason)
+			}
+			if tc.back {
+				if got.Status.GateReentries != maxGateReentries || !slices.Contains(got.Status.Handled, int64(-77)) {
+					t.Fatalf("reentries %d handled %v", got.Status.GateReentries, got.Status.Handled)
+				}
+				g.handedOff(t, tc.reason, maxGateReentries)
+				if again := g.reconcile(t, "3buqdlot", 1); again.Status.Reason == "reentered_approved" {
+					t.Fatal("one review returns once")
+				}
+			}
+		})
+	}
+}
+
+// AM2 with the switch off: an approval returns nothing.
+func TestAnApprovalReturnsNothingWithTheSwitchOff(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+	g.handedOff(t, "class_unarmed", 0)
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+	g.f.SetPR(pr)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_unarmed" {
+		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// AM2, as ruled for Task 2: a changes_requested hand-off returns on a maintainer's approval of the
+// hand-off head once no maintainer's newest review is a request for changes (the request is lifted),
+// and stays with the human while another maintainer's request is still that maintainer's newest.
+func TestALiftedRequestForChangesReturnsOnTheApproval(t *testing.T) {
+	for name, tc := range map[string]struct {
+		others []forge.Review
+		back   bool
+	}{
+		"lifted":      {back: true},
+		"outstanding": {others: []forge.Review{{ID: 71, Author: "octocat", State: "CHANGES_REQUESTED", Commit: "abc", At: now.Add(-30 * time.Minute)}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.r.Cfg.Merge.ApproveToMerge = true
+			g.r.Cfg.Maintainers = []string{"Smana", "octocat"}
+			// Smana asked for changes on the old head; the revision run that answered them pushed abc.
+			request := forge.Review{ID: 70, Author: "Smana", State: "CHANGES_REQUESTED", Commit: "old", At: now.Add(-2 * time.Hour)}
+			g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Handled = []int64{70, 71} })
+			pr := gatePR("abc", rid(0))
+			pr.Reviews = append([]forge.Review{request}, tc.others...)
+			g.f.SetPR(pr)
+			g.f.SetChecks(12, green("SUCCESS"))
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "changes_requested" {
+				t.Fatalf("hand-off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+			pr.Reviews = append(pr.Reviews, forge.Review{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)})
+			g.f.SetPR(pr)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_approved"; back != tc.back {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+			if !tc.back {
+				return
+			}
+			if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+				t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+			}
+		})
+	}
+}
+
+// Human path AM5: an agent task capped today returns on the next UTC day, on the same head and counted.
+func TestACappedTaskReturnsOnTheNextDay(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+	g.handedOff(t, "auto_merge_cap", 0)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "auto_merge_cap" {
+		t.Fatalf("same day: %s", got.Status.Reason)
+	}
+	g.r.Now = func() time.Time { return now.Add(26 * time.Hour) }
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_day_turned" || got.Status.GateReentries != 1 {
+		t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+	}
+}
+
+// Human path AM5 (R-I11): an agent task handed off class_paused returns, counted, once a clean
+// ledger makes paused read false.
+func TestAPausedTaskReturnsWhenThePauseLifts(t *testing.T) {
+	old := metav1.NewTime(now.Add(-3 * time.Hour))
+	reverted := awaiting()
+	reverted.Name, reverted.Spec.PredictedClass, reverted.Status.Phase = "1reverted", "docs-links", v1alpha1.PhaseReverted
+	reverted.Status.PullRequest.Number, reverted.Status.PullRequest.AutoMerged = 9, true
+	reverted.Status.PullRequest.MergedAt, reverted.Status.Runs = &old, nil
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, reverted)
+	g.handedOff(t, "class_paused", 0)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused" {
+		t.Fatalf("still paused: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if err := g.c.Delete(t.Context(), reverted); err != nil { // the ledger is clean: no revert in the window
+		t.Fatal(err)
+	}
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_unpaused" || got.Status.GateReentries != 1 {
+		t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+	}
+}

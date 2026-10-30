@@ -266,9 +266,46 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 // with a human.
 const maxGateReentries = 3
 
+// byHandReasons are the hand-offs a human fixes on the pull request itself, which no approval
+// returns to the gate (human path AM2): the gate would refuse them again, or GitHub would.
+// changes_requested is refused while the request is outstanding only (see approvalReturn).
+var byHandReasons = map[string]bool{"not_agent_authored": true, "gate_path": true, "contract_modified": true, "not_owned": true,
+	"steering_path": true, "foreign_trailer": true, "not_mergeable": true, "changes_requested": true}
+
+// approvalReturn is AM2's return: a maintainer's APPROVED review of the hand-off head, submitted
+// after the hand-off and not yet handled, on a repository with approveToMerge. Once per review,
+// uncounted against maxGateReentries: a human act is not a flap. countApproves already puts every
+// approval's id in status.handled, so this return records the negated id (ruling R-B3). A
+// changes_requested hand-off returns once no maintainer's newest review is a request for changes:
+// the request is lifted, not outstanding (ruling on Task 2).
+func (r *Reconciler) approvalReturn(t *v1alpha1.Task, pr forge.PR) bool {
+	rc := r.repo(t)
+	why := t.Status.Reason
+	if !rc.Merge.ApproveToMerge || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA || t.Status.PhaseSince == nil {
+		return false
+	}
+	if byHandReasons[why] {
+		if _, st := approval(ArmInputs{PR: pr}, rc); why != "changes_requested" || st == "veto" {
+			return false
+		}
+	}
+	for _, rv := range pr.Reviews {
+		if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) && rv.Commit == pr.HeadSHA &&
+			rv.At.After(t.Status.PhaseSince.Add(-retrySkew)) && !slices.Contains(t.Status.Handled, -rv.ID) {
+			markHandled(t, -rv.ID)
+			t.Status.GateReentries-- // backToGate counts one; an approval is uncounted
+			r.backToGate(t, why, "reentered_approved", pr.HeadSHA)
+			return true
+		}
+	}
+	return false
+}
+
 // reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
-// reason is one the gate's inputs can clear by themselves; every other one — a verdict of changes,
-// a maintainer's review, a class or cap rule — was a human's to judge, and stays theirs. Even a
+// reason is one the gate's inputs can clear by themselves, the day's cap and the class's pause
+// included (AM5: auto_merge_cap returns on the next UTC day, class_paused once paused reads false);
+// every other one — a verdict of changes, a maintainer's review, a class rule — was a human's to
+// judge, and stays theirs unless that human approves the head (AM2, approvalReturn). Even a
 // transient one returns only on the head it was handed off at, while no maintainer has reviewed or
 // commented since: no factory run is in flight in AwaitingHuman, so a push meanwhile is a human's,
 // and a later revision must never auto-merge what a human was asked to judge. head_unreported
@@ -294,8 +331,11 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		r.backToGate(t, why, "reentered_new_head", pr.HeadSHA)
 		return true, nil
 	}
+	if r.approvalReturn(t, pr) {
+		return true, nil
+	}
 	switch why {
-	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
+	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled", "auto_merge_cap", "class_paused":
 	default:
 		return false, nil
 	}
@@ -309,6 +349,21 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 			return false, err
 		}
 		r.backToGate(t, why, "reentered_head_reported", pr.HeadSHA)
+		return true, nil
+	}
+	switch why {
+	case "auto_merge_cap": // AM5: the day turned
+		if sameUTCDay(t.Status.PhaseSince.Time, r.Now()) {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_day_turned", pr.HeadSHA)
+		return true, nil
+	case "class_paused": // AM5: the pause lifted
+		paused, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass)
+		if err != nil || paused {
+			return false, err
+		}
+		r.backToGate(t, why, "reentered_unpaused", pr.HeadSHA)
 		return true, nil
 	}
 	c, err := r.merger(ctx).PullRequestChecks(ctx, pr.Number)
