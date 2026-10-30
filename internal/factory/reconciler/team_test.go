@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -22,6 +23,7 @@ import (
 	"github.com/Smana/maku/internal/factory/forge"
 	"github.com/Smana/maku/internal/factory/forge/forgetest"
 	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
 	"github.com/Smana/maku/internal/factory/triage"
 )
 
@@ -83,8 +85,15 @@ func TestPairStartsAReviewerOnTheBranch(t *testing.T) {
 	tk := g.reconcile(t, "3buqdlot", 2)
 	s := g.runs.specs[rid(1)]
 	if tk.Status.Phase != v1alpha1.PhaseReviewing || s.Role != "reviewer" || s.TaskURL != "https://github.com/Smana/cloud-native-ref/pull/12" ||
-		s.BaseRef != "agent/3buqdlot" || s.TaskText != "" || s.Branch != "agent/3buqdlot" {
+		s.BaseRef != "agent/3buqdlot" || !strings.HasPrefix(s.TaskText, "You are the reviewer") || s.Branch != "agent/3buqdlot" {
 		t.Fatalf("%s %+v", tk.Status.Phase, s)
+	}
+	// HR4: the claim, not only the Spec, carries the brief beside the pull request (preflight B1).
+	u := runs.Build(s)
+	text, _, _ := unstructured.NestedString(u.Object, "spec", "task", "text")
+	url, _, _ := unstructured.NestedString(u.Object, "spec", "task", "url")
+	if text != s.TaskText || url != "https://github.com/Smana/cloud-native-ref/pull/12" {
+		t.Fatalf("the claim's task: text %q url %q", text, url)
 	}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("the claim is one runs.Client creates: %v", err)
@@ -1029,5 +1038,25 @@ func TestACIFixIsReviewedAgainBeforeTheGate(t *testing.T) {
 	g.finish(rid(3), "Succeeded", "agent_finished")
 	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
 		t.Fatalf("the gate decides on the fresh verdict: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// HR4: the reviewer's brief never quotes the implementer's handoff, though the room holds one, and
+// carries the issue's own acceptance when the task has no scope.
+func TestTheReviewerBriefLeavesTheHandoffInTheRoom(t *testing.T) {
+	const sentinel = "SENTINEL-the-implementer-says-all-is-well"
+	tk := issueTask("3buqdlot", 7, "Fix the link.\n\nAcceptance: task links passes.")
+	g := teamRigFor(t, "pair", tk, func(g *rig) {
+		g.log.evs = append(g.log.evs, envelope.Event{Seq: int64(len(g.log.evs) + 1), RunID: rid(0), Type: envelope.Handoff,
+			Origin: envelope.OriginClient, Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + rid(0), Role: "implementer"},
+			Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "factory", Summary: sentinel, Commit: head1})})
+	})
+	g.reconcile(t, "3buqdlot", 2)
+	got := g.runs.specs[rid(1)].TaskText
+	if !strings.HasPrefix(got, "You are the reviewer") || strings.Contains(got, sentinel) {
+		t.Fatalf("the reviewer's brief:\n%s", got)
+	}
+	if data, ok := fenced(got, "ACCEPTANCE-DATA-n0nce234"); !ok || data != "task links passes." {
+		t.Fatalf("the issue's acceptance %q is not quoted:\n%s", data, got)
 	}
 }

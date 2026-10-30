@@ -373,6 +373,14 @@ implementer: `standard` after `frontier`, `frontier` otherwise. It takes that ti
 the template sets `reviewerModel`, its model: `pair: {roles: [implementer, reviewer], reviewerModel:
 tier-frontier}` reviews every `pair` task on `tier-frontier` whatever the implementer's tier.
 
+The reviewer's brief (HR4) names the acceptance checks before the issue snapshot, carries the pull
+request, and asks for correctness-only findings with the command and output behind each; an
+approval with no gaps found is a complete review. It never quotes the implementer's handoff. The
+checks are the scope's, with the files it touches, as fenced data; without a scope, the issue's own
+acceptance section or `Acceptance:` paragraph, quoted up to 4 KiB; without either, the brief says the
+task states none. The reviewer's `AgentRun` carries the brief as `spec.task.text` beside the pull
+request in `spec.task.url`: the CRD admits both for a reviewer only, every other role sets exactly one.
+
 A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
 a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`
 is implicit, and declared only to give every other task `checks` and `testFirst` (it takes nothing else). Each class is `live` (auto-merges), `shadow` (decided, never
