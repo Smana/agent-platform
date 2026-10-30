@@ -1,0 +1,185 @@
+[
+  {
+    "number": 21,
+    "headRefOid": "a21",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: would auto-merge: `docs-links`, checks green. <!-- agent-factory scope=task event=would-arm-2 head=a21 paused=false capped=false -->\n\n<!-- agent-factory-decision head=a21 class=docs-links decision=shadow:shadow_would_arm files=1/3 lines=12/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 22,
+    "headRefOid": "a22",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: holdout_red. <!-- agent-factory scope=task event=human-holdout_red-2 -->\n\n<!-- agent-factory-decision head=a20 class=docs-links decision=human:holdout_red files=2/3 lines=4/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      },
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-02T00:00:00Z",
+        "body": "Agent factory task `t`: would auto-merge: `docs-links`, checks green. <!-- agent-factory scope=task event=would-arm-2 head=a22 paused=false capped=false -->\n\n<!-- agent-factory-decision head=a22 class=docs-links decision=shadow:shadow_would_arm files=2/3 lines=4/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 23,
+    "headRefOid": "b23",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: would auto-merge: `docs-links`, checks green. <!-- agent-factory scope=task event=would-arm-2 head=a23 paused=false capped=false -->\n\n<!-- agent-factory-decision head=a23 class=docs-links decision=shadow:shadow_would_arm files=1/3 lines=8/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=kimi-k3 -->"
+      }
+    ]
+  },
+  {
+    "number": 24,
+    "headRefOid": "a24",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a24 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 25,
+    "headRefOid": "a25",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a25 class=docs-links decision=human:patch_too_large files=-/3 lines=-/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 26,
+    "headRefOid": "b26",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: file_not_allowed. <!-- agent-factory scope=task event=human-file_not_allowed-2 -->\n\n<!-- agent-factory-decision head=a26 class=docs-links decision=human:file_not_allowed files=1/3 lines=2/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 27,
+    "headRefOid": "a27",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: not_mergeable. <!-- agent-factory scope=task event=human-not_mergeable-2 -->\n\n<!-- agent-factory-decision head=a27 class=docs-links decision=arm:armed files=1/3 lines=5/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 28,
+    "headRefOid": "a28",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a28 class=review decision=human:patch_too_large files=1/3 lines=50/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 29,
+    "headRefOid": "a29",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: would auto-merge: `docs-links`, checks green. <!-- agent-factory scope=task event=would-arm-2 head=a29 paused=false capped=false -->\n\n<!-- agent-factory-decision head=a29 class=docs-links decision=shadow:shadow_would_arm files=1/3 lines=3/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=- -->"
+      }
+    ]
+  },
+  {
+    "number": 31,
+    "headRefOid": "a31",
+    "mergedBy": {
+      "login": "ogenki-agent-merger"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "ogenki-agent-factory"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: CI is green and policy-bot approves: armed. <!-- agent-factory scope=task event=armed-2 -->\n\n<!-- agent-factory-decision head=a31 class=docs-links decision=arm:armed files=1/3 lines=15/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  },
+  {
+    "number": 32,
+    "headRefOid": "a32",
+    "mergedBy": {
+      "login": "Smana"
+    },
+    "comments": [
+      {
+        "author": {
+          "login": "someone"
+        },
+        "createdAt": "2026-10-01T00:00:00Z",
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a32 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+      }
+    ]
+  }
+]
