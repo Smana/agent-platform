@@ -388,6 +388,9 @@ type Merge struct {
 	// a human is told which checks never reported. 0 is no bound, the behaviour before it.
 	AwaitingCIFor Duration `json:"awaitingCIFor,omitempty"`
 	Breaker       Breaker  `json:"breaker"`
+	// ApproveToMerge: a maintainer's APPROVED review of the current head arms the merger on an
+	// agents pull request (human path AM1). Off, the approval hands off to a human merge.
+	ApproveToMerge bool `json:"approveToMerge,omitempty"`
 }
 
 // Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
