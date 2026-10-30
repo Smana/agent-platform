@@ -460,6 +460,7 @@ func (g *GitHub) PullsWithLabel(ctx context.Context, label string) ([]LabelledPu
 					Number   int
 					State    string
 					MergedAt *githubv4.DateTime
+					Labels   struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 30)"`
 				}
 			} `graphql:"pullRequests(labels: $labels, first: 100, orderBy: {field: CREATED_AT, direction: DESC})"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
@@ -476,6 +477,9 @@ func (g *GitHub) PullsWithLabel(ctx context.Context, label string) ([]LabelledPu
 		lp := LabelledPull{Number: p.Number, State: p.State}
 		if p.MergedAt != nil {
 			lp.MergedAt = p.MergedAt.Time
+		}
+		for _, l := range p.Labels.Nodes {
+			lp.Labels = append(lp.Labels, l.Name)
 		}
 		out = append(out, lp)
 	}

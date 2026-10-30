@@ -899,6 +899,10 @@ spec:
                       head (Renovate's automerge of a head the gate refused or never read) is not watched.
                     maxLength: 64
                     type: string
+                  drill:
+                    description: 'Drill: the revert was a maintainer''s drill (AM6);
+                      the breaker does not count it.'
+                    type: boolean
                   headSHA:
                     description: |-
                       The head when the pull request was found, then the head the merge gate last acted on: merged,

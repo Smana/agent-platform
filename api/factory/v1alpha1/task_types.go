@@ -812,6 +812,9 @@ type PullRequestRef struct {
 	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
 	// +optional
 	RevertNumber int `json:"revertNumber,omitempty"`
+	// Drill: the revert was a maintainer's drill (AM6); the breaker does not count it.
+	// +optional
+	Drill bool `json:"drill,omitempty"`
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	Author string `json:"author,omitempty"`

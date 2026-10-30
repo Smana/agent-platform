@@ -79,7 +79,7 @@ const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
 
 // The breaker's ledger read (v2 D1): pull requests carrying one label, newest first.
 const labelledJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
- {"number":41,"state":"MERGED","mergedAt":"2026-10-15T09:00:00Z"},
+ {"number":41,"state":"MERGED","mergedAt":"2026-10-15T09:00:00Z","labels":{"nodes":[{"name":"factory/revert-of:#9"},{"name":"factory/drill"}]}},
  {"number":40,"state":"OPEN","mergedAt":null}]}}}}`
 
 // The follow-up reads: merged pull requests found by search, a bot author without its suffix.
@@ -867,8 +867,9 @@ func TestPullsWithLabelReadsEveryStateWithItsMergeTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []LabelledPull{{Number: 41, State: "MERGED", MergedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)}, {Number: 40, State: "OPEN"}}
-	if !slices.Equal(ps, want) {
+	want := []LabelledPull{{Number: 41, State: "MERGED", MergedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC),
+		Labels: []string{"factory/revert-of:#9", "factory/drill"}}, {Number: 40, State: "OPEN"}} // its labels: a drill (AM6)
+	if !reflect.DeepEqual(ps, want) {
 		t.Fatalf("%+v", ps)
 	}
 	if b := r.gh.graphqlBodies(); !strings.Contains(b[len(b)-1], `"labels":["factory/auto-merged:docs-links"]`) {

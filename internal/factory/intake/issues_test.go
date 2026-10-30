@@ -573,6 +573,32 @@ func TestRevertLabelReachesAnApprovedMerge(t *testing.T) {
 	}
 }
 
+// AM6: a maintainer's factory/drill on the pull request, read with factory/revert, marks the
+// revert a drill; a non-maintainer's does not.
+func TestDrillLabelMarksTheRevertADrill(t *testing.T) {
+	for _, tc := range []struct {
+		actor, want string
+	}{{"Smana", "true"}, {"mallory", ""}} {
+		t.Run(tc.actor, func(t *testing.T) {
+			tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+				Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone, PullRequest: &v1alpha1.PullRequestRef{Number: 12, AutoMerged: true}}}
+			f := forgetest.NewFake()
+			f.SetLabeled(LabelRevert, forge.Item{Number: 12, PullRequest: true})
+			f.SetEvents(12, forge.LabelEvent{Actor: tc.actor, Label: LabelDrill, At: t0},
+				forge.LabelEvent{Actor: "Smana", Label: LabelRevert, At: t0.Add(time.Minute)})
+			p, c := poller(t, f, tk)
+			if err := p.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var got v1alpha1.Task
+			_ = c.Get(context.Background(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+			if got.Annotations[v1alpha1.AnnotationRevert] != "label" || got.Annotations[v1alpha1.AnnotationDrill] != tc.want {
+				t.Fatalf("%v", got.Annotations)
+			}
+		})
+	}
+}
+
 func TestControlIssue(t *testing.T) {
 	f := forgetest.NewFake()
 	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})

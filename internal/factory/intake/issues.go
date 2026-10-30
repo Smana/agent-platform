@@ -41,6 +41,10 @@ const LabelStop = "factory/stop"
 // LabelRevert asks the factory to revert the auto-merged task whose PR carries it (§6.4).
 const LabelRevert = "factory/revert"
 
+// LabelDrill marks the revert factory/revert asks for as a maintainer's drill (human path AM6):
+// read with factory/revert, so it must be on the pull request before factory/revert is.
+const LabelDrill = "factory/drill"
+
 // maxSnapshot bounds the stored text for etcd (the Task CRD's maxLength); admission refuses
 // anything above caps.maxTextBytes anyway (R6).
 const maxSnapshot = 65536
@@ -539,7 +543,9 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 }
 
 // reverts maps a maintainer's factory/revert on an auto-merged PR to its task (§6.4). Merged
-// PRs are closed, so this lists labelled items in every state.
+// PRs are closed, so this lists labelled items in every state. A maintainer's factory/drill on the
+// same PR, newest event, marks the revert a drill (AM6); it is read here only, so it must be on
+// the PR before factory/revert.
 func (p *IssuePoller) reverts(ctx context.Context) error {
 	items, err := p.Forge.Labeled(ctx, LabelRevert)
 	if err != nil || len(items) == 0 {
@@ -561,10 +567,18 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		if w, err := p.writer(ctx, actor); err != nil || !w {
 			continue // a revert opens a pull request: a write, so D5's check holds it too
 		}
+		ann := map[string]string{v1alpha1.AnnotationRevert: "label"}
+		dev, ok, err := p.labelEvents(ctx, it.Number, LabelDrill)
+		if err != nil {
+			continue // unread, the drill is unknown: the revert waits rather than count as a revert
+		}
+		if ok && p.repo().IsMaintainer(dev[len(dev)-1].Actor) {
+			ann[v1alpha1.AnnotationDrill] = "true"
+		}
 		for i := range l.Items {
 			t := &l.Items[i]
 			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && (ref.AutoMerged || ref.MergedHow == "approved") && p.owns(t) {
-				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{v1alpha1.AnnotationRevert: "label"}}})
+				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": ann}})
 				obj := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: t.Name, Namespace: t.Namespace}}
 				if err := p.Client.Patch(ctx, obj, client.RawPatch(types.MergePatchType, body)); err != nil {
 					return fmt.Errorf("revert task %s: %w", t.Name, err)

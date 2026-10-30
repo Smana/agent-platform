@@ -32,6 +32,11 @@ func MergedLabel(class string) string { return "factory/merged:" + class }
 // beside MergedLabel: a human merge in the breaker's window, outside the daily caps.
 const ApprovedMergeLabel = "factory/approved-merge"
 
+// DrillLabel marks a pull request a maintainer reverts as a drill (human path AM6): the merger
+// copies it to the revert PR, and a revert carrying it is no revert to the breaker. Maintainer-only,
+// read as factory/revert is.
+const DrillLabel = "factory/drill"
+
 // FollowUpOfLabel marks a pull request that fixes pull request n after it merged (MC8).
 func FollowUpOfLabel(n int) string { return fmt.Sprintf("factory/follow-up-of:#%d", n) }
 
@@ -161,13 +166,13 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 			if ext && len(rg) >= ledgerPage && ms[i].Number < oldestRegressed {
 				return nil, errLedgerTruncated // its regression label may be past the page
 			}
-			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
-			// change the breaker's verdict.
+			// A revert PR counts, as a Task counts from the revert's opening: a rebuild must not
+			// change the breaker's verdict. A drill's does not (AM6).
 			rv, err := r.merger(ctx).PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))
 			if err != nil {
 				return nil, fmt.Errorf("read the merge ledger: %w", err)
 			}
-			ms[i].Reverted = len(rv) > 0
+			ms[i].Reverted = slices.ContainsFunc(rv, func(p forge.LabelledPull) bool { return !slices.Contains(p.Labels, DrillLabel) })
 			if !ext {
 				continue
 			}

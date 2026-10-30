@@ -897,6 +897,12 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 		return err
 	}
 	ref.RevertNumber = rv.Number
+	if why == "revert_requested" && t.Annotations[v1alpha1.AnnotationDrill] == "true" { // AM6: never a main_red
+		ref.Drill = true
+		if err := r.merger(ctx).AddLabels(ctx, rv.Number, DrillLabel); err != nil {
+			r.log().Error("label the drill revert", "pr", rv.Number, "err", err)
+		}
+	}
 	if r.repo(t).Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
 		if err := r.merger(ctx).EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
 			return err
@@ -990,7 +996,7 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 		o := &l.Items[i]
 		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) &&
 			!undecidedAdoptedMerge(o, rc) { // as the label ledger: Renovate's merge of an undecided head is not the class's
-			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
+			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted && !ref.Drill,
 				Auto: ref.ArmedAt != nil}
 			// The running process's own monitor outcomes: the GitHub ledger is read once per process,
 			// so without them the breaker under-demotes until a restart.

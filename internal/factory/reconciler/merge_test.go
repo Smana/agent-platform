@@ -331,18 +331,52 @@ func TestFailureBesideCancelledStillFixed(t *testing.T) {
 	}
 }
 
+// Human path AM6: with factory/drill, the revert PR carries the label, the Task says drill, and
+// the class is not paused by it.
 func TestAMaintainersRevertAfterDone(t *testing.T) {
-	g := mergeRig(t, v1alpha1.PhaseDone)
+	for _, drill := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drill=%v", drill), func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseDone)
+			var tk v1alpha1.Task
+			_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+			merged := metav1.NewTime(now.Add(-48 * time.Hour))
+			tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = true, &merged
+			_ = g.c.Status().Update(t.Context(), &tk)
+			tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+			if drill {
+				tk.Annotations[v1alpha1.AnnotationDrill] = "true"
+			}
+			_ = g.c.Update(t.Context(), &tk)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+			rv := got.Status.PullRequest.RevertNumber
+			if got.Status.PullRequest.Drill != drill || slices.Contains(g.f.Added(rv), DrillLabel) != drill {
+				t.Fatalf("drill %v, revert #%d labelled %q", got.Status.PullRequest.Drill, rv, g.f.Added(rv))
+			}
+			if paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); err != nil || paused == drill {
+				t.Fatalf("paused %v (drill %v): %v", paused, drill, err)
+			}
+		})
+	}
+}
+
+// AM6: "A main_red revert is never a drill", whatever the Task's annotation says.
+func TestAMainRedRevertIsNeverADrill(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseVerifying)
 	var tk v1alpha1.Task
 	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
-	merged := metav1.NewTime(now.Add(-48 * time.Hour))
-	tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = true, &merged
+	merged := metav1.NewTime(now)
+	tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = "m1", true, &merged
 	_ = g.c.Status().Update(t.Context(), &tk)
-	tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+	tk.Annotations = map[string]string{v1alpha1.AnnotationDrill: "true"}
 	_ = g.c.Update(t.Context(), &tk)
+	g.f.SetCommitChecks("m1", forge.Check{Name: required[0], State: "FAILURE"})
 	got := g.reconcile(t, "3buqdlot", 1)
-	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" {
-		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	rv := got.Status.PullRequest.RevertNumber
+	if got.Status.Reason != "main_red" || got.Status.PullRequest.Drill || slices.Contains(g.f.Added(rv), DrillLabel) {
+		t.Fatalf("%s drill %v, revert #%d labelled %q", got.Status.Reason, got.Status.PullRequest.Drill, rv, g.f.Added(rv))
 	}
 }
 

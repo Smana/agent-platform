@@ -53,6 +53,20 @@ func TestARebuiltFactoryReadsADemotedClassFromGitHub(t *testing.T) {
 	}
 }
 
+// Human path AM6: a revert PR carrying factory/drill does not count as a revert of what it
+// reverts, on GitHub's side (a rebuild) as on the Task's.
+func TestADrillRevertDoesNotTripTheBreaker(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "ogenki-agent-merger[bot]", MergedAt: now.Add(-48 * time.Hour),
+		Labels: []string{AutoMergedLabel("docs-links")}})
+	g.f.SetPR(forge.PR{Number: 30, State: "MERGED", MergedAt: now.Add(-47 * time.Hour), Labels: []string{RevertOfLabel(9), DrillLabel}})
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Reason == "class_paused" || got.Status.Phase != v1alpha1.PhaseAutoMerging {
+		t.Fatalf("a drill revert paused the class: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
 // D1: the daily cap counts today's labelled merges of every class, which a rebuild keeps.
 func TestTheDailyCapCountsTodaysLabelledMerges(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)

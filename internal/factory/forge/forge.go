@@ -320,11 +320,12 @@ type Revert struct {
 }
 
 // LabelledPull is one pull request carrying a label, as the merge breaker's ledger reads it
-// (v2 D1): its state and, once merged, when.
+// (v2 D1): its state, once merged when, and its labels (the first 30: a drill revert, AM6).
 type LabelledPull struct {
 	Number   int
 	State    string // OPEN | CLOSED | MERGED
 	MergedAt time.Time
+	Labels   []string
 }
 
 // MergedPull is one merged pull request, as the merge monitor's follow-up scan reads it: who
