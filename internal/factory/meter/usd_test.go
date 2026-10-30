@@ -169,7 +169,7 @@ func TestACounterResetNeverResetsTheUSDCost(t *testing.T) {
 	m := usdMeter(st, src, &revoked, &fell)
 	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	m.Now = func() time.Time { return clock }
-	m.OnCost = func(_ context.Context, tier string, usd float64, _ map[string]float64) {
+	m.OnCost = func(_ context.Context, tier, _ string, usd float64, _ map[string]float64) {
 		if tier == "standard" {
 			costs = append(costs, usd)
 		}
