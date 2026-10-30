@@ -12,6 +12,7 @@ import (
 	"github.com/Smana/maku/internal/factory/config"
 	"github.com/Smana/maku/internal/factory/decision"
 	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/steering"
 )
 
 // head is the pull request's head at the decision and oldHead a head it was before: full
@@ -308,27 +309,41 @@ func TestADecisionCarriesItsRows(t *testing.T) {
 	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
 		Verifiers: []v1alpha1.RunRecord{tk.Status.Runs[2]}, Stats: []forge.FileStat{{Path: testFile, Additions: 1, Deletions: 1}},
 		Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
-	want := decision.Rows{Files: 1, MaxFiles: 3, Lines: 2, MaxLines: 20, Shape: "ok", Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "glm-5.3"}
+	want := decision.Rows{Files: 1, MaxFiles: 3, Lines: 2, MaxLines: 20, Counted: true, Shape: "ok", Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "glm-5.3"}
 	if d.Verdict != "shadow" || d.Rows != want {
 		t.Fatalf("%s %+v\nwant shadow %+v", d.Verdict, d.Rows, want)
 	}
 }
 
-// A refusal records the rows it read and leaves the later ones unread (""), so the marker prints
+// A refusal records the rows it read and leaves the later ones unread (""): the counts too
+// until the diff is read (Counted false), so the marker prints
 // "-" for them (R-m7); the reviewer model is known whatever the refusal, "none" without a run.
 func TestARefusalLeavesItsLaterRowsUnread(t *testing.T) {
 	cfg := armCfg()
 	cfg.Classes["docs-links"] = config.Class{Shadow: true, MaxPatchFiles: 3, MaxModifiedLines: 20}
 	tk := armTask("docs-links", "pair", "approve")
 	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: oldHead})
-	want := decision.Rows{Evidence: "head_unreported", Reviewer: "none"}
+	want := decision.Rows{MaxFiles: 3, MaxLines: 20, Evidence: "head_unreported", Reviewer: "none"}
 	if d.Reason != "head_unreported" || d.Rows != want {
 		t.Fatalf("%s %+v\nwant head_unreported %+v", d.Reason, d.Rows, want)
 	}
 	d = DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head, DiffRead: true,
 		Stats: []forge.FileStat{{Path: testFile, Additions: 30}}, Files: changed("[a](https://x/old)", "[a](https://x/new)")})
-	want = decision.Rows{Files: 1, MaxFiles: 3, Lines: 30, MaxLines: 20, Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "none"}
+	want = decision.Rows{Files: 1, MaxFiles: 3, Lines: 30, MaxLines: 20, Counted: true, Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "none"}
 	if d.Reason != "patch_too_large" || d.Rows != want {
 		t.Fatalf("%s %+v\nwant patch_too_large %+v", d.Reason, d.Rows, want)
+	}
+}
+
+// steering_path refuses before the declared rows, on a diff it read: the record keeps the counts.
+func TestASteeringRefusalKeepsTheCounts(t *testing.T) {
+	cfg := armCfg()
+	cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
+	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+		DiffRead: true, Stats: []forge.FileStat{{Path: steering.Dir + "docs.md", Additions: 2, Deletions: 1}}})
+	want := decision.Rows{Files: 1, Lines: 3, Counted: true, Evidence: "ok", Reviewer: "none"}
+	if d.Reason != "steering_path" || d.Rows != want {
+		t.Fatalf("%s %+v\nwant steering_path %+v", d.Reason, d.Rows, want)
 	}
 }

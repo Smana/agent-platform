@@ -3,7 +3,9 @@
 package reconciler
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -190,26 +192,85 @@ func TestTheShadowRecordCarriesItsHead(t *testing.T) {
 	}
 }
 
-// AM8: the comment a decision posts carries its record on a line of its own (R-m11), the would-arm
-// and the hand-off alike, and leaves the event's marker as the tally reads it.
+// AM8: the comment a decision posts carries its record on a line of its own (R-m11), the would-arm,
+// the hand-off and the arm alike, and leaves the event's marker as the tally reads it. Counts of a
+// diff the decision did not read print "-" (R-m7); a diff read keeps them, steering_path's included.
 func TestTheDecisionCommentCarriesItsRecord(t *testing.T) {
+	greenRig := func(t *testing.T) *rig {
+		g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+		g.f.SetChecks(12, green("SUCCESS"))
+		return g
+	}
+	classes := func(g *rig, docsLinks config.Class) {
+		g.r.Cfg.Classes = map[string]config.Class{"docs-links": docsLinks, "revert": {Shadow: true}}
+	}
 	for _, tc := range []struct {
-		name  string
-		class config.Class
-		want  string
+		name string
+		rig  func(t *testing.T) *rig
+		want string
 	}{
-		{"would-arm", config.Class{Shadow: true}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=shadow:shadow_would_arm files=0/0 lines=0/0 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=none -->"},
-		{"hand-off", config.Class{}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:class_unarmed files=0/0 lines=0/0 shape=- holdout=- oracle=- age=- evidence=- paused=false capped=false reviewer=none -->"},
+		{"would-arm, diff read", func(t *testing.T) *rig {
+			g := greenRig(t)
+			classes(g, config.Class{Shadow: true}) // docs-links' built-in shape reads the diff
+			g.f.SetFileStats(forge.FileStat{Path: testFile, Status: "modified", Additions: 1, Deletions: 1})
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=shadow:shadow_would_arm files=1/0 lines=2/0 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=none -->"},
+		{"would-arm, diff unread", func(t *testing.T) *rig {
+			g := greenRig(t)
+			predict(t, g, "plain") // no shape, no file condition, steering off: the diff is never read
+			g.r.Cfg.Classes["plain"] = config.Class{Shadow: true}
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=plain decision=shadow:shadow_would_arm files=-/0 lines=-/0 shape=n/a holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=none -->"},
+		{"hand-off before the rows", func(t *testing.T) *rig {
+			g := greenRig(t)
+			classes(g, config.Class{})
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:class_unarmed files=-/0 lines=-/0 shape=- holdout=- oracle=- age=- evidence=- paused=false capped=false reviewer=none -->"},
+		{"steering_path, diff read", func(t *testing.T) *rig {
+			g := greenRig(t)
+			classes(g, config.Class{Shadow: true})
+			g.r.Cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
+			g.f.SetFileStats(forge.FileStat{Path: ".github/agent-factory/steering/docs.md", Status: "modified", Additions: 2, Deletions: 1})
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:steering_path files=1/0 lines=3/0 shape=- holdout=- oracle=- age=- evidence=ok paused=false capped=false reviewer=none -->"},
+		{"diff too large", func(t *testing.T) *rig {
+			g := declaredRig(t)
+			g.f.SetDiffError(forge.ErrDiffTooLarge)
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=dead-links decision=human:patch_too_large files=-/3 lines=-/20 "},
+		{"armed", func(t *testing.T) *rig {
+			g := greenRig(t)
+			classes(g, config.Class{Live: true})
+			g.f.SetFileStats(forge.FileStat{Path: testFile, Status: "modified", Additions: 1, Deletions: 1})
+			return g
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=arm:armed files=1/0 lines=2/0 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=none -->"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
-			g.r.Cfg.Classes = map[string]config.Class{"docs-links": tc.class, "revert": {Shadow: true}}
-			g.f.SetChecks(12, green("SUCCESS"))
+			g := tc.rig(t)
+			var logs bytes.Buffer
+			g.r.Log = slog.New(slog.NewTextHandler(&logs, nil))
 			g.reconcile(t, "3buqdlot", 1)
 			if c := strings.Join(append(g.f.Comments(12), g.f.Comments(7)...), "\n"); !strings.Contains(c, tc.want) {
 				t.Fatalf("%q\nwant %q", c, tc.want)
 			}
+			// The same record, as the log line every non-wait decision writes.
+			if l := logs.String(); !strings.Contains(l, `msg="merge decision"`) || !strings.Contains(l, "head=abc") || !strings.Contains(l, "rows=") {
+				t.Fatalf("no merge decision log line: %s", l)
+			}
 		})
+	}
+}
+
+// predict sets the stored task's predicted class.
+func predict(t *testing.T, g *rig, class string) {
+	t.Helper()
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), keyFor("3buqdlot"), &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Spec.PredictedClass = class
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
 	}
 }
 

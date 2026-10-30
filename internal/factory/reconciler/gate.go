@@ -221,7 +221,7 @@ func onDiffFor(c Condition, cl config.Class) bool {
 }
 
 // rowOf names the decision record's string row a condition fills (AM8); the file conditions
-// fill Files and Lines, which declared counts whether they are declared or not.
+// read the counts DecideArm records.
 var rowOf = map[string]func(*decision.Rows) *string{
 	"diffShape":       func(r *decision.Rows) *string { return &r.Shape },
 	"releaseAgeCheck": func(r *decision.Rows) *string { return &r.Age },
@@ -229,15 +229,11 @@ var rowOf = map[string]func(*decision.Rows) *string{
 	"oracle":          func(r *decision.Rows) *string { return &r.Oracle },
 }
 
-// declared checks the class's declared conditions in order: the first refusal, or "". rows are
-// what it read (AM8): "n/a" for a row the class does not declare, "ok" for one that held, the
-// reason for the one that refused ("pending" for a release age still waiting), and "" for a
-// declared row it did not reach or a diff row while the diff is unread.
-func declared(cl config.Class, in ArmInputs) (rows decision.Rows, reason string, wait bool) {
-	rows = decision.Rows{Files: len(in.Stats), MaxFiles: cl.MaxPatchFiles, MaxLines: cl.MaxModifiedLines}
-	for _, f := range in.Stats {
-		rows.Lines += f.Additions + f.Deletions
-	}
+// declared checks the class's declared conditions in order: the first refusal, or "". It fills
+// rows with what it read (AM8): "n/a" for a row the class does not declare, "ok" for one that
+// held, the reason for the one that refused ("pending" for a release age still waiting), and ""
+// for a declared row it did not reach or a diff row while the diff is unread.
+func declared(cl config.Class, in ArmInputs, rows decision.Rows) (decision.Rows, string, bool) {
 	for _, c := range Conditions() {
 		if row, ok := rowOf[c.Key]; ok && !c.Declared(cl) {
 			*row(&rows) = "n/a"

@@ -105,9 +105,9 @@ func CIState(c forge.Checks, required []string) string {
 // the conditions the class declares (merge gate classes MC1). Every "no" fails towards a human
 // (property 3), each with its own reason. Every decision carries the rows it read (AM8).
 func DecideArm(in ArmInputs) (d ArmDecision) {
-	rows := decision.Rows{Reviewer: reviewerModel(in.Task)}
-	defer func() { d.Rows = rows }()
 	rc := in.Cfg.RepositoryFor(in.Task.Spec.Repository)
+	rows := recordOf(in, gateOf(rc, in.Task.Spec.PredictedClass))
+	defer func() { d.Rows = rows }()
 	if d, done := baseChecks(in, rc); done {
 		return d
 	}
@@ -162,9 +162,7 @@ func DecideArm(in ArmInputs) (d ArmDecision) {
 	if in.DiffRead && in.Cfg.SteeringOn() && touchesSteering(in.Stats) {
 		return human("steering_path", class) // no agent pull request changes a note (scoper SC3)
 	}
-	read, reason, wait := declared(cl, in)
-	read.Evidence, read.Reviewer = rows.Evidence, rows.Reviewer
-	rows = read
+	rows, reason, wait := declared(cl, in, rows)
 	if wait {
 		return ArmDecision{Verdict: "wait", Reason: reason, Matched: class}
 	} else if reason != "" {
@@ -182,6 +180,19 @@ func DecideArm(in ArmInputs) (d ArmDecision) {
 		return human("auto_merge_cap", class)
 	}
 	return ArmDecision{Verdict: "arm", Matched: class}
+}
+
+// recordOf is the record's start (AM8), known before any row is read: the class's caps, the
+// reviewer model, and the diff's counts once the diff is read, whatever the decision refuses.
+func recordOf(in ArmInputs, cl config.Class) decision.Rows {
+	rows := decision.Rows{MaxFiles: cl.MaxPatchFiles, MaxLines: cl.MaxModifiedLines, Reviewer: reviewerModel(in.Task), Counted: in.DiffRead}
+	if in.DiffRead {
+		rows.Files = len(in.Stats)
+		for _, f := range in.Stats {
+			rows.Lines += f.Additions + f.Deletions
+		}
+	}
+	return rows
 }
 
 // reviewerModel is the record's reviewer (AM8, AM10): the newest reviewer run's served models
