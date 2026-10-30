@@ -98,8 +98,9 @@ PATHS_MAX = 20
 # A repository path named in the acceptance: a token with a slash and no scheme. The token is taken
 # whole (`(?=(X))\1` is an atomic group on any Python), so an end the lookahead rejects drops it rather
 # than shortening it into another path. A `:` ends it only before whitespace or the end of the line
-# (`path.md: proves ...`); `path.md:12`, `host:path` and `user@host` are not paths.
-PATH_TOKEN = re.compile(r"(?<![\w:/.@-])(?=((?:[\w.-]+/)+[\w.-]*))\1(?!:\S|@)")
+# (`path.md: proves ...`); `path.md:12`, `host:path` and `user@host` are not paths, nor is a token a
+# character outside the set splits (`c++/`, `a//b`, `b~1`, `%20`).
+PATH_TOKEN = re.compile(r"(?<![\w:/.@-])(?=((?:[\w.-]+/)+[\w.-]*))\1(?!:\S|[@/+~%=&$\\])")
 # Cues on the line naming a path. FORBID: the acceptance says the path must not be created;
 # LINK: it asks for something that points at it; GONE: the path is meant to be removed or moved.
 FORBID = re.compile(r"\b(?:must not|do not|don't|never|should not|shall not|not be created|no new|without creating|"

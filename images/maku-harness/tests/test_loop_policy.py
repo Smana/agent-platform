@@ -309,6 +309,9 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(lp.named_paths("- docs/a/b.md: proves x", {"docs"}), [("docs/a/b.md", "required")])
         # a file:line reference is dropped, never shortened into another path
         self.assertEqual(lp.named_paths("- see docs/a/b.md:12 for it\n- docs/c/d.md:12\n", {"docs"}), [])
+        # so is a token a character outside the path set splits
+        for line in ("- test -f docs/c++/notes.md: proves", "- docs/a//b.md", "- docs/a/b~1.md", "- docs/a/my%20file.md"):
+            self.assertEqual(lp.named_paths(line, {"docs"}), [], line)
 
     def paths(self, *facts):
         return lp.judge_input("task", "abc", [], "", [DRILL_E_RUNS[1]], list(facts))
