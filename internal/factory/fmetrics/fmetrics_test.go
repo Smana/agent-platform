@@ -419,12 +419,25 @@ func TestTheHumanPathReasonIsBounded(t *testing.T) {
 	s.HumanWait(t.Context(), "Escalated", "revoked by Smana: please stop, it is looping", "docs-links", time.Minute)
 	s.HumanWait(t.Context(), "Escalated", "ci_red", "docs-links", time.Minute)
 	s.HandoffToMerge(t.Context(), "docs-links", "anything an operator wrote", "human", time.Minute)
+	// The factory's own escalation codes pass: a budget revocation, a revoked or lost run, a pod
+	// the AgentRun read, an exhausted resume, a run's lowered terminal phase.
+	codes := []string{"budget-run", "budget-task-shadow", "revoked", "deleted", "manual", "run_lost", "resumes_exhausted",
+		"PodLost", "Disrupted", "PodFailed", "failed"}
+	for _, code := range codes {
+		s.HumanWait(t.Context(), "Escalated", code, "docs-links", time.Minute)
+	}
 	got := read()
 	for _, want := range []string{
 		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="other"} 60`,
 		`maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="ci_red"} 60`,
 		`maku_factory_handoff_to_merge_seconds_bucket{class="docs-links",how="human",reason="other",le="300"} 1`,
 	} {
+		if !strings.Contains(got, want+"\n") {
+			t.Errorf("missing %s", want)
+		}
+	}
+	for _, code := range codes {
+		want := `maku_factory_human_wait_seconds_total{class="docs-links",phase="Escalated",principal="other",reason="` + code + `"} 60`
 		if !strings.Contains(got, want+"\n") {
 			t.Errorf("missing %s", want)
 		}

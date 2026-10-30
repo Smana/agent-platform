@@ -26,7 +26,7 @@ import (
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/killswitch"
 	"github.com/Smana/maku/internal/factory/runs"
-	"github.com/Smana/maku/internal/summary"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 const scope = "github.com/Smana/maku/internal/factory"
@@ -91,14 +91,26 @@ func apiOutcomes() []string {
 // costRoles are run_cost_usd's role values (harness roles HR6): the four AgentRun roles, and scoper.
 func costRoles() []string { return []string{"implementer", "reviewer", "tester", "triager", "scoper"} }
 
-// handOffReason bounds a hand-off's or an escalation's reason to the wait reasons the factory
-// narrates (summary.Reasons, held to narrate's by its test), "" for none: an Escalated run end
-// can be free text, such as the revoked annotation (AM9).
+// handOffReasons is the closed vocabulary of a hand-off's or an escalation's reason (AM9): the
+// event reasons the broker already bounds (the summary's wait reasons and the run ends that
+// escalate), the meter's revocations, and the run ends only the reconciler names: a lost or
+// unresumable run, the pod the AgentRun read, and a run's terminal phase lowered.
+var handOffReasons = sync.OnceValue(func() []string {
+	out := slices.Concat(webhook.Reasons(), revocations(),
+		[]string{runs.ReasonDisrupted, runs.ReasonPodLost, runs.ReasonPodFailed, "run_lost", "resumes_exhausted",
+			"succeeded", "failed", "budgetexhausted", "revoked"})
+	slices.Sort(out)
+	return slices.Compact(out)
+})
+
+// handOffReason is reason when the vocabulary holds it, "" for none, else other. A run revoked
+// by hand with free text in its revoked annotation arrives as that text, which nothing here tells
+// apart from any other free text: it reads other.
 func handOffReason(reason string) string {
 	if reason == "" {
 		return ""
 	}
-	return oneOf(reason, summary.Reasons())
+	return oneOf(reason, handOffReasons())
 }
 
 func oneOf(v string, set []string) string {
