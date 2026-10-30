@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -819,38 +820,55 @@ func TestALiftedRequestForChangesReturnsOnTheApproval(t *testing.T) {
 	}
 }
 
-// Human path AM5: an agent task capped today returns on the next UTC day, on the same head and counted.
+// Human path AM5: with approveToMerge, an agent task capped today returns on the next UTC day, on
+// the same head and counted. Off, it stays with a human as before the switch existed.
 func TestACappedTaskReturnsOnTheNextDay(t *testing.T) {
-	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
-	g.handedOff(t, "auto_merge_cap", 0)
-	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "auto_merge_cap" {
-		t.Fatalf("same day: %s", got.Status.Reason)
-	}
-	g.r.Now = func() time.Time { return now.Add(26 * time.Hour) }
-	got := g.reconcile(t, "3buqdlot", 1)
-	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_day_turned" || got.Status.GateReentries != 1 {
-		t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approveToMerge=%t", on), func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman)
+			g.r.Cfg.Merge.ApproveToMerge = on
+			g.handedOff(t, "auto_merge_cap", 0)
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "auto_merge_cap" {
+				t.Fatalf("same day: %s", got.Status.Reason)
+			}
+			g.r.Now = func() time.Time { return now.Add(26 * time.Hour) }
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_day_turned" && got.Status.GateReentries == 1; back != on {
+				t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+			}
+			if !on && (got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "auto_merge_cap") {
+				t.Fatalf("off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
 	}
 }
 
-// Human path AM5 (R-I11): an agent task handed off class_paused returns, counted, once a clean
-// ledger makes paused read false.
+// Human path AM5 (R-I11): with approveToMerge, an agent task handed off class_paused returns,
+// counted, once a clean ledger makes paused read false. Off, it stays with a human.
 func TestAPausedTaskReturnsWhenThePauseLifts(t *testing.T) {
-	old := metav1.NewTime(now.Add(-3 * time.Hour))
-	reverted := awaiting()
-	reverted.Name, reverted.Spec.PredictedClass, reverted.Status.Phase = "1reverted", "docs-links", v1alpha1.PhaseReverted
-	reverted.Status.PullRequest.Number, reverted.Status.PullRequest.AutoMerged = 9, true
-	reverted.Status.PullRequest.MergedAt, reverted.Status.Runs = &old, nil
-	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, reverted)
-	g.handedOff(t, "class_paused", 0)
-	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused" {
-		t.Fatalf("still paused: %s %s", got.Status.Phase, got.Status.Reason)
-	}
-	if err := g.c.Delete(t.Context(), reverted); err != nil { // the ledger is clean: no revert in the window
-		t.Fatal(err)
-	}
-	got := g.reconcile(t, "3buqdlot", 1)
-	if got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "reentered_unpaused" || got.Status.GateReentries != 1 {
-		t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approveToMerge=%t", on), func(t *testing.T) {
+			old := metav1.NewTime(now.Add(-3 * time.Hour))
+			reverted := awaiting()
+			reverted.Name, reverted.Spec.PredictedClass, reverted.Status.Phase = "1reverted", "docs-links", v1alpha1.PhaseReverted
+			reverted.Status.PullRequest.Number, reverted.Status.PullRequest.AutoMerged = 9, true
+			reverted.Status.PullRequest.MergedAt, reverted.Status.Runs = &old, nil
+			g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, reverted)
+			g.r.Cfg.Merge.ApproveToMerge = on
+			g.handedOff(t, "class_paused", 0)
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused" {
+				t.Fatalf("still paused: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+			if err := g.c.Delete(t.Context(), reverted); err != nil { // the ledger is clean: no revert in the window
+				t.Fatal(err)
+			}
+			got := g.reconcile(t, "3buqdlot", 1)
+			if back := got.Status.Phase == v1alpha1.PhaseAwaitingCI && got.Status.Reason == "reentered_unpaused" && got.Status.GateReentries == 1; back != on {
+				t.Fatalf("%s %s %d", got.Status.Phase, got.Status.Reason, got.Status.GateReentries)
+			}
+			if !on && (got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "class_paused") {
+				t.Fatalf("off: %s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
 	}
 }

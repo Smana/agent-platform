@@ -306,8 +306,9 @@ func (r *Reconciler) approvalReturn(t *v1alpha1.Task, pr forge.PR) bool {
 }
 
 // reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
-// reason is one the gate's inputs can clear by themselves, the day's cap and the class's pause
-// included (AM5: auto_merge_cap returns on the next UTC day, class_paused once paused reads false);
+// reason is one the gate's inputs can clear by themselves, and, with approveToMerge, the day's cap
+// and the class's pause (AM5: auto_merge_cap returns on the next UTC day, class_paused once paused
+// reads false; off, both stay with a human as before the switch existed);
 // every other one — a verdict of changes, a maintainer's review, a class rule — was a human's to
 // judge, and stays theirs unless that human approves the head (AM2, approvalReturn). Even a
 // transient one returns only on the head it was handed off at, while no maintainer has reviewed or
@@ -339,7 +340,11 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		return true, nil
 	}
 	switch why {
-	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled", "auto_merge_cap", "class_paused":
+	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
+	case "auto_merge_cap", "class_paused": // AM5 is the human path's: off by default
+		if !r.repo(t).Merge.ApproveToMerge {
+			return false, nil
+		}
 	default:
 		return false, nil
 	}
