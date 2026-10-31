@@ -79,9 +79,10 @@ To release, tag a commit on `main` that passed CI and push the tag:
 git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 ```
 
-`release.yaml` re-runs `task check` (a tag can point at an untested commit), then builds each
-image for `linux/amd64` and `linux/arm64` with SLSA provenance and an SBOM, and signs each
-digest with keyless cosign. Nothing is tagged `latest`: cloud-native-ref pins each image by
+`release.yaml` re-runs `task check` and the harness's suites once (a tag can point at an untested
+commit), then builds each image through `image.yaml`: `linux/amd64` and `linux/arm64` each on a
+native runner, with SLSA provenance and an SBOM, joined under the tag, and the index's digest
+signed with keyless cosign. PR prereleases build the same way. Nothing is tagged `latest`: cloud-native-ref pins each image by
 digest, so a release reaches a cluster only through a pin bump there. The verification command
 is in the README.
 

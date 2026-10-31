@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # v3 feature 3, offline proof 4: the harness image under gVisor (runsc), on a network whose only way
 # out is a proxy allowing exactly a check-enabled run's hosts, clones REPO's main and runs its
-# declared checks. Fails on a refused host (named), on a step that ends fail or timeout, and on an
-# install that leaves a tool missing. Records the install's and each step's seconds and mise's
+# declared checks. Fails on what is the harness's: a refused host (named), an install that leaves a
+# tool missing, a step that times out or never runs for want of budget, a sandbox that is not gVisor.
+# A step that ran and ended fail is the repository's own verdict on its main, not the harness's: it
+# is a warning, so another repository's red main never turns this one red. Records the install's and each step's seconds and mise's
 # GitHub API calls in $GITHUB_STEP_SUMMARY when set.
 #
 # Usage: run.sh IMAGE OWNER/REPO PROFILES TOKEN_FILE   e.g. run.sh maku-harness:checks Smana/ai-native-ref golang,pypi /tmp/token
@@ -108,14 +110,15 @@ fi
 [ "$(cat "$out/install.exit" 2>/dev/null || echo missing)" = 0 ] || { echo "FAIL ${repo}: the install left a tool missing"; cat "$out/install.out" 2>/dev/null || true; fail=1; }
 cat "$out/checks.out" 2>/dev/null || true
 [ "$rc" = 0 ] || exit 1
-python3 - "$out" "$repo" <<'EOF' || fail=1
+python3 - "$out" "$repo" "$here" <<'EOF' || fail=1
 import glob, json, os, re, sys
-out, repo = sys.argv[1:3]
+out, repo, here = sys.argv[1:4]
 res = [json.load(open(p)) for p in glob.glob(os.path.join(out, "*.json")) if ".step-" not in p]
 assert len(res) == 1, "want one result, got %d" % len(res)
 steps = res[0]["steps"]
-# A skip with a reason is a step that never ran (budget, earlier stop); only a reasonless skip is declared.
-bad = [s["name"] for s in steps if s["result"] != "pass" and not (s["result"] == "skip" and not s.get("reason"))]
+sys.path.insert(0, here)
+from verdict import classify  # the repository's failing steps, and the harness's faulty ones
+failed, bad = classify(steps)
 if res[0].get("missingTools"):
     bad.append("tools:" + ",".join(map(str, res[0]["missingTools"])))
 api = len(re.findall(r"GET https://api\.github\.com\S*$", open(os.path.join(out, "install.log")).read(), re.M))
@@ -124,6 +127,11 @@ rows = ["### %s: install %ss, %d GitHub API calls" % (repo, open(os.path.join(ou
 if os.environ.get("GITHUB_STEP_SUMMARY"):
     open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(rows) + "\n\n")
 print("\n".join(rows))
+if failed:
+    msg = "%s's main fails %s: its own checks, run as declared (the harness ran them)" % (repo, ", ".join(failed))
+    print("::warning title=harness-checks: %s::%s" % (repo, msg))
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("> **warning** %s\n\n" % msg)
 if bad:
     sys.exit("FAIL %s: %s did not pass" % (repo, ", ".join(bad)))
 EOF
