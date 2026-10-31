@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The title strip heads the room page: the task's title, its phase, run, budget,
-// PR and issue, the room's class, who drives and who you are, why it waits, and
-// what needs you. It renders from the state frame alone until a summary arrives,
+// The title strip heads the room page: the status line, the task's title (its issue's
+// link), the facts (run, budget, PR, data class, who drives, a watcher's View only), what
+// comes next, and what needs you. A fact that is the norm says nothing: the role shows only
+// when it stops you, and the phase only when no status line says more. It renders from the state frame alone until a summary arrives,
 // so a summary that cannot be fetched leaves a working strip. Every string here may
 // be agent- or human-written: all of it enters the DOM as text.
 
@@ -24,7 +25,7 @@ function isGitHubUrl(url?: string): boolean {
 export interface StripInput {
   roomId: string; snap?: Snapshot; phase: string; driver: string; sealedBy?: { who: string; at: string };
   sealed?: boolean; // the room is sealed, closer known (sealedBy) or not
-  summary?: Summary; needs: number; connection: string;
+  summary?: Summary; needs: number;
   // Pending approvals: all of them, and those the viewer may decide (needs.ts approvalCounts).
   approvals?: { total: number; mine: number };
   now?: Latest; // the latest activity (RoomState.latest), for the Now line
@@ -88,7 +89,10 @@ function nowLine(i: StripInput, t: number, onNow: (seq: number) => void): HTMLEl
     b.onclick = () => onNow(n.seq);
     line.append(b);
   } else line.textContent = present ? "Now ▸ the run has started" : ran ? "No run" : "No run yet";
-  const lead = !present && i.snap && (i.snap.you.role === "owner" || i.snap.you.driver);
+  // A room that already says what comes next (a /factory retry, a PR to merge) gets no
+  // second, contrary way forward.
+  const told = !!(i.summary?.status.next || i.summary?.step);
+  const lead = !present && !told && i.snap && (i.snap.you.role === "owner" || i.snap.you.driver);
   return lead ? [line, el("span", { className: "now-hint", textContent: "Start one under Session › Run" })] : [line];
 }
 
@@ -113,6 +117,33 @@ function statusOf(i: StripInput, t: number): RunStatus {
   });
 }
 
+// The data class, in words: which model backends the room's runs may reach (docs/concepts.md).
+const DATA_CLASS: Record<string, string> = {
+  public: "Public: the runs may use external model providers",
+  internal: "Internal: the runs use self-hosted models only, with no egress",
+};
+
+// withCode sets a line of text with its backticked spans as code, each with a copy button.
+// Every part goes in as text: the line may be agent- or factory-written.
+export function withCode(text: string): Node[] {
+  return text.split(/`([^`]+)`/).flatMap<Node>((part, n) => {
+    if (n % 2 === 0) return part ? [document.createTextNode(part)] : [];
+    const copy = el("button", { type: "button", className: "copy-code", textContent: "Copy" });
+    copy.setAttribute("aria-label", `Copy ${part}`);
+    copy.onclick = () => void navigator.clipboard?.writeText(part).then(() => { copy.textContent = "Copied"; }, () => {});
+    return [el("code", { textContent: part }), copy];
+  });
+}
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// phaseTitle is the status line's tooltip: the task's raw phase, and the room's when it differs.
+function phaseTitle(i: StripInput): string {
+  const task = i.summary?.status.phase;
+  if (!task) return i.phase ? `phase: ${i.phase}` : "";
+  return i.phase && i.phase !== task ? `phase: ${task} · room: ${i.phase}` : `phase: ${task}`;
+}
+
 function chip(cls: string, ...body: (string | Node)[]): HTMLElement {
   const c = el("span", { className: `chip ${cls}` });
   c.append(...body);
@@ -132,12 +163,13 @@ function dashboardsChip(i: StripInput): HTMLElement | undefined {
   return chip("chip-dashboards", ...body);
 }
 
-function chips(i: StripInput, now: number): HTMLElement[] {
+// chips are the facts row. status is whether a status line heads the strip: then it says
+// where the task stands, and the phase is its tooltip, not a chip.
+function chips(i: StripInput, now: number, status: boolean): HTMLElement[] {
   const st = i.summary?.status;
   const out: HTMLElement[] = [];
-  const phase = chip("chip-phase", st?.phase || i.phase);
-  if (st?.phase && i.phase) phase.title = `room: ${i.phase}`;
-  if (phase.textContent) out.push(phase);
+  const phase = st?.phase || i.phase;
+  if (phase && !status) out.push(chip("chip-phase", phase));
   // The facts' run outlives it: with no agent present, its age would keep counting.
   if (st?.run && i.running !== false) out.push(chip("chip-run", runText(st, now)));
   if (st?.budget) {
@@ -146,19 +178,36 @@ function chips(i: StripInput, now: number): HTMLElement[] {
     const bar = el("span", { className: "meter-bar" });
     bar.style.setProperty("--fill", `${Math.min(pct, 100)}%`); // CSSOM: the CSP refuses a style attribute
     bar.setAttribute("aria-hidden", "true");
-    out.push(chip("chip-budget", `${fmtTokens(used)} / ${fmtTokens(limit)}${limit > 0 ? ` · ${pct} %` : ""} `, bar));
+    const b = chip("chip-budget", `Tokens ${fmtTokens(used)}${limit > 0 ? ` of ${fmtTokens(limit)}` : ""} `, bar);
+    if (limit > 0) {
+      b.title = `${pct} % of this task's token budget: the task stops when it is spent`;
+      if (used >= limit) b.dataset.level = "over"; else if (used >= limit * 0.8) b.dataset.level = "warn";
+    }
+    out.push(b);
   }
   if (st?.pr) out.push(chip("chip-pr", safeLink(`PR #${st.pr.number}`, st.pr.url)));
-  if (st?.issue) out.push(chip("chip-issue", safeLink(`issue #${st.issue.number}`, st.issue.url)));
+  // The title links the issue when it names it; an issue with no title keeps its own link here.
+  if (st?.issue && !st.issue.title) out.push(chip("chip-issue", safeLink(`Issue #${st.issue.number}`, st.issue.url)));
   if (st?.lastVerdict) out.push(chip("chip-verdict", `last verdict: ${st.lastVerdict.by} ${st.lastVerdict.verdict}`));
-  if (i.snap) out.push(chip("chip-class", i.snap.dataClass));
+  if (i.snap) {
+    const c = chip("chip-class", `Data: ${i.snap.dataClass}`);
+    if (Object.hasOwn(DATA_CLASS, i.snap.dataClass)) c.title = DATA_CLASS[i.snap.dataClass];
+    out.push(c);
+  }
   if (i.driver) {
     const yours = i.snap?.you.principal === i.driver;
-    const d = chip("chip-driver", `driver: ${yours ? "you" : shortPrincipal(i.driver)}`);
-    if (!yours) d.title = i.driver;
+    const who = yours ? "you" : i.driver === "system:factory" ? "the factory" : shortPrincipal(i.driver);
+    const d = chip("chip-driver", `Driven by ${who}`);
+    d.title = `${yours ? "You" : i.driver}: the one who may steer or interrupt the running run`;
     out.push(d);
   }
-  if (i.snap) out.push(chip("chip-you", `you: ${i.snap.you.role}${i.snap.you.approver ? " (approver)" : ""}`));
+  // A watcher who cannot approve can only read: the one role worth saying.
+  const you = i.snap?.you;
+  if (you && (you.role === "watcher" || !you.role) && !you.approver) {
+    const c = chip("chip-you", "View only");
+    c.title = `Your role here: ${you.role || "none"}`;
+    out.push(c);
+  }
   const dash = dashboardsChip(i);
   if (dash) out.push(dash);
   return out;
@@ -195,8 +244,6 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
   const title = el("h1", { className: "strip-title" });
   const row = el("div", { className: "strip-chips" });
   const pill = el("button", { type: "button", className: "needs-pill" });
-  const conn = el("span", { className: "strip-conn" });
-  row.append(conn);
   head.append(title, row);
   let onNeeds = () => {};
   let onNow = (_seq: number) => {};
@@ -209,16 +256,19 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
       const st = i.summary?.status;
       const text = st?.issue?.title ? `#${st.issue.number} ${st.issue.title}` : `Room ${i.roomId}`;
       const phase = st?.phase || i.phase;
-      if (title.textContent !== text) {
-        title.textContent = text;
+      // The title links its issue, when that is https: the issue chip it replaces said no more.
+      const href = st?.issue?.title && /^https:\/\//.test(st.issue.url) ? st.issue.url : "";
+      if (title.textContent !== text || (title.querySelector("a")?.getAttribute("href") ?? "") !== href) {
+        title.replaceChildren(href ? safeLink(text, href) : document.createTextNode(text));
         title.title = text; // a phone clamps the title to two lines: the whole of it on hover
       }
       document.title = phase ? `${text} · ${phase} · Maku` : `${text} · Maku`;
-      const { now: latest, sealedBy, needs, connection, approvals: pend, ...rest } = i;
-      const headKey = JSON.stringify(rest);
+      const { now: latest, sealedBy, needs, approvals: pend, ...rest } = i;
+      const status = statusOf(i, t);
+      const headKey = JSON.stringify([rest, !!status.kind]);
       if (headKey !== shown.head) {
         for (const c of [...row.querySelectorAll(":scope > .chip")]) c.remove();
-        row.prepend(...chips(i, t));
+        row.prepend(...chips(i, t, !!status.kind));
         shown.head = headKey;
       } else if (st?.run) {
         const run = head.querySelector(".chip-run");
@@ -228,18 +278,17 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
       if (needs > 0) {
         const p = `Needs you · ${needs}`;
         if (pill.textContent !== p) pill.textContent = p;
-        if (!pill.isConnected || pill.nextElementSibling !== conn) conn.before(pill);
+        if (!pill.isConnected || pill.nextElementSibling) row.append(pill);
       } else pill.remove();
-      if (conn.textContent !== connection) conn.textContent = connection;
-      const status = statusOf(i, t);
       const step = i.summary?.step;
       // A line that waits for an approval takes you to its card; one that waits for a PR links it.
       const toCard = status.kind === "waiting-you" || status.kind === "waiting-other";
       const prUrl = status.kind === "waiting-pr" && isGitHubUrl(step?.url) ? step!.url! : "";
-      const statusKey = JSON.stringify([status, prUrl]);
+      const statusKey = JSON.stringify([status, prUrl, phaseTitle(i)]);
       if (statusKey !== shown.status) {
         statusRow.hidden = !status.kind;
         statusRow.dataset.kind = status.kind;
+        statusRow.title = phaseTitle(i);
         const icon = el("span", { className: "run-status-icon", textContent: status.icon });
         icon.setAttribute("aria-hidden", "true"); // the words say it all
         let words: HTMLElement;
@@ -253,7 +302,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         shown.status = statusKey;
       }
       const present = i.running ?? !!latest;
-      const nowKey = JSON.stringify([latest, i.running, i.ran || !!st?.run, i.snap?.you.role, i.snap?.you.driver]);
+      const nowKey = JSON.stringify([latest, i.running, i.ran || !!st?.run, i.snap?.you.role, i.snap?.you.driver, !!(st?.next || i.summary?.step)]);
       if (nowKey !== shown.now) {
         nowRow.replaceChildren(...nowLine(i, t, (seq) => onNow(seq)));
         shown.now = nowKey;
@@ -267,7 +316,9 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         const lines: HTMLElement[] = [];
         if (sealedBy || i.sealed) lines.push(el("div", { className: "closed", textContent: sealedText(i) }));
         else if (st?.reason || st?.next) {
-          lines.push(el("div", { className: "waiting", textContent: `Waiting: ${[st.reason, st.next].filter(Boolean).join(" → ")}` }));
+          const line = el("div", { className: "waiting" });
+          line.append(...withCode(cap([st.reason, st.next].filter(Boolean).join(" → "))));
+          lines.push(line);
         }
         // Nothing at the top said an approval waits: this line does, and takes you to its card.
         const banner = sealedBy || i.sealed ? "" : bannerText(pend?.total ?? 0, pend?.mine ?? 0);
@@ -285,6 +336,10 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
             : document.createTextNode(step.kind === "approve" ? `${step.label}, in Needs you below` : step.label));
           lines.push(line);
         }
+        // What comes next, headed as such; a closed room has nothing next.
+        const next = lines.length > 0 && !(sealedBy || i.sealed);
+        if (next) lines.unshift(el("span", { className: "next-label", textContent: "Next" }));
+        tail.classList.toggle("strip-next", next);
         tail.replaceChildren(...lines);
         shown.tail = tailKey;
       }

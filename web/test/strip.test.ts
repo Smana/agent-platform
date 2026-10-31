@@ -16,7 +16,7 @@ const snap = { roomId: "3kq7x2ma", phase: "Active", driver: "human:291847362183"
   you: { principal: "human:291847362183", role: "owner", approver: true, driver: true, webUI: true } };
 const mount = () => { const h = document.createElement("header"); return { h, strip: mountStrip(h) }; };
 const input = (over: Partial<StripInput> = {}): StripInput =>
-  ({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live", ...over });
+  ({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, ...over });
 
 describe("the run status line", () => {
   const state = (over: Partial<Summary["status"]>) => summary({ state: "running", ...over });
@@ -83,7 +83,7 @@ describe("the title strip", () => {
     const { h, strip } = mount();
     let clicked = 0;
     strip.onNowClick((seq) => { clicked = seq; });
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0, connection: "live",
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0,
       now: { seq: 27, text: "terminal git log --oneline -3", status: "running", ts: new Date(Date.now() - 12_000).toISOString() } });
     expect(h.querySelector(".now")?.textContent).toBe("Now ▸ terminal git log --oneline -3 · running · 12 s ago");
     (h.querySelector(".now button") as HTMLButtonElement).click();
@@ -91,7 +91,7 @@ describe("the title strip", () => {
   });
   it("says there is no run when nothing is running", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Open", driver: snap.driver, needs: 0, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Open", driver: snap.driver, needs: 0 });
     expect(h.querySelector(".now")?.textContent).toBe("No run yet");
   });
   it("hints at Run only to an owner or the driver", () => {
@@ -100,6 +100,17 @@ describe("the title strip", () => {
     expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
     strip.update(input({ summary: undefined, snap: { ...snap, you: { ...snap.you, role: "collaborator", driver: false } } }));
     expect(h.querySelector(".now-hint")).toBeNull();
+  });
+  // The room already says what comes next (a /factory retry, a PR to merge): a second, other
+  // way forward would contradict it.
+  it("hints at Run only when the room does not already say what comes next", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: summary({ run: undefined, reason: undefined }) }));
+    expect(h.querySelector(".now-hint")).toBeNull();
+    strip.update(input({ summary: { ...summary({ run: undefined, reason: undefined, next: undefined }), step: { kind: "pr", label: "merge PR #77" } } }));
+    expect(h.querySelector(".now-hint")).toBeNull();
+    strip.update(input({ summary: summary({ run: undefined, reason: undefined, next: undefined }) }));
+    expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
   });
   it("re-renders the Now line's age on the same input as the clock moves", () => {
     let t = Date.parse("2026-10-04T14:00:00Z");
@@ -139,50 +150,102 @@ describe("the title strip", () => {
   });
   it("heads the page with the issue title and sets the tab title", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0 });
     expect(h.querySelector("h1")?.textContent).toBe("#74 Chat view: pair tool calls");
     expect(document.title).toBe("#74 Chat view: pair tool calls · Implementing · Maku");
   });
   it("keeps the product name when there is no phase", () => {
     const { strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0, connection: "connecting…" });
+    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0 });
     expect(document.title).toBe("Room 3kq7x2ma · Maku");
   });
   it("falls back to the room id before the summary arrives", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Open", driver: snap.driver, needs: 0, connection: "connecting…" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Open", driver: snap.driver, needs: 0 });
     expect(h.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
-    expect(h.querySelector(".strip-conn")?.textContent).toBe("connecting…");
   });
-  it("shows the task phase as a chip, the budget as a meter, and you as 'you'", () => {
+  // The connection is the dock's and the banner's: the strip repeated it.
+  it("leaves the connection out of the strip", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });
-    const chips = [...h.querySelectorAll(".chip")].map((c) => c.textContent);
-    expect(chips).toContain("Implementing");
-    expect(chips.some((c) => c?.includes("189 k / 1.5 M · 13 %"))).toBe(true);
+    strip.update(input());
+    expect(h.querySelector(".strip-conn")).toBeNull();
+    expect(h.textContent).not.toMatch(/\blive\b/);
+  });
+  it("says the budget as labelled tokens with a meter, and the driver as 'you'", () => {
+    const { h, strip } = mount();
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0 });
+    const budget = h.querySelector<HTMLElement>(".chip-budget")!;
+    expect(budget.textContent).toBe("Tokens 189 k of 1.5 M ");
+    expect(budget.title).toBe("13 % of this task's token budget: the task stops when it is spent");
+    expect(budget.dataset.level).toBeUndefined();
     // CSP: no style= in markup; the fill is set through the CSSOM, which the CSP permits
     // (jsdom, like a browser, reflects it into the attribute, so the attribute is no evidence).
     expect((h.querySelector(".meter-bar") as HTMLElement).style.getPropertyValue("--fill")).toBe("13%");
-    expect(h.querySelector(".chip-driver")?.textContent).toBe("driver: you");
+    expect(h.querySelector(".chip-driver")?.textContent).toBe("Driven by you");
+  });
+  it("warns from 80 % of the budget, and past it", () => {
+    const level = (used: number) => {
+      const { h, strip } = mount();
+      strip.update(input({ summary: summary({ budget: { usedTokens: used, limitTokens: 1000 } }) }));
+      return h.querySelector<HTMLElement>(".chip-budget")!.dataset.level;
+    };
+    expect(level(799)).toBeUndefined();
+    expect(level(800)).toBe("warn");
+    expect(level(1000)).toBe("over");
+  });
+  // The status line already says where the task stands; a phase chip beside it said it again.
+  it("drops the phase chip under a status line, the raw phase its tooltip", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: summary({ phase: "Escalated", reason: undefined, next: undefined }) }));
+    expect(h.querySelector(".run-status")?.textContent).toBe("⏳ Waiting — a maintainer decides");
+    expect(h.querySelector(".run-status")?.getAttribute("title")).toBe("phase: Escalated · room: Active");
+    expect(h.querySelector(".chip-phase")).toBeNull();
   });
   it("says why the task waits and what comes next, on one line", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });
-    expect(h.querySelector(".waiting")?.textContent).toBe("Waiting: the policy needs a maintainer's approval → an approver decides");
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary({ reason: undefined, next: undefined }), needs: 0, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0 });
+    expect(h.querySelector(".waiting")?.textContent).toBe("The policy needs a maintainer's approval → an approver decides");
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary({ reason: undefined, next: undefined }), needs: 0 });
     expect(h.querySelector(".waiting")).toBeNull();
+  });
+  it("heads what comes next with Next, and a closed room with none", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    expect(h.querySelector(".strip-tail > .next-label")?.textContent).toBe("Next");
+    strip.update(input({ sealed: true, summary: summary({ phase: "Closed", reason: undefined, next: undefined }) }));
+    expect(h.querySelector(".next-label")).toBeNull();
+  });
+  it("sets a backticked command as code with a copy button, and the rest as text", async () => {
+    const { h, strip } = mount();
+    let copied = "";
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (t: string) => { copied = t; return Promise.resolve(); } } });
+    try {
+      strip.update(input({ summary: summary({ reason: "the agent stopped on an error",
+        next: "a maintainer comments `/factory retry` on the issue, or `<img src=x>`" }) }));
+      const line = h.querySelector(".waiting")!;
+      expect([...line.querySelectorAll("code")].map((c) => c.textContent)).toEqual(["/factory retry", "<img src=x>"]);
+      expect(line.querySelector("img")).toBeNull();
+      const copy = line.querySelector<HTMLButtonElement>("button.copy-code")!;
+      expect(copy.getAttribute("aria-label")).toBe("Copy /factory retry");
+      copy.click();
+      await Promise.resolve();
+      expect(copied).toBe("/factory retry");
+      expect(copy.textContent).toBe("Copied");
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
   it("names the one step and links the PR for a room held on GitHub", () => {
     const { h, strip } = mount();
     const step = { kind: "pr" as const, label: "review and merge or close PR #77", url: "https://github.com/o/r/pull/77" };
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step }, needs: 0, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step }, needs: 0 });
     const line = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
     expect(line.textContent).toBe("Your move: review and merge or close PR #77");
     expect(line.querySelector("a")?.getAttribute("href")).toBe(step.url);
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step: { kind: "approve", label: "approve here" } }, needs: 1, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step: { kind: "approve", label: "approve here" } }, needs: 1 });
     expect(h.textContent).toContain("Your move: approve here, in Needs you below");
     // An off-GitHub URL is not linked, only said.
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0, connection: "live",
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0,
       summary: { ...summary(), step: { kind: "answer", label: "answer the question on issue #3", url: "https://evil.example/x" } } });
     const bad = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
     expect(bad.querySelector("a")).toBeNull();
@@ -190,9 +253,9 @@ describe("the title strip", () => {
   });
   it("shows a needs-you pill only when something does, and a closed line when sealed", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 2, connection: "live" });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 2 });
     expect(h.querySelector(".needs-pill")?.textContent).toBe("Needs you · 2");
-    strip.update({ roomId: "3kq7x2ma", snap, phase: "Closed", driver: snap.driver, summary: summary(), needs: 0, connection: "live",
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Closed", driver: snap.driver, summary: summary(), needs: 0,
       sealedBy: { who: "human:291847362183", at: "2026-10-04T14:05:00Z" } });
     expect(h.querySelector(".needs-pill")).toBeNull();
     expect(h.querySelector(".closed")?.textContent).toMatch(/^Closed .* by you$/);
@@ -207,12 +270,13 @@ describe("the title strip", () => {
     h.querySelector<HTMLButtonElement>(".needs-pill")!.click();
     expect(clicked).toBe(1);
   });
-  it("shows the room phase when there are no task facts, the other phase as a title", () => {
+  it("shows the room phase as a chip when no status line says more", () => {
     const { h, strip } = mount();
     strip.update(input({ summary: undefined }));
+    expect(h.querySelector<HTMLElement>(".run-status")!.hidden).toBe(true);
     expect(h.querySelector(".chip-phase")?.textContent).toBe("Active");
-    strip.update(input());
-    expect(h.querySelector(".chip-phase")?.getAttribute("title")).toBe("room: Active");
+    strip.update(input({ summary: summary({ phase: "Escalated" }) }));
+    expect(h.querySelector(".chip-phase")).toBeNull();
   });
   it("names the run, its role and how long it has run", () => {
     const h = document.createElement("header");
@@ -256,14 +320,46 @@ describe("the title strip", () => {
     expect(h.querySelector("img")).toBeNull();
     expect(h.querySelector(".chip-run")?.textContent).toContain(evil);
   });
-  it("names another driver short, the full id as a title, and your role", () => {
+  it("names another driver short, the full id and what a driver does as a title", () => {
     const { h, strip } = mount();
     strip.update(input({ driver: "human:999999999999" }));
     const d = h.querySelector(".chip-driver")!;
-    expect(d.textContent).toBe("driver: human:9999…");
-    expect(d.getAttribute("title")).toBe("human:999999999999");
-    const chips = [...h.querySelectorAll(".chip")].map((c) => c.textContent);
-    expect(chips).toEqual(expect.arrayContaining(["internal", "you: owner (approver)"]));
+    expect(d.textContent).toBe("Driven by human:9999…");
+    expect(d.getAttribute("title")).toBe("human:999999999999: the one who may steer or interrupt the running run");
+    strip.update(input({ driver: "system:factory" }));
+    expect(h.querySelector(".chip-driver")?.textContent).toBe("Driven by the factory");
+  });
+  it("says the data class with what it allows", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    const c = h.querySelector<HTMLElement>(".chip-class")!;
+    expect(c.textContent).toBe("Data: internal");
+    expect(c.title).toBe("Internal: the runs use self-hosted models only, with no egress");
+    strip.update(input({ snap: { ...snap, dataClass: "public" } }));
+    expect(h.querySelector<HTMLElement>(".chip-class")!.title).toBe("Public: the runs may use external model providers");
+  });
+  // Your role shows only when it stops you: an owner, a collaborator or an approver can act.
+  it("says View only to a watcher who cannot approve, and nothing to anyone who can act", () => {
+    const you = (role: string, approver: boolean) => {
+      const { h, strip } = mount();
+      strip.update(input({ snap: { ...snap, you: { ...snap.you, role, approver, driver: false } } }));
+      return h.querySelector(".chip-you")?.textContent;
+    };
+    expect(you("watcher", false)).toBe("View only");
+    expect(you("watcher", true)).toBeUndefined();
+    expect(you("collaborator", false)).toBeUndefined();
+    expect(you("owner", true)).toBeUndefined();
+  });
+  it("links the title to its issue, and drops the issue chip", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    const a = h.querySelector("h1 a")!;
+    expect(a.getAttribute("href")).toBe("https://github.com/o/r/issues/74");
+    expect(a.textContent).toBe("#74 Chat view: pair tool calls");
+    expect(h.querySelector(".chip-issue")).toBeNull();
+    strip.update(input({ summary: summary({ issue: { number: 3, url: "https://github.com/o/r/issues/3" } }) }));
+    expect(h.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
+    expect(h.querySelector(".chip-issue a")?.textContent).toBe("Issue #3");
   });
   it("renders untrusted text as text, never as markup", () => {
     const { h, strip } = mount();
@@ -279,9 +375,10 @@ describe("the title strip", () => {
     const hrefs = [...h.querySelectorAll("a")].map((a) => a.getAttribute("href"));
     expect(hrefs.some((x) => x?.startsWith("javascript:") || x?.startsWith("http:"))).toBe(false);
     expect(h.textContent).toContain("javascript:alert(1)");
+    expect(h.querySelector("h1 a")).toBeNull();
     strip.update(input());
     expect([...h.querySelectorAll("a")].map((a) => a.getAttribute("href")))
-      .toEqual(["https://github.com/o/r/pull/77", "https://github.com/o/r/issues/74"]);
+      .toEqual(["https://github.com/o/r/issues/74", "https://github.com/o/r/pull/77"]);
   });
   it("skips the parts the broker omits", () => {
     const { h, strip } = mount();
@@ -294,7 +391,7 @@ describe("the title strip", () => {
   });
   it("renders before the state frame, from the room id alone", () => {
     const { h, strip } = mount();
-    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0, connection: "connecting…" });
+    strip.update({ roomId: "3kq7x2ma", phase: "", driver: "", needs: 0 });
     expect(h.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
     expect(h.textContent).not.toMatch(/undefined|driver:/);
   });
@@ -310,7 +407,9 @@ describe("the title strip", () => {
     ])("%s", (_name, over, want) => {
       const h = document.createElement("header");
       const strip = mountStrip(h, at);
-      strip.update(input({ running: false, ...over }));
+      // The room says nothing of what comes next: only then does the hint point at Run.
+      const base = "summary" in over ? over.summary : summary();
+      strip.update(input({ running: false, ...over, summary: { ...base, status: { ...base.status, next: undefined } } }));
       expect(h.querySelector(".now")?.textContent).toBe(want);
       expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
       expect(h.querySelector(".chip-run")).toBeNull(); // the facts' run is over: no ageing chip
@@ -343,28 +442,27 @@ describe("the title strip", () => {
   it("reads Waiting or Closed before the Now line, as the spec draws it", () => {
     const { h, strip } = mount();
     strip.update(input({ now: { seq: 1, text: "hi", status: "message", ts: new Date().toISOString() } }));
-    const order = [...h.querySelector(".strip")!.children].map((c) => c.className);
+    const order = [...h.querySelector(".strip")!.children].map((c) => c.classList[0]);
     expect(order).toEqual(["run-status", "strip-head", "strip-tail", "strip-now"]);
   });
-  it("keeps the title, the chips and a focused pill in place when only the count or the connection moves", () => {
+  it("keeps the title, the chips and a focused pill in place when only the count moves", () => {
     const { h, strip } = mount();
     document.body.append(h);
     try {
       strip.update(input({ needs: 1 }));
       const [h1, pr, pill] = [h.querySelector("h1"), h.querySelector(".chip-pr"), h.querySelector<HTMLButtonElement>(".needs-pill")!];
       pill.focus();
-      strip.update(input({ needs: 2, connection: "reconnecting in 2 s: connection lost" }));
+      strip.update(input({ needs: 2 }));
       expect(h.querySelector("h1")).toBe(h1);
       expect(h.querySelector(".chip-pr")).toBe(pr);
       expect(h.querySelector(".needs-pill")).toBe(pill);
       expect(pill.textContent).toBe("Needs you · 2");
       expect(document.activeElement).toBe(pill);
-      expect(h.querySelector(".strip-conn")?.textContent).toBe("reconnecting in 2 s: connection lost");
       strip.update(input({ needs: 0 }));
       expect(h.querySelector(".needs-pill")).toBeNull();
       strip.update(input({ needs: 3 }));
       expect(h.querySelector(".needs-pill")?.textContent).toBe("Needs you · 3");
-      expect(h.querySelector(".strip-chips")!.lastElementChild?.className).toBe("strip-conn"); // the pill sits before it
+      expect(h.querySelector(".strip-chips")!.lastElementChild?.className).toBe("needs-pill"); // the row's end
     } finally {
       h.remove();
     }
@@ -391,7 +489,8 @@ describe("the broker's golden summaries in the strip", () => {
     const { want } = JSON.parse(readFileSync(join(dir, f), "utf8")) as { want: Summary };
     const { h, strip } = mount();
     strip.update(input({ summary: want }));
-    expect(h.querySelector(".chip-phase")?.textContent).toBe(want.status.phase);
+    const phase = h.querySelector(".chip-phase")?.textContent ?? h.querySelector(".run-status")?.getAttribute("title");
+    expect(phase).toContain(want.status.phase);
     if (want.status.pr) expect(h.textContent).toContain(`#${want.status.pr.number}`);
     if (want.status.issue) expect(h.textContent).toContain(`#${want.status.issue.number}`);
     const told = [want.status.runModel, want.status.lastRunModel].find((m) => m && m.run === want.status.run?.id);
@@ -452,10 +551,11 @@ describe("formatting", () => {
   // The same boundaries as maku's tokens() (internal/maku TestBudgetTextBoundaries).
   it.each([[0, "0"], [999, "999"], [1000, "1 k"], [189093, "189 k"], [999_499, "999 k"], [999_500, "1 M"], [1_000_000, "1 M"],
     [1_500_000, "1.5 M"], [4000000, "4 M"]])("fmtTokens(%d) = %s", (n, s) => expect(fmtTokens(n)).toBe(s));
-  it("reads a zero limit without a percentage", () => {
+  it("reads a zero limit as no limit, with no percentage", () => {
     const { h, strip } = mount();
     strip.update(input({ summary: summary({ budget: { usedTokens: 5000, limitTokens: 0 } }) }));
-    expect(h.querySelector(".chip-budget")?.textContent?.trim()).toBe("5 k / 0");
+    expect(h.querySelector(".chip-budget")?.textContent?.trim()).toBe("Tokens 5 k");
+    expect(h.querySelector<HTMLElement>(".chip-budget")!.title).toBe("");
   });
   it("shortens a principal and keeps a short one", () => {
     expect(shortPrincipal("human:291847362183")).toBe("human:2918…");

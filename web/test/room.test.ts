@@ -32,7 +32,9 @@ function page(get?: typeof fetch, dashboards?: () => Promise<Dashboard[]>) {
     last().recv({ type: "sync", fromSeq: 1, throughSeq });
     for (const f of replay) last().recv(f);
   };
-  const phase = () => app.querySelector(".chip-phase")?.textContent;
+  // The phase: the chip's when no status line says more, else the status line's tooltip.
+  const phase = () => app.querySelector(".chip-phase")?.textContent
+    ?? app.querySelector(".run-status:not([hidden])")?.getAttribute("title")?.match(/^phase: ([^ ]+)/)?.[1];
   return { app, sockets, last, join, phase };
 }
 
@@ -463,8 +465,7 @@ describe("the room page", () => {
     expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true);
     expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
     expect(p.phase()).toBe("Open");
-    expect(p.app.querySelector(".chip-driver")?.textContent).toBe("driver: human:a");
-    expect(p.app.querySelector(".chip-you")?.textContent).toBe("you: collaborator");
+    expect(p.app.querySelector(".chip-driver")?.textContent).toBe("Driven by human:a");
     expect(p.app.querySelector(".summary-error")?.textContent).toMatch(/unavailable/);
     p.last().recv(event(1, "message", { kind: "chat", text: "still flowing", delivery: "none" }));
     expect(p.app.querySelector(".view-chat")!.textContent).toContain("still flowing");

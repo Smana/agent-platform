@@ -29,7 +29,15 @@ async function run() {
     { label: "Run", url: "https://grafana.example.com/d/agent-run/agent-run?var-run={run}" },
     { label: "Task", url: "https://grafana.example.com/d/agent-factory/agent-factory?var-task={task}" },
   ];
-  const page = mountPreviewPage(document.getElementById("app")!, { snap, summary: { ...summary, status: { ...summary.status, task: summary.room } },
+  // ?escalated: the factory's escalated room, as a maintainer meets it: the agent stopped, a
+  // /factory retry is what comes next, the factory drives a public room.
+  const params = new URLSearchParams(location.search);
+  const status = params.has("escalated")
+    ? { ...summary.status, phase: "Escalated", state: "", run: null, pr: null, budget: { usedTokens: 196_000, limitTokens: 3_000_000 },
+      reason: "the agent stopped on an error", next: "a maintainer comments `/factory retry` on the issue to run it again, or pushes to the branch" }
+    : summary.status;
+  if (params.has("escalated")) Object.assign(snap, { driver: "system:factory", dataClass: "public" });
+  const page = mountPreviewPage(document.getElementById("app")!, { snap, summary: { ...summary, status: { ...status, task: summary.room } },
     count: events.length, dashboards,
     nothingSent: "Offline preview: nothing was sent.", sessionOpen: new URLSearchParams(location.search).has("session"), theme });
   for (const e of events) page.apply(e);

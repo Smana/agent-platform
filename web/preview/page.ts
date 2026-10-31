@@ -104,7 +104,7 @@ export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPa
       composer.refresh();
       renderNotes(blocks, summary);
       strip.update({ roomId: summary.room, snap, phase: state.phase, driver: state.driver, sealedBy: state.closed, sealed: state.sealed,
-        summary, needs: needs.count(), connection: "live", now: state.latest(), running: state.running(), ran: state.ran(),
+        summary, needs: needs.count(), now: state.latest(), running: state.running(), ran: state.ran(),
         dashboards: o.dashboards });
     },
     setSummary(s) { summary = s; },

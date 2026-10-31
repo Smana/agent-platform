@@ -135,7 +135,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController,
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), approvals: needsPanelView.approvalCounts(), connection,
+    sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), approvals: needsPanelView.approvalCounts(),
     now: state.latest(), running: state.running(), ran: state.ran(), dashboards });
   void o.dashboards?.().then((d) => { dashboards = d; refreshStrip(); }).catch(() => { /* no links */ });
   // The pill takes the reader, and the keyboard focus, to the panel.
