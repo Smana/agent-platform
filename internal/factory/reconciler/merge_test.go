@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
@@ -1073,5 +1076,114 @@ func TestAnApprovalOfAShadowHandOffReturnsIt(t *testing.T) {
 	}
 	if got = g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
 		t.Fatalf("arms on the approval: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+}
+
+// racingMerger merges like the fake, as GitHub does (the pull request reads MERGED by the merger at
+// once), after race: a write to the task that lands between the pass's read and its status write.
+type racingMerger struct {
+	forge.Merger
+	g    *rig
+	race func()
+}
+
+func (m racingMerger) RevertPR(ctx context.Context, nodeID, title, body string) (forge.Revert, error) {
+	m.race()
+	return m.Merger.RevertPR(ctx, nodeID, title, body)
+}
+
+func (m racingMerger) Merge(ctx context.Context, nodeID, head string) error {
+	m.race()
+	if err := m.Merger.Merge(ctx, nodeID, head); err != nil {
+		return err
+	}
+	pr, _ := m.g.f.PullRequest(ctx, 12)
+	pr.State, pr.MergedBy, pr.MergeCommitSHA, pr.MergedAt = "MERGED", "ogenki-agent-merger[bot]", "m1", now.Add(10*time.Minute)
+	m.g.f.SetPR(pr)
+	return nil
+}
+
+// N6 (aws-0, ai-native-ref#249): the pass that merges on a maintainer's approval read a task another
+// write had moved on (the reentry pass's second write, its narration and facts), so its status write
+// conflicted after the merge had landed. The whole pass was dropped: mergedHow, approvedBy, the
+// decision's metric. The replay found the pull request merged by the merger in AwaitingCI and took
+// it for a class's auto-merge: factory/auto-merged, Verifying, revertable on main_red. The merge is
+// irreversible, so what it decided is written whatever else moved the task meanwhile.
+func TestAnApprovedMergeSurvivesAConflictingWrite(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.ApproveToMerge = true
+	g.r.Cfg.Classes["docs-links"] = config.Class{} // unarmed: only the approval can merge it
+	g.f.SetChecks(12, green("SUCCESS"))
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+		t.Fatalf("hand-off: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	g.r.Now = func() time.Time { return now.Add(10 * time.Minute) }
+	pr, _ := g.f.PullRequest(t.Context(), 12)
+	pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(10 * time.Minute)}}
+	g.f.SetPR(pr)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "reentered_approved" {
+		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
+	}
+	raced := false
+	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func() {
+		raced = true
+		g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Narrated = append(tk.Status.Narrated, "concurrent-write") })
+	}}
+	// The arm pass, then the controller's replays of it.
+	for range 3 {
+		_, _ = g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}})
+	}
+	got := g.reconcile(t, "3buqdlot", 0)
+	if !raced || len(g.f.Armed()) != 1 {
+		t.Fatalf("one merge, raced: %v %q", raced, g.f.Armed())
+	}
+	if got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.AutoMerged || got.Status.PullRequest.MergedHow != "approved" ||
+		got.Status.PullRequest.ApprovedBy != "Smana" || got.Status.PullRequest.DecidedHeadSHA != "abc" {
+		t.Fatalf("the approval is lost: %s %s %+v", got.Status.Phase, got.Status.Reason, got.Status.PullRequest)
+	}
+	if !slices.Contains(got.Status.Narrated, "concurrent-write") {
+		t.Fatalf("the other write is kept: %q", got.Status.Narrated)
+	}
+	if a := g.f.Added(12); !slices.Contains(a, ApprovedMergeLabel) || slices.Contains(a, AutoMergedLabel("docs-links")) {
+		t.Fatalf("labels %q", a)
+	}
+	for _, m := range []string{"merge_decision docs-links arm maintainer_approved", "pr docs-links approved_merged"} {
+		if !slices.Contains(g.metrics.recorded, m) {
+			t.Fatalf("missing %q in %q", m, g.metrics.recorded)
+		}
+	}
+	if slices.Contains(g.metrics.recorded, "pr docs-links auto_merged") {
+		t.Fatalf("counted auto_merged: %q", g.metrics.recorded)
+	}
+}
+
+// N6, the revert: a conflict after the revert PR opened dropped its number and the drill mark with
+// the pass, and the replay opened a second revert, a real one for the breaker.
+func TestARevertSurvivesAConflictingWrite(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseDone)
+	merged := metav1.NewTime(now)
+	g.patch(t, func(tk *v1alpha1.Task) {
+		tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label", v1alpha1.AnnotationDrill: "true"}
+		tk.Status.Reason = "merged"
+		tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.MergedAt = "m1", &merged
+		tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	})
+	raced := false
+	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func() {
+		if !raced {
+			raced = true
+			g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Narrated = append(tk.Status.Narrated, "concurrent-write") })
+		}
+	}}
+	for range 3 {
+		_, _ = g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}})
+	}
+	got := g.reconcile(t, "3buqdlot", 0)
+	if !raced || len(g.f.Reverts()) != 1 {
+		t.Fatalf("one revert, raced: %v %q", raced, g.f.Reverts())
+	}
+	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.PullRequest.RevertNumber != 901 || !got.Status.PullRequest.Drill ||
+		!slices.Contains(got.Status.Narrated, "concurrent-write") {
+		t.Fatalf("%s %s %+v %q", got.Status.Phase, got.Status.Reason, got.Status.PullRequest, got.Status.Narrated)
 	}
 }

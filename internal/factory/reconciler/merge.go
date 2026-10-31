@@ -252,20 +252,47 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
+	base := t.DeepCopy()
 	ref := t.Status.PullRequest
 	ref.HeadSHA, ref.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
 	if d.Reason == "maintainer_approved" {
 		// AM1: a human judged it. Outside the caps (no ArmedAt), Done once merged, never reverted
 		// on main_red; the approval is the record.
 		ref.MergedHow, ref.ApprovedBy = "approved", d.Approver
-		r.to(t, v1alpha1.PhaseAutoMerging, "")
-		narrateOn(t, pr.Number, withRecord(narrate.ArmedByApproval(t, d.Approver), t, d, pr.HeadSHA))
-		return nil
+	} else {
+		armed := metav1.NewTime(r.Now())
+		ref.ArmedAt, ref.MergedHow = &armed, "class"
 	}
-	armed := metav1.NewTime(r.Now())
-	ref.ArmedAt, ref.MergedHow = &armed, "class"
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
-	narrateOn(t, pr.Number, withRecord(narrate.Armed(t), t, d, pr.HeadSHA))
+	ev := withRecord(narrate.Armed(t), t, d, pr.HeadSHA)
+	if ref.MergedHow == "approved" {
+		ev = withRecord(narrate.ArmedByApproval(t, d.Approver), t, d, pr.HeadSHA)
+	}
+	if err := r.mergedWrite(ctx, t, base); err != nil {
+		return err
+	}
+	narrateOn(t, pr.Number, ev)
+	return nil
+}
+
+// mergedWrite writes what a merge decided the moment GitHub took it (N6). The merge cannot be
+// undone, so it must not ride on the pass's status write: a conflict there drops the whole pass,
+// and the replay, finding the pull request merged by the merger in AwaitingCI, takes an approved
+// merge for a class's auto-merge (factory/auto-merged, Verifying, revertable on main_red). The
+// write is a merge patch of the decided fields only, without the resourceVersion, so it lands on
+// whatever another write made of the task meanwhile and keeps that write. t comes back as the
+// server holds it, so the pass's own write that follows does not conflict, and the pass's effects
+// (the decision's metric) run now: what caused them is written.
+func (r *Reconciler) mergedWrite(ctx context.Context, t, base *v1alpha1.Task) error {
+	if err := r.Client.Status().Patch(ctx, t, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	if fx, ok := ctx.Value(effectsKey{}).(*effects); ok {
+		for _, f := range fx.after {
+			f(ctx)
+		}
+		fx.after = nil
+	}
 	return nil
 }
 
@@ -909,6 +936,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	if err != nil {
 		return err
 	}
+	base := t.DeepCopy()
 	ref.RevertNumber = rv.Number
 	if why == "revert_requested" && t.Annotations[v1alpha1.AnnotationDrill] == "true" { // AM6: never a main_red
 		ref.Drill = true
@@ -916,6 +944,12 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 			r.log().Error("label the drill revert", "pr", rv.Number, "err", err)
 		}
 	}
+	// The revert PR exists on GitHub: its number, and whether it is a drill, are written now, or a
+	// conflict would drop them and the replay open a second revert, counted against the breaker (N6).
+	if err := r.mergedWrite(ctx, t, base); err != nil {
+		return err
+	}
+	ref = t.Status.PullRequest
 	if r.repo(t).Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
 		if err := r.merger(ctx).EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
 			return err
