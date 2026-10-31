@@ -309,7 +309,7 @@ func TestADecisionCarriesItsRows(t *testing.T) {
 	d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
 		Verifiers: []v1alpha1.RunRecord{tk.Status.Runs[2]}, Stats: []forge.FileStat{{Path: testFile, Additions: 1, Deletions: 1}},
 		Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
-	want := decision.Rows{Files: 1, MaxFiles: 3, Lines: 2, MaxLines: 20, Counted: true, Shape: "ok", Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Reviewer: "glm-5.3"}
+	want := decision.Rows{Files: 1, MaxFiles: 3, Lines: 2, MaxLines: 20, Counted: true, Shape: "ok", Holdout: "n/a", Oracle: "n/a", Age: "n/a", Evidence: "ok", Gated: true, Reviewer: "glm-5.3"}
 	if d.Verdict != "shadow" || d.Rows != want {
 		t.Fatalf("%s %+v\nwant shadow %+v", d.Verdict, d.Rows, want)
 	}

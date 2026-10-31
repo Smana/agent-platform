@@ -835,7 +835,7 @@ or `ci_cancelled` starts a fix run or a re-run instead, and posts no record:
 | `files=`, `lines=` | GitHub's counts of the diff over the class's caps (0 is no cap). Lines are additions plus deletions |
 | `shape=`, `holdout=`, `oracle=`, `age=` | `ok` when held, `n/a` when the class declares none, the refusal's reason when refused, `pending` for a release age still waiting |
 | `evidence=` | `ok`, or the refusal's reason |
-| `paused=`, `capped=` | What the breaker and the day's count said, whether or not they stopped the decision (AM4) |
+| `paused=`, `capped=` | What the breaker and the day's count said, whether or not they stopped the decision (AM4). `-` when the decision stopped at a row before the gate read them |
 | `reviewer=` | The reviewer run's served models joined with `+`; `none` when the class has no reviewer run |
 
 A value the decision never read prints `-`: a refusal leaves the rows after it unread, and a
