@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Smana/maku/api/v1alpha1"
@@ -239,18 +240,70 @@ func confirm(ctx context.Context, c client.Client, old, cp *unstructured.Unstruc
 
 // release strips the original's finalizers (its controller's, such as <from>/room-log: the copy owns
 // the same-named log now) and deletes it under the UID and resourceVersion it was confirmed against.
+//
+// A Room controller still watching the source group re-adds its finalizer, or writes the original,
+// between the strip and the delete; the precondition then refuses the delete with a Conflict. The
+// precondition stays: it is what keeps a delete from landing on a version that carries a finalizer
+// again (a Terminating Room, whose controller seals the log) or that was edited after it was copied.
+// On a Conflict, release re-reads the original and goes again, a bounded number of times
+// (retry.DefaultBackoff), only while it is the same object (its UID) and its spec, status, labels and
+// annotations are still those the copy was confirmed against: a change there makes the copy stale,
+// so the original is kept and the run reports it failed. A re-read that finds it gone is the done
+// outcome, as a delete that finds it gone already is.
 func release(ctx context.Context, c client.Client, old *unstructured.Unstructured, done Outcome) (Outcome, error) {
-	if len(old.GetFinalizers()) > 0 {
-		old.SetFinalizers(nil)
-		if err := c.Update(ctx, old); err != nil {
-			return Failed, fmt.Errorf("release the original's finalizers: %w", err)
+	copied := old.DeepCopy()
+	cur := old
+	first := true
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if !first {
+			cur = &unstructured.Unstructured{}
+			cur.SetGroupVersionKind(copied.GroupVersionKind())
+			if err := c.Get(ctx, client.ObjectKeyFromObject(copied), cur); err != nil {
+				return fmt.Errorf("re-read the original: %w", err)
+			}
+			if cur.GetUID() != copied.GetUID() {
+				return fmt.Errorf("the original was replaced by uid %s, which was not copied", cur.GetUID())
+			}
+			if err := unchanged(copied, cur); err != nil {
+				return fmt.Errorf("the original changed since it was copied, so it is kept: %w", err)
+			}
 		}
-	}
-	uid, rv := old.GetUID(), old.GetResourceVersion()
-	if err := c.Delete(ctx, old, client.Preconditions{UID: &uid, ResourceVersion: &rv}); client.IgnoreNotFound(err) != nil {
-		return Failed, fmt.Errorf("delete the original: %w", err)
+		first = false
+		if len(cur.GetFinalizers()) > 0 {
+			cur.SetFinalizers(nil)
+			if err := c.Update(ctx, cur); err != nil {
+				return fmt.Errorf("release the original's finalizers: %w", err)
+			}
+		}
+		uid, rv := cur.GetUID(), cur.GetResourceVersion()
+		if err := c.Delete(ctx, cur, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil {
+			return fmt.Errorf("delete the original: %w", err)
+		}
+		return nil
+	})
+	if client.IgnoreNotFound(err) != nil {
+		return Failed, err
 	}
 	return done, nil
+}
+
+// unchanged is nil when cur carries the spec, status, labels and annotations of the version that
+// was copied: only its metadata, such as finalizers or resourceVersion, moved. It names fields, never
+// values.
+func unchanged(copied, cur *unstructured.Unstructured) error {
+	var errs []error
+	for _, f := range []string{"spec", "status"} {
+		if !reflect.DeepEqual(copied.Object[f], cur.Object[f]) {
+			errs = append(errs, fmt.Errorf("%s", f))
+		}
+	}
+	if !reflect.DeepEqual(copied.GetLabels(), cur.GetLabels()) {
+		errs = append(errs, errors.New("labels"))
+	}
+	if !reflect.DeepEqual(copied.GetAnnotations(), cur.GetAnnotations()) {
+		errs = append(errs, errors.New("annotations"))
+	}
+	return errors.Join(errs...)
 }
 
 // same is nil when the copy carries everything the original does: spec and, withStatus, status as

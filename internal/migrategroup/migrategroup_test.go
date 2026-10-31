@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -305,9 +307,98 @@ func TestRun(t *testing.T) {
 			name: "an original rewritten after the list is not deleted",
 			objs: []client.Object{task(oldG, "aaaaaaaa", "u2")},
 			wrap: rewriting, apply: true, want: []Outcome{Failed},
-			check: func(t *testing.T, c client.Client, _ Report) {
+			check: func(t *testing.T, c client.Client, r Report) {
+				stale(t, r[0].Err, "labels")
 				if _, ok := get(t, c, oldG, "Task", "aaaaaaaa"); !ok {
 					t.Error("the delete ignored the original's resourceVersion")
+				}
+			},
+		},
+		{
+			name:  "a delete refused once on a conflict is retried, and the original goes",
+			objs:  []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			fail:  conflictOnce("delete", oldG),
+			apply: true, want: []Outcome{Migrated},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); ok {
+					t.Error("one conflict on the delete kept the original")
+				}
+			},
+		},
+		{
+			name: "a delete that conflicts every time is retried a bounded number of times, then fails",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			fail: func(op, group, name string) error {
+				if op == "delete" && group == oldG {
+					return conflict(group, name)
+				}
+				return nil
+			},
+			apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				if !apierrors.IsConflict(r[0].Err) {
+					t.Errorf("err %v, want the last conflict", r[0].Err)
+				}
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
+					t.Error("the original is gone")
+				}
+			},
+		},
+		{
+			name: "a status written once between the strip and the delete keeps the original",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: raceOnce(editStatus), apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				stale(t, r[0].Err, "status")
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
+					t.Error("an original edited after its copy was deleted")
+				}
+			},
+		},
+		{
+			name: "a spec written once between the strip and the delete keeps the original",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: raceOnce(editSpec), apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				stale(t, r[0].Err, "spec")
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok {
+					t.Error("an original edited after its copy was deleted")
+				}
+			},
+		},
+		{
+			name: "an original replaced under the same name before a retry is not deleted",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: raceOnce(replace), apply: true, want: []Outcome{Failed},
+			check: func(t *testing.T, c client.Client, r Report) {
+				if r[0].Err == nil || apierrors.IsConflict(r[0].Err) || !strings.Contains(r[0].Err.Error(), "replaced") {
+					t.Errorf("err %v, want the replacement named", r[0].Err)
+				}
+				if got, ok := get(t, c, oldG, "Room", "aaaaaaaa"); !ok || got.GetUID() == "u1" {
+					t.Errorf("the replacement: present %v, uid %v", ok, got.GetUID())
+				}
+			},
+		},
+		{
+			name: "an original gone before a retry is migrated",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: raceOnce(remove), apply: true, want: []Outcome{Migrated},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, newG, "Room", "aaaaaaaa"); !ok {
+					t.Error("the copy is gone")
+				}
+			},
+		},
+		{
+			name: "a controller that re-adds its finalizer before the delete is outrun on a retry",
+			objs: []client.Object{room(oldG, "aaaaaaaa", "u1")},
+			wrap: refinalizing, apply: true, want: []Outcome{Migrated},
+			check: func(t *testing.T, c client.Client, _ Report) {
+				if _, ok := get(t, c, oldG, "Room", "aaaaaaaa"); ok {
+					t.Error("the controller's finalizer kept the original")
+				}
+				if _, ok := get(t, c, newG, "Room", "aaaaaaaa"); !ok {
+					t.Error("the copy is gone")
 				}
 			},
 		},
@@ -405,6 +496,75 @@ func pruningStatus(c client.Client) client.Client {
 	})
 }
 
+// raceOnce wraps c so that, before the first delete under the source group only, someone else
+// acts on the original once: edit gets its current version. A nil from edit lets the delete go on
+// with its now stale precondition; an error is the delete's answer instead.
+func raceOnce(edit func(ctx context.Context, w client.WithWatch, cur *unstructured.Unstructured) error) func(client.Client) client.Client {
+	return func(c client.Client) client.Client {
+		done := false
+		return interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+			Delete: func(ctx context.Context, w client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+				if !done && o.GetObjectKind().GroupVersionKind().Group == oldG {
+					done = true
+					cur := &unstructured.Unstructured{}
+					cur.SetGroupVersionKind(o.GetObjectKind().GroupVersionKind())
+					if err := w.Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
+						return err
+					}
+					if err := edit(ctx, w, cur); err != nil {
+						return err
+					}
+				}
+				return w.Delete(ctx, o, opts...)
+			},
+		})
+	}
+}
+
+// editStatus is a controller writing the original's status once.
+func editStatus(ctx context.Context, w client.WithWatch, cur *unstructured.Unstructured) error {
+	if err := unstructured.SetNestedField(cur.Object, int64(43), "status", "lastSeq"); err != nil {
+		return err
+	}
+	return w.Status().Update(ctx, cur)
+}
+
+// editSpec is someone editing the original's spec once.
+func editSpec(ctx context.Context, w client.WithWatch, cur *unstructured.Unstructured) error {
+	if err := unstructured.SetNestedField(cur.Object, "30d", "spec", "retention"); err != nil {
+		return err
+	}
+	return w.Update(ctx, cur)
+}
+
+// replace deletes the original and creates another object under its name, then answers the
+// delete with a conflict.
+func replace(ctx context.Context, w client.WithWatch, cur *unstructured.Unstructured) error {
+	if err := remove(ctx, w, cur); !apierrors.IsConflict(err) {
+		return err
+	}
+	if err := w.Create(ctx, room(oldG, cur.GetName(), "")); err != nil {
+		return err
+	}
+	return conflict(oldG, cur.GetName())
+}
+
+// remove deletes the original, then answers the delete with a conflict.
+func remove(ctx context.Context, w client.WithWatch, cur *unstructured.Unstructured) error {
+	if err := w.Delete(ctx, cur); err != nil {
+		return err
+	}
+	return conflict(oldG, cur.GetName())
+}
+
+// stale fails t unless err is the content check's refusal naming field, not a conflict.
+func stale(t *testing.T, err error, field string) {
+	t.Helper()
+	if err == nil || apierrors.IsConflict(err) || !strings.Contains(err.Error(), "changed since it was copied") || !strings.Contains(err.Error(), field) {
+		t.Errorf("err %v, want the content check naming %s", err, field)
+	}
+}
+
 // rewriting wraps c so that someone else updates an original under the source group just before
 // it is deleted: the delete's resourceVersion precondition must refuse it.
 func rewriting(c client.Client) client.Client {
@@ -417,6 +577,47 @@ func rewriting(c client.Client) client.Client {
 					return err
 				}
 				cur.SetLabels(map[string]string{"rewritten": "yes"})
+				if err := w.Update(ctx, cur); err != nil {
+					return err
+				}
+			}
+			return w.Delete(ctx, o, opts...)
+		},
+	})
+}
+
+// conflict is the API server's answer to a write whose resourceVersion precondition went stale.
+func conflict(group, name string) error {
+	return apierrors.NewConflict(schema.GroupResource{Group: group, Resource: "rooms"}, name, errors.New("the object has been modified"))
+}
+
+// conflictOnce refuses the first call op makes under group with a conflict.
+func conflictOnce(op, group string) fail {
+	done := false
+	return func(o, g, name string) error {
+		if done || o != op || g != group {
+			return nil
+		}
+		done = true
+		return conflict(g, name)
+	}
+}
+
+// refinalizing wraps c so that, before the first delete under the source group, a controller adds
+// its finalizer back to the original, as a running Room controller does once migrate-group strips it.
+// Only metadata changes: the delete's resourceVersion precondition fails on its own.
+func refinalizing(c client.Client) client.Client {
+	done := false
+	return interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, w client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+			if !done && o.GetObjectKind().GroupVersionKind().Group == oldG {
+				done = true
+				cur := &unstructured.Unstructured{}
+				cur.SetGroupVersionKind(o.GetObjectKind().GroupVersionKind())
+				if err := w.Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
+					return err
+				}
+				cur.SetFinalizers([]string{oldG + "/room-log"})
 				if err := w.Update(ctx, cur); err != nil {
 					return err
 				}
