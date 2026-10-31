@@ -38,7 +38,7 @@ func mergeRig(t *testing.T, phase string, objs ...client.Object) *rig {
 		Breaker: config.Breaker{Window: 10, MaxReverts: 1}}
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
 		HeadRef: "agent/3buqdlot", HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0),
-		HeadArrivedAt: now.Add(-time.Hour)})
+		HeadCommittedAt: now.Add(-time.Hour)})
 	g.log.handoff(rid(0), "abc")
 	return g
 }
@@ -508,7 +508,7 @@ func TestARedSecretScanEscalatesWithoutAFixRun(t *testing.T) {
 func gatePR(h, run string) forge.PR {
 	return forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
 		HeadRef: "agent/3buqdlot", HeadSHA: h, HeadMessage: "docs: fix\n\nAgent-Run: " + run,
-		HeadArrivedAt: now.Add(-time.Hour)}
+		HeadCommittedAt: now.Add(-time.Hour)}
 }
 
 // patch edits the rig's task, spec and status.
@@ -1013,7 +1013,8 @@ func TestAHumanCommitUnderAnApprovalIsHandedOffByHand(t *testing.T) {
 	pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now.Add(time.Minute)}}
 	g.f.SetPR(pr)
 	g.f.SetChecks(12, green("SUCCESS"))
-	g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: "Smana", Before: "c1", After: "abc"},
+	// The human's push lands after the run ended (AM1: row 3 reads its time and refuses it first).
+	g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: "Smana", Before: "c1", After: "abc", At: now},
 		forge.Push{Type: "branch_creation", Actor: "ogenki-agents[bot]", After: "c1"})
 	got := g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != "human_commit_in_pr" || len(g.f.Armed()) != 0 {

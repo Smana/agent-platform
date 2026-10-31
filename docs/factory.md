@@ -255,10 +255,14 @@ name it:
 gh api repos/<owner>/<name>/pulls/<n>/reviews -f commit_id=<sha> -f event=APPROVE
 ```
 
-The gate also refuses (`approval_stale`) an approval submitted before the task's last pushing run
-ended, or within a minute after, and one submitted before the last force push of the branch. A
-force push moves an existing review onto the new head, so the review's commit alone proves nothing
-there. Approve again once the head stops moving.
+An approval counts only once the head has stopped moving. GitHub must have recorded the head's
+push (its server time, from the branch's activity) no later than the end of the task's last
+pushing run, and the approval must come more than a minute after that end. Otherwise the gate
+refuses it with `approval_stale`: the approval came too early, or the push could not be read. A
+force push moves an existing review onto the new head, so the review's commit alone proves
+nothing. Approve again once the runs have ended. A head pushed after the runs ended, by a human or
+by any other run, is not the task's: it hands off as `human_commit_in_pr`, and no approval
+returns it.
 
 | Reason | Why |
 |---|---|
@@ -267,7 +271,7 @@ there. Approve again once the head stops moving.
 | `policy_pending` | policy-bot's `policy-bot: main` status needs a maintainer's approval |
 | `policy_absent` | policy-bot has not evaluated the pull request, or the status is not from `merge.policyBotLogin` |
 | `maintainer_approved` | A maintainer approved it. With `merge.approveToMerge` off, a human merges it; on, an approval of the current head arms the merger, so this reason is left for adopted classes and for a task handed off before the switch was turned on: that approval predates the hand-off, so a fresh approval of the head returns the task to the gate |
-| `approval_stale` | A maintainer's approval is of an older head, or was submitted before the head stopped moving: before the last force push, before the task's last pushing run ended (or within a minute after), or on a head no run reported. Next step: approve the current head |
+| `approval_stale` | A maintainer's approval is of an older head, or came before the head stopped moving: before the task's last pushing run ended, or within a minute after. It is also refused when the head's push could not be read from the branch's activity, or when no run reported the head. Next step: approve the current head |
 | `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
 | `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |

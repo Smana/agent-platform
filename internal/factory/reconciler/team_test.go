@@ -44,8 +44,7 @@ const (
 )
 
 func pr12At(head string) forge.PR {
-	return forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN", HeadRef: "agent/3buqdlot", HeadSHA: head,
-		HeadArrivedAt: now.Add(-time.Hour)}
+	return forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN", HeadRef: "agent/3buqdlot", HeadSHA: head}
 }
 
 // teamRig runs a task of template to its implementer's success with PR 12 open at head1: the

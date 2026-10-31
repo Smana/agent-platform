@@ -123,8 +123,10 @@ type Review struct {
 	// when GitHub did not say.
 	Association string
 	// Commit is GitHub's review.commit: the head the review was submitted on, until a force push
-	// moves it to the new head (PR.HeadArrivedAt). Row 3 arms on an approval of the current head
-	// only (human path AM1), and "" never matches a head.
+	// moves it to an equivalent new head (ai-native-ref#250, REST's commit_id alike), and the head
+	// at submission when the review named none. Row 3 arms on an approval of the current head only
+	// (human path AM1), and only when the head's push dates it (reconciler approvesHead); "" never
+	// matches a head.
 	Commit   string
 	Body     string
 	At       time.Time
@@ -157,15 +159,6 @@ type PR struct {
 	Labels          []string
 	Reviews         []Review
 	Comments        []Comment
-
-	// HeadArrivedAt is the later of the head's committer date and the branch's last force push
-	// (GitHub's HeadRefForcePushedEvent, on GitHub's clock); zero when either could not be read.
-	// A force push moves a review's Commit to an equivalent new head, in GraphQL and in REST's
-	// commit_id alike (ai-native-ref#250), so only a review submitted after the push can have
-	// approved the head, and none can when this is zero (AM1, fail closed). The committer date is
-	// a claim and proves nothing: a normal push never moves a review, and a future date only makes
-	// approvals stale. It stays as padding.
-	HeadArrivedAt time.Time
 }
 
 // Trailer is what the head commit claims for a git trailer, "" when the exact key is absent; the
