@@ -97,7 +97,7 @@ func (c Classify) Triage(ctx context.Context, t *v1alpha1.Task) (Decision, error
 		// MC6: the findings are the task and the oracle its verifier: one implementer at tier light,
 		// no classifier call, so no control group either (OD-14 measures the classifier).
 		return Decision{Template: "solo", PredictedClass: class, DataClass: dataClass, Budget: BudgetFor(c.Cfg, "light"),
-			Classification: v1alpha1.Classification{Tier: "light", Classifier: "static"}}, nil
+			Classification: v1alpha1.Classification{Tier: "light", Classifier: "static", Fallback: "none"}}, nil
 	}
 	res, err := C7Response{}, errors.New("no classifier") // unset URL: no C7 service, no call
 	if c.Cfg.Triage.ClassifierURL != "" && c.C != nil {
