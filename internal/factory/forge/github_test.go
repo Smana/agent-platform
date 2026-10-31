@@ -41,7 +41,8 @@ const prJSON = `{"data":{"repository":{"pullRequest":{
    "author":{"__typename":"User","login":"Smana"},"comments":{"nodes":[{"path":"docs/a.md","line":3,"body":"here"}]}}]},
  "comments":{"nodes":[{"databaseId":55,"body":"/factory retry","createdAt":"2026-09-27T10:05:00Z","lastEditedAt":null,"author":{"__typename":"User","login":"Smana"}},
    {"databaseId":56,"body":"/factory retry","createdAt":"2026-09-27T10:06:00Z","lastEditedAt":"2026-09-27T10:07:00Z","author":{"__typename":"User","login":"Smana"}}]},
- "commits":{"nodes":[{"commit":{"message":"docs: fix a link\n\nAgent-Run: 7f3cq2xz","committedDate":"2026-09-27T09:58:00Z"}}]}}}}}`
+ "commits":{"nodes":[{"commit":{"message":"docs: fix a link\n\nAgent-Run: 7f3cq2xz","committedDate":"2026-09-27T09:58:00Z"}}]},
+ "timelineItems":{"nodes":[]}}}}}`
 
 const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://github.com/Smana/demo/issues/7",
  "title":"Fix the link","body":"The link in docs/a.md is broken.","state":"OPEN","lastEditedAt":null,
@@ -281,6 +282,17 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			}
 			if strings.Contains(string(b), `"number":14`) {
 				_, _ = io.WriteString(w, strings.Replace(prJSON, `"reviews":{"nodes"`, `"reviews":{"pageInfo":{"hasPreviousPage":true},"nodes"`, 1))
+				return
+			}
+			if strings.Contains(string(b), `"number":15`) {
+				if !strings.Contains(string(b), "timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: 1)") {
+					g.t.Errorf("the pull request's read must ask for its last force push: %s", b)
+				}
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"timelineItems":{"nodes":[]}`, `"timelineItems":{"nodes":[{"createdAt":"2026-09-27T10:01:00Z"}]}`, 1))
+				return
+			}
+			if strings.Contains(string(b), `"number":16`) {
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"timelineItems":{"nodes":[]}`, `"timelineItems":{"nodes":[{}]}`, 1))
 				return
 			}
 			_, _ = io.WriteString(w, prJSON)
@@ -809,6 +821,24 @@ func TestPullRequestReportsACutReviewList(t *testing.T) {
 	}
 	if pr, err = r.g.PullRequest(t.Context(), 14); err != nil || !pr.ReviewsTruncated {
 		t.Fatalf("cut: %+v %v", pr.ReviewsTruncated, err)
+	}
+}
+
+// AM1's binding (ai-native-ref#250): the head arrived at the later of its commit's committer date
+// and the branch's last force push, the one record GitHub does not rewrite (a force push moves a
+// review's commit to the new head). The query must ask for the force pushes, and a force push it
+// cannot date leaves the arrival unknown, so no approval binds.
+func TestPullRequestReadsWhenTheHeadArrived(t *testing.T) {
+	r := newRig(t)
+	for n, want := range map[int]time.Time{
+		12: time.Date(2026, 9, 27, 9, 58, 0, 0, time.UTC), // never force-pushed: the commit's date
+		15: time.Date(2026, 9, 27, 10, 1, 0, 0, time.UTC), // force-pushed after it was committed
+		16: {},                                            // a force push without a date: unknown
+	} {
+		pr, err := r.g.PullRequest(t.Context(), n)
+		if err != nil || !pr.HeadArrivedAt.Equal(want) {
+			t.Errorf("#%d: arrived %v, want %v (%v)", n, pr.HeadArrivedAt, want, err)
+		}
 	}
 }
 

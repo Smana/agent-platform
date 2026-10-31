@@ -35,7 +35,8 @@ func mergeRig(t *testing.T, phase string, objs ...client.Object) *rig {
 		VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour},
 		Breaker: config.Breaker{Window: 10, MaxReverts: 1}}
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
-		HeadRef: "agent/3buqdlot", HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0)})
+		HeadRef: "agent/3buqdlot", HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0),
+		HeadArrivedAt: now.Add(-time.Hour)})
 	g.log.handoff(rid(0), "abc")
 	return g
 }
@@ -504,7 +505,8 @@ func TestARedSecretScanEscalatesWithoutAFixRun(t *testing.T) {
 // gatePR is mergeRig's pull request at head h, its commit claiming run.
 func gatePR(h, run string) forge.PR {
 	return forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
-		HeadRef: "agent/3buqdlot", HeadSHA: h, HeadMessage: "docs: fix\n\nAgent-Run: " + run}
+		HeadRef: "agent/3buqdlot", HeadSHA: h, HeadMessage: "docs: fix\n\nAgent-Run: " + run,
+		HeadArrivedAt: now.Add(-time.Hour)}
 }
 
 // patch edits the rig's task, spec and status.

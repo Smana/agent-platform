@@ -46,7 +46,7 @@ func armTask(class, template, verdict string) *v1alpha1.Task {
 }
 
 func agentPR() forge.PR {
-	return forge.PR{Author: "ogenki-agents[bot]", HeadSHA: head, HeadMessage: "docs: fix\n\nAgent-Run: 7f3cq2xz"}
+	return forge.PR{Author: "ogenki-agents[bot]", HeadSHA: head, HeadMessage: "docs: fix\n\nAgent-Run: 7f3cq2xz", HeadArrivedAt: now.Add(-time.Hour)}
 }
 
 // changed is the forge.Files read of a diff of one file.
@@ -251,6 +251,37 @@ func TestAMaintainersApprovalArmsWhenTheSwitchIsOn(t *testing.T) {
 			}
 			if d.Verdict == "arm" && d.Approver != "Smana" {
 				t.Fatalf("approver %q", d.Approver)
+			}
+		})
+	}
+}
+
+// AM1's binding (live on ai-native-ref#250): GitHub moves a review's commit to the new head when a
+// force push replaces the one it was submitted on, in GraphQL and in REST's commit_id alike. An
+// approval binds to the head only when it was submitted after that head arrived; when the arrival
+// could not be read, no approval binds (fail closed).
+func TestAnApprovalBindsToTheHeadItReviewed(t *testing.T) {
+	pushed := now.Add(2 * time.Minute)
+	for name, c := range map[string]struct {
+		arrived, submitted time.Time
+		verdict, reason    string
+	}{
+		"an approval before a force push, its commit moved to the new head, is stale": {pushed, now.Add(time.Minute), "human", "approval_stale"},
+		"an approval in the force push's second is stale":                             {pushed, pushed, "human", "approval_stale"},
+		"an approval after the head arrived arms":                                     {pushed, now.Add(3 * time.Minute), "arm", "maintainer_approved"},
+		"an approval when the head's arrival could not be read is stale":              {time.Time{}, now.Add(3 * time.Minute), "human", "approval_stale"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			cfg.Classes["docs-links"] = config.Class{Shadow: true}
+			pr := agentPR()
+			pr.HeadArrivedAt = c.arrived
+			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: c.submitted}}
+			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+			if d.Verdict != c.verdict || d.Reason != c.reason {
+				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
 			}
 		})
 	}

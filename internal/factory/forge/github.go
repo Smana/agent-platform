@@ -779,6 +779,9 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 						}
 					}
 				} `graphql:"commits(last: 1)"`
+				// The branch's last force push: it dates the head's arrival, which the review's commit
+				// cannot (a force push moves it to the new head).
+				ForcePushes struct{ Nodes []forcePush } `graphql:"timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: 1)"`
 			} `graphql:"pullRequest(number: $number)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
@@ -827,7 +830,32 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	if len(p.Commits.Nodes) == 1 {
 		out.HeadMessage, out.HeadCommittedAt = p.Commits.Nodes[0].Commit.Message, p.Commits.Nodes[0].Commit.CommittedDate.Time
 	}
+	out.HeadArrivedAt = headArrival(out.HeadCommittedAt, p.ForcePushes.Nodes)
 	return out, nil
+}
+
+// forcePush is one HeadRefForcePushedEvent of a pull request's timeline.
+type forcePush struct {
+	Event struct{ CreatedAt *githubv4.DateTime } `graphql:"... on HeadRefForcePushedEvent"`
+}
+
+// headArrival is PR.HeadArrivedAt: the later of the head's committer date and the last force push,
+// zero when the commit's date is unknown or GitHub returned a force push without one.
+func headArrival(committed time.Time, pushes []forcePush) time.Time {
+	if committed.IsZero() {
+		return time.Time{}
+	}
+	at := committed
+	for _, p := range pushes {
+		pushed := p.Event.CreatedAt
+		if pushed == nil || pushed.IsZero() {
+			return time.Time{}
+		}
+		if pushed.After(at) {
+			at = pushed.Time
+		}
+	}
+	return at
 }
 
 // checkState maps a check run's status and conclusion to SUCCESS | FAILURE | CANCELLED | PENDING. Both the

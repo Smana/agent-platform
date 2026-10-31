@@ -209,8 +209,8 @@ func reviewerModel(t *v1alpha1.Task) string {
 // approval is row 3's read of an agents pull request with merge.approveToMerge on (human path
 // AM1, ruling R-B1): the newest review of each maintainer. veto when one of them is a request for
 // changes, or when GitHub cut the list, so a veto may be unseen; stale when the newest approval is
-// of another head, or of no head GitHub named (fail closed); approved when it is of the current
-// head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
+// of another head, or of no head GitHub named, or not submitted after the head arrived (fail
+// closed, approvesHead); approved when it is of the current head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
 func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	if in.PR.ReviewsTruncated {
 		return forge.Review{}, "veto"
@@ -231,7 +231,7 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 		case "CHANGES_REQUESTED":
 			return rv, "veto"
 		case "APPROVED":
-			if approved.Commit != in.PR.HeadSHA { // an approval of the head wins, whatever the map's order
+			if !approvesHead(approved, in.PR) { // an approval of the head wins, whatever the map's order
 				approved = rv
 			}
 		}
@@ -239,11 +239,19 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	switch {
 	case approved.Author == "":
 		return forge.Review{}, ""
-	case approved.Commit == in.PR.HeadSHA:
+	case approvesHead(approved, in.PR):
 		return approved, "approved"
 	default:
 		return approved, "stale"
 	}
+}
+
+// approvesHead: rv names the current head and was submitted after that head arrived. The commit
+// alone does not bind it: a force push moves a review's commit to the new head, in GraphQL and in
+// REST alike (live on ai-native-ref#250, where only policy-bot's dismissal stopped the merge). A
+// review in the arrival's own second, or with the arrival unknown, approves nothing (fail closed).
+func approvesHead(rv forge.Review, pr forge.PR) bool {
+	return rv.Commit != "" && rv.Commit == pr.HeadSHA && !pr.HeadArrivedAt.IsZero() && rv.At.After(pr.HeadArrivedAt)
 }
 
 // gateOf is the class as the gate reads it: its config, with the diff shape built into
