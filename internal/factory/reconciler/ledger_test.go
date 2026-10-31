@@ -225,14 +225,20 @@ func TestTheDecisionCommentCarriesItsRecord(t *testing.T) {
 			g := greenRig(t)
 			classes(g, config.Class{})
 			return g
-		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:class_unarmed files=-/0 lines=-/0 shape=- holdout=- oracle=- age=- evidence=- paused=false capped=false reviewer=none -->"},
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:class_unarmed files=-/0 lines=-/0 shape=- holdout=- oracle=- age=- evidence=- paused=- capped=- reviewer=none -->"},
+		{"policy_pending stops before the breaker and the count", func(t *testing.T) *rig {
+			g := greenRig(t)
+			classes(g, config.Class{Shadow: true})
+			g.f.SetChecks(12, green("PENDING"))
+			return g
+		}, "decision=human:policy_pending files=-/0 lines=-/0 shape=- holdout=- oracle=- age=- evidence=- paused=- capped=- reviewer=none -->"},
 		{"steering_path, diff read", func(t *testing.T) *rig {
 			g := greenRig(t)
 			classes(g, config.Class{Shadow: true})
 			g.r.Cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
 			g.f.SetFileStats(forge.FileStat{Path: ".github/agent-factory/steering/docs.md", Status: "modified", Additions: 2, Deletions: 1})
 			return g
-		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:steering_path files=1/0 lines=3/0 shape=- holdout=- oracle=- age=- evidence=ok paused=false capped=false reviewer=none -->"},
+		}, "\n\n<!-- agent-factory-decision head=abc class=docs-links decision=human:steering_path files=1/0 lines=3/0 shape=- holdout=- oracle=- age=- evidence=ok paused=- capped=- reviewer=none -->"},
 		{"diff too large", func(t *testing.T) *rig {
 			g := declaredRig(t)
 			g.f.SetDiffError(forge.ErrDiffTooLarge)
