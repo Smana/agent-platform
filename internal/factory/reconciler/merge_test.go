@@ -1080,20 +1080,25 @@ func TestAnApprovalOfAShadowHandOffReturnsIt(t *testing.T) {
 }
 
 // racingMerger merges like the fake, as GitHub does (the pull request reads MERGED by the merger at
-// once), after race: a write to the task that lands between the pass's read and its status write.
+// once), after race(op): a write to the task that lands between the pass's read and its status write.
 type racingMerger struct {
 	forge.Merger
 	g    *rig
-	race func()
+	race func(op string)
 }
 
 func (m racingMerger) RevertPR(ctx context.Context, nodeID, title, body string) (forge.Revert, error) {
-	m.race()
+	m.race("revert")
 	return m.Merger.RevertPR(ctx, nodeID, title, body)
 }
 
+func (m racingMerger) EnableAutoMerge(ctx context.Context, nodeID, head string) error {
+	m.race("arm")
+	return m.Merger.EnableAutoMerge(ctx, nodeID, head)
+}
+
 func (m racingMerger) Merge(ctx context.Context, nodeID, head string) error {
-	m.race()
+	m.race("merge")
 	if err := m.Merger.Merge(ctx, nodeID, head); err != nil {
 		return err
 	}
@@ -1125,7 +1130,7 @@ func TestAnApprovedMergeSurvivesAConflictingWrite(t *testing.T) {
 		t.Fatalf("return: %s %s", got.Status.Phase, got.Status.Reason)
 	}
 	raced := false
-	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func() {
+	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func(string) {
 		raced = true
 		g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Narrated = append(tk.Status.Narrated, "concurrent-write") })
 	}}
@@ -1169,8 +1174,8 @@ func TestARevertSurvivesAConflictingWrite(t *testing.T) {
 		tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
 	})
 	raced := false
-	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func() {
-		if !raced {
+	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func(op string) {
+		if op == "revert" && !raced {
 			raced = true
 			g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Narrated = append(tk.Status.Narrated, "concurrent-write") })
 		}
@@ -1185,5 +1190,47 @@ func TestARevertSurvivesAConflictingWrite(t *testing.T) {
 	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.PullRequest.RevertNumber != 901 || !got.Status.PullRequest.Drill ||
 		!slices.Contains(got.Status.Narrated, "concurrent-write") {
 		t.Fatalf("%s %s %+v %q", got.Status.Phase, got.Status.Reason, got.Status.PullRequest, got.Status.Narrated)
+	}
+}
+
+// N6 review: the conflict lands after the revert is written (here, while the revert is armed), so
+// the task stays Done with its revert open. revertable steps it again, and revert finishes it from
+// the revert it has: armed, Reverted, counted and narrated once, never a second revert.
+func TestARevertWrittenButNotEndedIsFinished(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseDone)
+	merged := metav1.NewTime(now)
+	g.patch(t, func(tk *v1alpha1.Task) {
+		tk.Annotations = map[string]string{v1alpha1.AnnotationRevert: "label"}
+		tk.Status.Reason = "merged"
+		tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.MergedAt = "m1", &merged
+		tk.Status.PullRequest.MergedHow, tk.Status.PullRequest.ApprovedBy = "approved", "Smana"
+	})
+	g.f.SetPR(forge.PR{Number: 901, NodeID: "PR_revert", State: "OPEN", Title: "Revert", Author: "ogenki-agent-merger[bot]"})
+	raced := false
+	g.r.Merger = racingMerger{Merger: g.f, g: g, race: func(op string) {
+		if op == "arm" && !raced {
+			raced = true
+			g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Narrated = append(tk.Status.Narrated, "concurrent-write") })
+		}
+	}}
+	key := types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}
+	if _, err := g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err == nil {
+		t.Fatal("the pass's own write conflicts")
+	}
+	if got := g.reconcile(t, "3buqdlot", 0); got.Status.Phase != v1alpha1.PhaseDone || got.Status.PullRequest.RevertNumber != 901 {
+		t.Fatalf("the revert is written, the end is not: %s %+v", got.Status.Phase, got.Status.PullRequest)
+	}
+	got := g.reconcile(t, "3buqdlot", 2)
+	if got.Status.Phase != v1alpha1.PhaseReverted || len(g.f.Reverts()) != 1 || !slices.Contains(got.Status.Narrated, "concurrent-write") {
+		t.Fatalf("%s %s reverts %q %q", got.Status.Phase, got.Status.Reason, g.f.Reverts(), got.Status.Narrated)
+	}
+	if a := g.f.Armed(); !slices.Contains(a, "PR_revert") {
+		t.Fatalf("the revert is armed: %q", a)
+	}
+	if n := len(slices.DeleteFunc(slices.Clone(g.metrics.recorded), func(s string) bool { return s != "pr docs-links reverted" })); n != 1 {
+		t.Fatalf("reverted counted %d times: %q", n, g.metrics.recorded)
+	}
+	if c := strings.Join(g.f.Comments(12), "\n"); strings.Count(c, "#901") == 0 {
+		t.Fatalf("the revert is narrated on the pull request: %q", c)
 	}
 }

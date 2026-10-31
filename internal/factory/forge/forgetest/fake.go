@@ -794,7 +794,11 @@ func (f *Fake) RevertPR(_ context.Context, nodeID, title, _ string) (forge.Rever
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reverts = append(f.reverts, nodeID+" "+title)
-	return forge.Revert{Number: 900 + len(f.reverts), URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
+	n := 900 + len(f.reverts)
+	if _, ok := f.prs[n]; !ok { // the revert is a pull request GitHub reads back, as a replay does
+		f.prs[n] = forge.PR{Number: n, NodeID: "PR_revert", State: "OPEN", Title: title}
+	}
+	return forge.Revert{Number: n, URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
 }
 
 // FailLabelReads makes PullsWithLabel answer err; nil clears it.
