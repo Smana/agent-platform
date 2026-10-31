@@ -190,6 +190,10 @@ func TestAnOracleClassRunsSoloOnLight(t *testing.T) {
 		c7.got.Text != "" {
 		t.Fatalf("%+v %v (classifier asked: %+v)", d, err, c7.got)
 	}
+	// The Task CRD's status.classification.fallback is a required enum: "" is refused by the API server.
+	if f := d.Classification.Fallback; f != "none" && f != "default" && f != "static" {
+		t.Fatalf("fallback %q is outside the CRD enum none|default|static", f)
+	}
 }
 
 // An unset triage.classifierURL means no C7 service: Triage skips the call and takes the static fallback.
