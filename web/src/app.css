@@ -151,7 +151,7 @@ strong, b { font-weight: 700; }
 /* Code, commands and tool I/O are monospace at 14 px; IDs, timestamps and counters at 13 px
    with tabular numerals. Prose, bubbles and cards stay in the sans. */
 .t-cmd, .t-command, .approval-command, pre, code { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-time, .t-time, .step-dur, .strip-conn, .page-dock .status, .replay-progress, .t-prompt {
+time, .t-time, .step-dur, .page-dock .status, .replay-progress, .t-prompt {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.45;
   font-variant-numeric: tabular-nums;
 }
@@ -309,6 +309,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    takes the header's text token rather than the card's. */
 .strip { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .strip-title { font-size: 20px; line-height: 1.3; margin: 0; font-weight: 700; }
+/* The title links its issue: underlined on hover only, a heading first. */
+.page-header .strip-title a { text-decoration: none; }
+.page-header .strip-title a:hover, .page-header .strip-title a:focus-visible { text-decoration: underline; }
 .strip-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-variant-numeric: tabular-nums; }
 /* A chip's link and the Needs-you pill grow to their half of the 6 px row gap: a full --hit
    would cover the next row's chips. */
@@ -322,10 +325,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .page-header .needs-pill { position: relative; }
 .page-header .needs-pill::after { content: ""; position: absolute; inset: -3px 0; }
-.page-header .chip {
-  color: var(--brand-header-foreground); background: transparent;
-  border-color: color-mix(in srgb, var(--brand-header-foreground) 45%, var(--brand-header));
-}
+/* The facts read as one line of text, not a row of buttons: no outline, a middle dot between
+   them; the links among them stay underlined. */
+.page-header .chip { color: var(--brand-header-foreground); background: transparent; border-color: transparent; padding: 0; }
+.page-header .chip + .chip::before { content: "·"; margin-right: 6px; opacity: .6; }
+.page-header .chip[title] { cursor: help; }
+/* The budget is quiet until it matters: amber from 80 %, red once spent. */
+.page-header .chip-budget[data-level="warn"] { color: var(--warning); font-weight: 700; }
+.page-header .chip-budget[data-level="warn"] .meter-bar::after { background: var(--warning); }
+.page-header .chip-budget[data-level="over"] { color: var(--destructive-text); font-weight: 700; }
+.page-header .chip-budget[data-level="over"] .meter-bar::after { background: var(--destructive); }
 .page-header a { color: var(--brand-header-foreground); text-decoration: underline; }
 .meter-bar {
   display: inline-block; width: 64px; height: 6px; border-radius: 3px; vertical-align: middle;
@@ -335,6 +344,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .waiting, .closed { font-size: 13px; color: var(--brand-header-foreground); opacity: .9; }
 .strip-head { display: grid; gap: 4px; min-width: 0; }
 .strip-tail:empty { display: none; }
+/* What comes next: one box under the title, the most actionable lines on the page. */
+.strip-next {
+  display: grid; gap: 2px; padding: 8px 12px; border-radius: 8px; width: fit-content; max-width: 100%;
+  background: color-mix(in srgb, var(--brand-header-foreground) 6%, transparent);
+  border-left: 3px solid var(--warning);
+}
+.strip-next .waiting { font-size: 14px; opacity: 1; }
+.next-label { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-header-foreground); opacity: .7; }
+.page-header .waiting code {
+  font-size: 13px; padding: .1em .35em; border-radius: 4px;
+  background: color-mix(in srgb, var(--brand-header-foreground) 10%, transparent);
+}
+.page-header .copy-code { font-size: 13px; padding: 0 6px; margin-left: 4px; border: 1px solid color-mix(in srgb, var(--brand-header-foreground) 30%, transparent); border-radius: 4px; }
 /* The Now line: a button that reads as a line of text, so it takes the reader to the row. */
 .strip-now { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 13px; color: var(--brand-header-foreground); font-variant-numeric: tabular-nums; }
 .page-header .now-link {
@@ -360,7 +382,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .page-header .strip-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-block: 8px; margin-block: -8px; }
   .page-header .needs-pill::after { inset: -8px 0; }
   .page-header .strip-chips::-webkit-scrollbar { display: none; }
-  .page-header .strip-chips > * { flex: none; } /* never squeezed: "live" would stack a letter a line */
+  .page-header .strip-chips > * { flex: none; } /* never squeezed: a short fact would stack a letter a line */
   .page-header .needs-pill { order: -1; }
   .strip-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .page-header .waiting { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
