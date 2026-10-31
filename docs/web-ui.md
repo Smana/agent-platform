@@ -39,6 +39,12 @@ and the room page never disagree.
 | Last activity | How long ago the room's log last moved (`lastEventAt`), the exact time on hover; `—` for a room with no events |
 | Room | The room id |
 
+The list refreshes on its own, every 10 s by default. The control before `New room` picks the
+interval (`Off`, `5 s`, `10 s`, `30 s`, `1 min`; remembered in the browser), pauses it, and says
+when the list was last read, or that the last refresh failed. A background tab slows to once a
+minute and its title counts the rooms that need you, `(2) Maku rooms`. A refresh that changes
+nothing leaves the table as it is, and one that does keeps the focus on the same room.
+
 Above the table, three filters refetch the list from the API: **mine** (tasks whose issue you
 filed or labelled, or whose PR you authored or review, matched on your linked GitHub login),
 **needs me** (rows with something waiting for you) and a repository picker, filled from the

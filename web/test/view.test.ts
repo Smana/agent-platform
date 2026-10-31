@@ -259,3 +259,67 @@ describe("newRoomForm", () => {
     await vi.waitFor(() => expect(posts).toEqual([JSON.stringify({ dataClass: "internal", repository: "Smana/a" })]));
   });
 });
+
+describe("the room list's auto-refresh", () => {
+  const base = { owner: "", driver: "", dataClass: "internal", lastSeq: 1, repository: "o/a" };
+  const a = { ...base, id: "aaaaaaaa", phase: "Active", title: "A", issue: 1, needsYou: 1 };
+  const b = { ...base, id: "bbbbbbbb", phase: "Active", title: "B", issue: 2, needsYou: 0 };
+  // A clock whose timers fire by hand: fire() runs the last one set, the next refresh.
+  const manual = () => {
+    const fires: (() => void)[] = [];
+    return {
+      clock: { now: () => 0, set: (f: () => void) => fires.push(f), clear: () => {} },
+      fire: () => fires.at(-1)!(),
+    };
+  };
+  const mount = async (answers: unknown[][]) => {
+    const m = manual();
+    let n = 0;
+    const get = vi.fn(async () => new Response(JSON.stringify(answers[Math.min(n++, answers.length - 1)])));
+    const root = document.createElement("div");
+    document.body.append(root); // focus needs a connected element
+    await listRooms(root, get as unknown as typeof fetch, {}, undefined, { clock: m.clock, store: localStorage });
+    return { root, get, fire: m.fire };
+  };
+  afterEach(() => { document.body.replaceChildren(); localStorage.clear(); });
+
+  it("mounts the refresh control between the filters and New room", async () => {
+    const { root } = await mount([[a]]);
+    const tools = root.querySelector(".list-tools")!;
+    const ctl = tools.querySelector(".refresh")!;
+    expect(ctl.nextElementSibling?.getAttribute("data-act")).toBe("new-room");
+    expect((ctl.querySelector("select") as HTMLSelectElement).value).toBe("10");
+  });
+  it("refreshes with the filters the page shows", async () => {
+    const { root, get, fire } = await mount([[a]]);
+    (root.querySelector('input[name="mine"]') as HTMLInputElement).click();
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    fire();
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(3));
+    expect(get).toHaveBeenLastCalledWith(expect.stringContaining("mine=1"), expect.anything());
+  });
+  it("leaves the rows alone when a refresh reads the same list", async () => {
+    const { root, get, fire } = await mount([[a, b], [a, b]]);
+    const before = root.querySelector("tbody tr");
+    fire();
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(root.querySelector("tbody tr")).toBe(before);
+  });
+  it("keeps the focused room focused when a refresh changes the list", async () => {
+    const { root, fire } = await mount([[a, b], [{ ...a, title: "A2" }, b]]);
+    const link = root.querySelector('a[href="/r/bbbbbbbb"]') as HTMLAnchorElement;
+    link.focus();
+    fire();
+    await vi.waitFor(() => expect(root.querySelector('a[href="/r/aaaaaaaa"]')?.textContent).toBe("#1 A2"));
+    expect(document.activeElement).not.toBe(link); // rebuilt
+    expect(document.activeElement?.getAttribute("href")).toBe("/r/bbbbbbbb");
+  });
+  it("counts the rooms that need you in the tab title, and drops the count at none", async () => {
+    const { get, fire } = await mount([[a, { ...b, needsYou: 3 }], [b]]);
+    expect(document.title).toBe("(2) Maku rooms");
+    fire();
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(document.title).toBe("Maku rooms"));
+  });
+});

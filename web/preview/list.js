@@ -66,6 +66,132 @@ function mountThemeButton(bar, ctl) {
   return btn;
 }
 
+// src/api.ts
+var nav = { go: (url) => location.assign(url) };
+var SignInRequired = class extends Error {
+  constructor() {
+    super("signing in again");
+  }
+};
+function signIn() {
+  nav.go(`/oauth2/start?rd=${encodeURIComponent(location.pathname + location.search)}`);
+}
+async function api(path, init = {}, get2 = fetch) {
+  const r = await get2(path, { credentials: "same-origin", ...init });
+  if (r.status === 401) {
+    signIn();
+    throw new SignInRequired();
+  }
+  return r;
+}
+
+// src/autorefresh.ts
+var REFRESH_STORAGE_KEY = "maku:list-refresh";
+var DEFAULT_SECONDS = 10;
+var HIDDEN_SECONDS = 60;
+var CHOICES = [[0, "Off"], [5, "5 s"], [10, "10 s"], [30, "30 s"], [60, "1 min"]];
+var realClock = {
+  now: () => Date.now(),
+  set: (f, ms) => setTimeout(f, ms),
+  clear: (h) => clearTimeout(h)
+};
+function readInterval(store = localStorage) {
+  try {
+    const n = Number(store.getItem(REFRESH_STORAGE_KEY) ?? NaN);
+    return CHOICES.some(([s]) => s === n) ? n : DEFAULT_SECONDS;
+  } catch {
+    return DEFAULT_SECONDS;
+  }
+}
+function storeInterval(seconds, store = localStorage) {
+  try {
+    store.setItem(REFRESH_STORAGE_KEY, String(seconds));
+  } catch {
+  }
+}
+function mountAutoRefresh(host, refresh, o = {}) {
+  const clock = o.clock ?? realClock;
+  const doc = o.doc ?? document;
+  const store = o.store ?? localStorage;
+  const time = o.time ?? ((ms) => new Date(ms).toLocaleTimeString());
+  const box = document.createElement("span");
+  box.className = "refresh";
+  const select = document.createElement("select");
+  select.name = "refresh";
+  select.setAttribute("aria-label", "Auto-refresh interval");
+  for (const [s, label] of CHOICES) {
+    const opt = document.createElement("option");
+    opt.value = String(s);
+    opt.textContent = label;
+    select.append(opt);
+  }
+  const pause = document.createElement("button");
+  pause.type = "button";
+  pause.className = "refresh-pause";
+  const status = document.createElement("span");
+  status.className = "refresh-status";
+  status.setAttribute("role", "status");
+  box.append(status, select, pause);
+  host.append(box);
+  let seconds = readInterval(store);
+  select.value = String(seconds);
+  let paused = false, running = false, stopped = false, failed = false;
+  let last = clock.now();
+  let updated = 0;
+  let timer;
+  const show = () => {
+    pause.hidden = seconds === 0;
+    pause.textContent = paused ? "\u25B6 Resume" : "\u23F8 Pause";
+    pause.setAttribute("aria-pressed", String(paused));
+    const at = updated ? time(updated) : "";
+    const lead = paused ? "Paused" : failed ? "Refresh failed" : "";
+    status.textContent = lead && at ? `${lead} \xB7 updated ${at}` : lead || (at ? `Updated ${at}` : "");
+    if (failed) status.dataset.failed = "true";
+    else delete status.dataset.failed;
+  };
+  const schedule = () => {
+    if (timer !== void 0) clock.clear(timer);
+    timer = void 0;
+    if (stopped || paused || running || seconds === 0) return;
+    const every = doc.visibilityState === "hidden" ? Math.max(seconds, HIDDEN_SECONDS) : seconds;
+    timer = clock.set(() => void tick(), Math.max(0, last + every * 1e3 - clock.now()));
+  };
+  const tick = async () => {
+    timer = void 0;
+    running = true;
+    const ok = await refresh().catch(() => false);
+    running = false;
+    last = clock.now();
+    failed = !ok;
+    if (ok) updated = last;
+    show();
+    schedule();
+  };
+  select.addEventListener("change", () => {
+    seconds = Number(select.value);
+    storeInterval(seconds, store);
+    show();
+    schedule();
+  });
+  pause.onclick = () => {
+    paused = !paused;
+    show();
+    schedule();
+  };
+  const onVisibility = () => schedule();
+  doc.addEventListener("visibilitychange", onVisibility);
+  show();
+  schedule();
+  return {
+    stop() {
+      stopped = true;
+      if (timer !== void 0) clock.clear(timer);
+      timer = void 0;
+      doc.removeEventListener("visibilitychange", onVisibility);
+    }
+  };
+}
+
 // src/brand.ts
 var MARK = 32;
 function mark(cls, src) {
@@ -89,25 +215,6 @@ function mountBrand(host, assetBase = "/assets", homeHref = "/") {
   a.append(mark("brand-mark-light", `${assetBase}/svg/maku-mark-light.svg`), mark("brand-mark-dark", `${assetBase}/svg/maku-mark-dark.svg`), word);
   host.append(a);
   return a;
-}
-
-// src/api.ts
-var nav = { go: (url) => location.assign(url) };
-var SignInRequired = class extends Error {
-  constructor() {
-    super("signing in again");
-  }
-};
-function signIn() {
-  nav.go(`/oauth2/start?rd=${encodeURIComponent(location.pathname + location.search)}`);
-}
-async function api(path, init = {}, get2 = fetch) {
-  const r = await get2(path, { credentials: "same-origin", ...init });
-  if (r.status === 401) {
-    signIn();
-    throw new SignInRequired();
-  }
-  return r;
 }
 
 // src/summary.ts
@@ -208,7 +315,7 @@ function roomRow(row, now) {
   tr.append(needs, cell("td", a), repo2, status, cell("td", c.pr), last, id);
   return tr;
 }
-async function listRooms(app, get2 = fetch, filters = {}, theme2) {
+async function listRooms(app, get2 = fetch, filters = {}, theme2, refresh = {}) {
   const fetchRooms = async (f, say = (m) => {
     app.textContent = m;
   }) => {
@@ -231,14 +338,13 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "Retry";
-    retry.onclick = () => void listRooms(app, get2, filters, theme2);
+    retry.onclick = () => void listRooms(app, get2, filters, theme2, refresh);
     app.append(retry);
   });
   if (!first) return;
   const header = document.createElement("header");
   header.className = "page-header";
   mountBrand(header);
-  document.title = "Maku rooms";
   const h1 = document.createElement("h1");
   h1.className = "page-title";
   h1.textContent = "Rooms";
@@ -283,7 +389,7 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
   const notice = document.createElement("span");
   notice.className = "notice";
   notice.setAttribute("role", "status");
-  tools.append(mine.label, needsMe.label, repo2, notice, add);
+  tools.append(mine.label, needsMe.label, repo2, notice);
   const table = document.createElement("table");
   table.className = "rooms";
   table.setAttribute("aria-label", "Rooms");
@@ -293,10 +399,22 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
   thead.append(head);
   const tbody = document.createElement("tbody");
   table.append(thead, tbody);
+  let shown = "";
   const fill = (rows2) => {
+    const needing = rows2.filter((r) => (r.needsYou ?? 0) > 0).length;
+    document.title = needing > 0 ? `(${needing}) Maku rooms` : "Maku rooms";
     const now = /* @__PURE__ */ new Date();
-    if (rows2.length > 0) return tbody.replaceChildren(...sortRooms(rows2).map((r) => roomRow(r, now)));
+    const sorted = sortRooms(rows2);
     const filtered = mine.input.checked || needsMe.input.checked || !!repo2.value;
+    const key = JSON.stringify([filtered, sorted.map((r) => [rowCells(r, now), r.status])]);
+    if (key === shown) return;
+    shown = key;
+    const focused = document.activeElement instanceof HTMLAnchorElement && tbody.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
+    if (rows2.length > 0) {
+      tbody.replaceChildren(...sorted.map((r) => roomRow(r, now)));
+      if (focused) [...tbody.querySelectorAll("a")].find((l) => l.getAttribute("href") === focused)?.focus();
+      return;
+    }
     const td = cell("td", filtered ? "No rooms match" : "No rooms you can read yet");
     td.setAttribute("colspan", String(head.childElementCount));
     const tr = document.createElement("tr");
@@ -315,7 +433,10 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
       }
     );
     if (rows2 && mark2 === seq) fill(rows2);
+    return !!rows2;
   };
+  mountAutoRefresh(tools, refetch, refresh);
+  tools.append(add);
   for (const e of [mine.input, needsMe.input]) e.addEventListener("click", () => void refetch());
   repo2.addEventListener("change", () => void refetch());
   app.replaceChildren(header, tools, form, table, cliSetup(get2));
@@ -541,10 +662,15 @@ var maku = {
   local: { url: "http://localhost:8080", humanMode: "local", version: "v0.9.0" },
   none: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "" }
 };
+var reads = 0;
 var get = (async (url) => {
   if (url.startsWith("/api/roomctl")) {
     return cli && maku[cli] ? new Response(JSON.stringify(maku[cli])) : new Response(JSON.stringify({}), { status: 404 });
   }
+  const run = rows[2];
+  reads++;
+  run.lastEventAt = ago2(0);
+  run.status = { kind: "running", icon: "\u25CF", text: `Running \u2014 implementer, ${12 + reads} min` };
   const q = new URL(url, location.origin).searchParams;
   return new Response(JSON.stringify(rows.filter((r) => (!q.has("needs_me") || (r.needsYou ?? 0) > 0) && (!q.get("repo") || r.repository === q.get("repo")))));
 });
