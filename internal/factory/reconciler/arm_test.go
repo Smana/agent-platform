@@ -3,10 +3,13 @@
 package reconciler
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
@@ -39,11 +42,16 @@ func green(policy string) forge.Checks {
 }
 
 func armTask(class, template, verdict string) *v1alpha1.Task {
+	first, last := metav1.NewTime(now.Add(-50*time.Minute)), metav1.NewTime(now.Add(-30*time.Minute))
 	return &v1alpha1.Task{Spec: v1alpha1.TaskSpec{PredictedClass: class, Template: template},
 		Status: v1alpha1.TaskStatus{Verdict: verdict, Runs: []v1alpha1.RunRecord{
-			{ID: "7f3cq2xz", Role: "implementer", Trigger: "initial"},
-			{ID: "3buqdlot", Role: "implementer", Trigger: "review"}}}}
+			{ID: "7f3cq2xz", Role: "implementer", Trigger: "initial", Finished: &first},
+			{ID: "3buqdlot", Role: "implementer", Trigger: "review", Finished: &last}}}}
 }
+
+// pushedAt is when GitHub recorded the push of head in the rigs' activity: between armTask's two
+// implementer runs' ends, so within the task's runs.
+var pushedAt = now.Add(-40 * time.Minute)
 
 func agentPR() forge.PR {
 	return forge.PR{Author: "ogenki-agents[bot]", HeadSHA: head, HeadMessage: "docs: fix\n\nAgent-Run: 7f3cq2xz"}
@@ -244,7 +252,7 @@ func TestAMaintainersApprovalArmsWhenTheSwitchIsOn(t *testing.T) {
 			pr := agentPR()
 			pr.Reviews, pr.ReviewsTruncated = c.reviews, c.truncated
 			tk := armTask("docs-links", "solo", "")
-			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
+			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head, HeadPushedAt: pushedAt,
 				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
 			if d.Verdict != c.verdict || d.Reason != c.reason {
 				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
@@ -253,6 +261,133 @@ func TestAMaintainersApprovalArmsWhenTheSwitchIsOn(t *testing.T) {
 				t.Fatalf("approver %q", d.Approver)
 			}
 		})
+	}
+}
+
+// AM1's binding: an approval binds to the head only when the head stopped moving before it. The
+// head's push (GitHub's activity, server time) must fall within the task's runs, and the approval
+// must follow their end by more than retrySkew. Cases:
+//   - #250: a force push moved an approval submitted before it onto the new head;
+//   - review I1: a maintainer read A while the run pushed B, and an approval without a commit_id
+//     bound to B after B arrived but before the run ended;
+//   - review I3/N1: a push after the task's runs ended (another task's run, a late checkpoint),
+//     the approval an hour later: no approval can bind that head, so it hands off as a commit
+//     not the task's (human_commit_in_pr, with the bypass), not as approval_stale;
+//   - anything unknown: no activity read, an unended run, a head no run reported.
+//
+// The unreported head is not redundant with row 2's head_unreported: row 3 decides before
+// agentEvidence is read, so without approvesHead's own check that approval arms (RED on fc87471f).
+func TestAnApprovalBindsToTheHeadsPush(t *testing.T) {
+	ended := now
+	for name, c := range map[string]struct {
+		pushed, submitted time.Time
+		mutate            func(*ArmInputs)
+		verdict, reason   string
+	}{
+		"#250: an approval before the force push that moved it is stale":                       {now.Add(-time.Minute), now.Add(-2 * time.Minute), nil, "human", "approval_stale"},
+		"I1: an approval after the push but before the run ended is stale":                     {now.Add(-10 * time.Minute), now.Add(-time.Minute), nil, "human", "approval_stale"},
+		"an approval within the clock skew of the end is stale":                                {now.Add(-10 * time.Minute), now.Add(retrySkew), nil, "human", "approval_stale"},
+		"an approval past the end and the skew arms":                                           {now.Add(-10 * time.Minute), now.Add(retrySkew + time.Second), nil, "arm", "maintainer_approved"},
+		"a push in the run's last second arms":                                                 {now, now.Add(time.Hour), nil, "arm", "maintainer_approved"},
+		"I3: the head pushed a second after the runs ended, approved later, is not the task's": {now.Add(time.Second), now.Add(time.Hour), nil, "human", "human_commit_in_pr"},
+		"an unread push (no activity, or its newest move to another commit) is stale":          {time.Time{}, now.Add(time.Hour), nil, "human", "approval_stale"},
+		"an approval while a run has not ended is stale": {now.Add(-10 * time.Minute), now.Add(time.Hour), func(in *ArmInputs) {
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "x2x2x2x2", Role: "implementer", Trigger: "ci"})
+		}, "human", "approval_stale"},
+		"a tester's later end counts": {now.Add(-10 * time.Minute), now.Add(5 * time.Minute), func(in *ArmInputs) {
+			late := metav1.NewTime(now.Add(10 * time.Minute))
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "y3y3y3y3", Role: "tester", Trigger: "initial", Finished: &late})
+		}, "human", "approval_stale"},
+		"a reviewer's run never holds it": {now.Add(-10 * time.Minute), now.Add(5 * time.Minute), func(in *ArmInputs) {
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "z4z4z4z4", Role: "reviewer", Trigger: "review"})
+		}, "arm", "maintainer_approved"},
+		"an approval of a head no run reported is stale": {now.Add(-10 * time.Minute), now.Add(time.Hour), func(in *ArmInputs) { in.ReportedHead = oldHead }, "human", "approval_stale"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			cfg.Classes["docs-links"] = config.Class{Shadow: true}
+			pr := agentPR()
+			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: c.submitted}}
+			tk := armTask("docs-links", "solo", "")
+			end := metav1.NewTime(ended)
+			tk.Status.Runs[1].Finished = &end
+			in := ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head, HeadPushedAt: c.pushed,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
+			if c.mutate != nil {
+				c.mutate(&in)
+			}
+			if d := DecideArm(in); d.Verdict != c.verdict || d.Reason != c.reason {
+				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
+			}
+		})
+	}
+}
+
+// headPush dates the head only by the branch's newest move, and only when that move put the head
+// there: an entry whose after is another commit, a move of another kind, or no activity is zero.
+func TestHeadPushIsTheNewestMoveToTheHead(t *testing.T) {
+	at := now.Add(-time.Minute)
+	for name, c := range map[string]struct {
+		ps   []forge.Push
+		want time.Time
+	}{
+		"a push to the head":                   {[]forge.Push{{Type: "push", After: head, At: at}, {Type: "branch_creation", After: oldHead}}, at},
+		"a force push to the head":             {[]forge.Push{{Type: "force_push", After: head, At: at}}, at},
+		"the branch created at the head":       {[]forge.Push{{Type: "branch_creation", After: head, At: at}}, at},
+		"the newest move is to another commit": {[]forge.Push{{Type: "push", After: oldHead, At: at}, {Type: "push", After: head}}, time.Time{}},
+		"the newest move is a branch deletion": {[]forge.Push{{Type: "branch_deletion", After: head, At: at}}, time.Time{}},
+		"no activity":                          {nil, time.Time{}},
+	} {
+		if got := headPush(c.ps, head); !got.Equal(c.want) {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// Review M2: GitHub's times are whole seconds. A maintainer's approval and request for changes in
+// one second are ordered by id, so the later request is the newest and vetoes, whatever the order
+// GitHub lists them in.
+func TestASameSecondRequestForChangesVetoes(t *testing.T) {
+	at := now.Add(time.Minute)
+	approve := forge.Review{ID: 10, Author: "Smana", State: "APPROVED", Commit: head, At: at}
+	request := forge.Review{ID: 11, Author: "Smana", State: "CHANGES_REQUESTED", Commit: head, At: at}
+	for name, reviews := range map[string][]forge.Review{
+		"listed in order": {approve, request},
+		"listed reversed": {request, approve},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			pr := agentPR()
+			pr.Reviews = reviews
+			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+				HeadPushedAt: pushedAt, Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+			if d.Verdict != "human" || d.Reason != "changes_requested" {
+				t.Fatalf("%s %s, want human changes_requested", d.Verdict, d.Reason)
+			}
+		})
+	}
+}
+
+// Review gap: one maintainer's approval was moved onto the head by a force push (submitted before
+// it); another's was submitted after the runs ended. The valid one arms, and is the one named, in
+// either order.
+func TestAValidApprovalArmsBesideAMovedOne(t *testing.T) {
+	cfg := armCfg()
+	cfg.Maintainers = append(cfg.Maintainers, "octocat")
+	cfg.Merge.ApproveToMerge = true
+	cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	pr := agentPR()
+	moved := forge.Review{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: pushedAt.Add(-time.Minute)}
+	valid := forge.Review{ID: 2, Author: "octocat", State: "APPROVED", Commit: head, At: now.Add(3 * time.Minute)}
+	for _, order := range [][]forge.Review{{moved, valid}, {valid, moved}} {
+		pr.Reviews = order
+		d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+			HeadPushedAt: pushedAt, Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+		if d.Verdict != "arm" || d.Approver != "octocat" {
+			t.Fatalf("%+v, want arm by octocat", d)
+		}
 	}
 }
 
@@ -271,7 +406,7 @@ func TestAnApprovalArmsOutsideTheCaps(t *testing.T) {
 			pr := agentPR()
 			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: now}}
 			in := ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
-				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
+				HeadPushedAt: pushedAt, Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
 			spent(&in)
 			if d := DecideArm(in); d.Verdict != "arm" || d.Reason != "maintainer_approved" {
 				t.Fatalf("%+v, want arm maintainer_approved", d)
@@ -345,5 +480,43 @@ func TestASteeringRefusalKeepsTheCounts(t *testing.T) {
 	want := decision.Rows{Files: 1, Lines: 3, Counted: true, Evidence: "ok", Reviewer: "none"}
 	if d.Reason != "steering_path" || d.Rows != want {
 		t.Fatalf("%s %+v\nwant steering_path %+v", d.Reason, d.Rows, want)
+	}
+}
+
+// AM1 through the reconciler: the gate reads the head's push from the branch's activity. When the
+// activity cannot be read, or its newest move is to another commit, no approval binds: the task
+// hands off approval_stale and nothing is armed. Read and at the head, the same approval arms.
+func TestTheGateReadsTheHeadsPushForAnApproval(t *testing.T) {
+	for name, c := range map[string]struct {
+		activity func(*rig)
+		reason   string
+	}{
+		"unreadable activity": {func(g *rig) { g.f.SetActivityErr("agent/3buqdlot", errors.New("502 Bad Gateway")) }, "approval_stale"},
+		"the newest move is to another commit": {func(g *rig) {
+			g.f.SetActivity("agent/3buqdlot", forge.Push{Type: "push", Actor: "ogenki-agents[bot]", Before: "abc", After: "def", At: now.Add(-40 * time.Minute)},
+				forge.Push{Type: "branch_creation", Actor: "ogenki-agents[bot]", After: "abc", At: now.Add(-time.Hour)})
+		}, "approval_stale"},
+		"the head's push, within the run": {func(*rig) {}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.r.Cfg.Merge.ApproveToMerge = true
+			g.r.Cfg.Classes["docs-links"] = config.Class{} // unarmed: only the approval can merge it
+			pr, _ := g.f.PullRequest(t.Context(), 12)
+			pr.Reviews = []forge.Review{{ID: 77, Author: "Smana", State: "APPROVED", Commit: "abc", At: now}}
+			g.f.SetPR(pr)
+			g.f.SetChecks(12, green("SUCCESS"))
+			c.activity(g)
+			got := g.reconcile(t, "3buqdlot", 1)
+			if c.reason == "" {
+				if got.Status.Phase != v1alpha1.PhaseAutoMerging || got.Status.PullRequest.MergedHow != "approved" {
+					t.Fatalf("arms on the approval: %s %s", got.Status.Phase, got.Status.Reason)
+				}
+				return
+			}
+			if got.Status.Phase != v1alpha1.PhaseAwaitingHuman || got.Status.Reason != c.reason || len(g.f.Armed()) != 0 {
+				t.Fatalf("%s %s armed %v, want AwaitingHuman %s", got.Status.Phase, got.Status.Reason, g.f.Armed(), c.reason)
+			}
+		})
 	}
 }

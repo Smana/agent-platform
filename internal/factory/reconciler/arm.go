@@ -3,9 +3,12 @@
 package reconciler
 
 import (
+	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
@@ -27,6 +30,10 @@ type ArmInputs struct {
 	ArmedToday   int
 	Paused       bool
 	ReportedHead string
+	// HeadPushedAt is GitHub's server time of the push that put the head on the branch (headPush);
+	// zero when the activity was not read, could not be, or its newest move is to another commit.
+	// Row 3 reads it only with merge.approveToMerge.
+	HeadPushedAt time.Time
 	Verifiers    []v1alpha1.RunRecord
 	Files        struct{ Base, Head map[string]string }
 	// NotOwned: the repository's fence file does not name this factory (v2 D7). It never merges
@@ -129,6 +136,10 @@ func DecideArm(in ArmInputs) (d ArmDecision) {
 			return human("changes_requested", "review")
 		case "stale":
 			return human("approval_stale", "review")
+		case "pushed_after_runs":
+			// No approval can bind to this head: hand it off as a commit not the task's runs',
+			// with the bypass instructions, rather than asking for an approval that cannot count.
+			return human("human_commit_in_pr", "review")
 		case "approved":
 			return ArmDecision{Verdict: "arm", Reason: "maintainer_approved", Matched: "review", Approver: rv.Author}
 		}
@@ -208,9 +219,10 @@ func reviewerModel(t *v1alpha1.Task) string {
 
 // approval is row 3's read of an agents pull request with merge.approveToMerge on (human path
 // AM1, ruling R-B1): the newest review of each maintainer. veto when one of them is a request for
-// changes, or when GitHub cut the list, so a veto may be unseen; stale when the newest approval is
-// of another head, or of no head GitHub named (fail closed); approved when it is of the current
-// head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
+// changes, or when GitHub cut the list, so a veto may be unseen; stale when the newest approval
+// does not bind to the current head (approvesHead, fail closed), or pushed_after_runs when GitHub
+// recorded the head's push after the task's pushing runs had all ended; approved when it binds. DecideArm
+// calls it for no other pull request: off, or adopted, today's loop reads.
 func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	if in.PR.ReviewsTruncated {
 		return forge.Review{}, "veto"
@@ -221,7 +233,9 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 			continue
 		}
 		login := strings.ToLower(rv.Author)
-		if cur, ok := newest[login]; !ok || rv.At.After(cur.At) {
+		// GitHub's times are whole seconds: two reviews in one second are ordered by id, so a
+		// request for changes right after an approval is the newest.
+		if cur, ok := newest[login]; !ok || rv.At.After(cur.At) || (rv.At.Equal(cur.At) && rv.ID > cur.ID) {
 			newest[login] = rv
 		}
 	}
@@ -231,7 +245,7 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 		case "CHANGES_REQUESTED":
 			return rv, "veto"
 		case "APPROVED":
-			if approved.Commit != in.PR.HeadSHA { // an approval of the head wins, whatever the map's order
+			if !approvesHead(approved, in) { // an approval of the head wins, whatever the map's order
 				approved = rv
 			}
 		}
@@ -239,11 +253,95 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	switch {
 	case approved.Author == "":
 		return forge.Review{}, ""
-	case approved.Commit == in.PR.HeadSHA:
+	case approvesHead(approved, in):
 		return approved, "approved"
+	case pushedAfterRuns(in):
+		return approved, "pushed_after_runs"
 	default:
 		return approved, "stale"
 	}
+}
+
+// approvesHead: rv names the current head, a run of the task reported that head, GitHub recorded
+// its push no later than the end of the task's last pushing run, and rv was submitted more than
+// retrySkew after that end. Any of them unknown approves nothing.
+//
+// A review's commit alone does not bind it. A force push moves a review's commit to an equivalent
+// new head, in GraphQL and in REST alike (live on ai-native-ref#250, where only policy-bot's
+// dismissal stopped the merge). And an approval sent without a commit_id (`gh pr review
+// --approve`) binds to whatever the head is when GitHub receives it: a maintainer who read head A
+// while a run pushed B approves B. So the head must stop moving before the approval, and the
+// factory's own record says when: the task's runs ended. Their end alone is not enough, though:
+// any implementer run of any task can push this branch (the push policy is repository-wide, and
+// the Agent-Run trailer is a copyable claim), and a run's pod can push a checkpoint after its
+// Finished is stamped. Hence the push's own server time (GitHub's activity) must fall within the
+// task's runs. retrySkew pads the approval against the factory's clock running behind GitHub's;
+// a skew beyond it reopens the window by the excess.
+func approvesHead(rv forge.Review, in ArmInputs) bool {
+	pr := in.PR
+	if rv.Commit == "" || rv.Commit != pr.HeadSHA || in.ReportedHead != pr.HeadSHA {
+		return false
+	}
+	ended := runsEnded(in.Task)
+	if ended.IsZero() || in.HeadPushedAt.IsZero() || in.HeadPushedAt.After(ended) {
+		return false
+	}
+	return rv.At.After(ended.Add(retrySkew))
+}
+
+// pushedAfterRuns: GitHub recorded the head's push after the task's pushing runs had all ended, so
+// none of them pushed it: a human, or another task's run (the push policy is repository-wide).
+func pushedAfterRuns(in ArmInputs) bool {
+	ended := runsEnded(in.Task)
+	return !ended.IsZero() && in.HeadPushedAt.After(ended)
+}
+
+// headPush is the server time of the push that put head on the branch: the newest of the branch's
+// activity (newest first, as BranchActivity returns it), when it is a push, a force push or the
+// branch's creation that moved the branch to head. Zero otherwise: no activity, or a newest move
+// to another commit (the record lags, or the branch moved since the pull request was read).
+func headPush(ps []forge.Push, head string) time.Time {
+	if len(ps) == 0 || head == "" || ps[0].After != head {
+		return time.Time{}
+	}
+	switch ps[0].Type {
+	case "push", "force_push", "branch_creation":
+		return ps[0].At
+	}
+	return time.Time{}
+}
+
+// headPushedAt reads ArmInputs.HeadPushedAt from the factory App's view of the branch's activity,
+// the read pushedBy already makes. An unreadable or truncated history is zero: the approval then
+// reads stale, and a later reconcile reads it again.
+func (r *Reconciler) headPushedAt(ctx context.Context, pr forge.PR) time.Time {
+	ps, err := r.gh(ctx).BranchActivity(ctx, pr.HeadRef)
+	if err != nil && !errors.Is(err, forge.ErrActivityTruncated) {
+		r.log().Warn("branch activity unreadable: no approval binds", "branch", pr.HeadRef, "err", err)
+		return time.Time{}
+	}
+	return headPush(ps, pr.HeadSHA) // a truncated history still holds its newest move
+}
+
+// runsEnded is when the last of the task's runs that push (implementers, and testers for their
+// contract commit) ended, as the factory recorded it; zero when none has or one has not ended.
+func runsEnded(t *v1alpha1.Task) time.Time {
+	var last time.Time
+	if t == nil {
+		return last
+	}
+	for _, rec := range t.Status.Runs {
+		if rec.Role != "implementer" && rec.Role != "tester" {
+			continue
+		}
+		if rec.Finished == nil {
+			return time.Time{}
+		}
+		if rec.Finished.After(last) {
+			last = rec.Finished.Time
+		}
+	}
+	return last
 }
 
 // gateOf is the class as the gate reads it: its config, with the diff shape built into

@@ -511,8 +511,9 @@ func (f *Fake) SetActivityErr(branch string, err error) {
 }
 
 // BranchActivity implements the forge's BranchActivity. Unset, a branch is its pull request's
-// head, created by the pull request's author — the agents App in the reconciler's rigs — so the
-// push check passes: a test that never calls SetActivity does not exercise it (#76's tests do).
+// head, created by the pull request's author — the agents App in the reconciler's rigs — at the
+// head's committer date, so the push check passes: a test that never calls SetActivity does not
+// exercise it (#76's tests do).
 func (f *Fake) BranchActivity(_ context.Context, branch string) ([]forge.Push, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -524,7 +525,8 @@ func (f *Fake) BranchActivity(_ context.Context, branch string) ([]forge.Push, e
 	}
 	for _, p := range f.prs {
 		if p.HeadRef == branch {
-			return []forge.Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA}}, nil
+			return []forge.Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA,
+				At: p.HeadCommittedAt}}, nil
 		}
 	}
 	return nil, nil

@@ -122,8 +122,11 @@ type Review struct {
 	// MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE); ""
 	// when GitHub did not say.
 	Association string
-	// Commit is the head the review was submitted on (GitHub's review.commit): row 3 arms on an
-	// approval of the current head only (human path AM1), and "" never matches a head.
+	// Commit is GitHub's review.commit: the head the review was submitted on, until a force push
+	// moves it to an equivalent new head (ai-native-ref#250, REST's commit_id alike), and the head
+	// at submission when the review named none. Row 3 arms on an approval of the current head only
+	// (human path AM1), and only when the head's push dates it (reconciler approvesHead); "" never
+	// matches a head.
 	Commit   string
 	Body     string
 	At       time.Time

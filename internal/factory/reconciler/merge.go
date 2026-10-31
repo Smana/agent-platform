@@ -115,6 +115,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 		in.Verifiers = verifiers(t)
+		if r.repo(t).Merge.ApproveToMerge { // row 3 binds an approval to the head's push (AM1)
+			in.HeadPushedAt = r.headPushedAt(ctx, pr)
+		}
 		if c := t.Status.Contract; c != nil {
 			// Row 2c: one compare per decision, read once CI is green. A head that is not the contract's
 			// descendant (a rebase), or too many files to list, changed every contract file: fail closed.
