@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
 	"github.com/Smana/maku/internal/factory/decision"
@@ -39,10 +41,11 @@ func green(policy string) forge.Checks {
 }
 
 func armTask(class, template, verdict string) *v1alpha1.Task {
+	first, last := metav1.NewTime(now.Add(-50*time.Minute)), metav1.NewTime(now.Add(-30*time.Minute))
 	return &v1alpha1.Task{Spec: v1alpha1.TaskSpec{PredictedClass: class, Template: template},
 		Status: v1alpha1.TaskStatus{Verdict: verdict, Runs: []v1alpha1.RunRecord{
-			{ID: "7f3cq2xz", Role: "implementer", Trigger: "initial"},
-			{ID: "3buqdlot", Role: "implementer", Trigger: "review"}}}}
+			{ID: "7f3cq2xz", Role: "implementer", Trigger: "initial", Finished: &first},
+			{ID: "3buqdlot", Role: "implementer", Trigger: "review", Finished: &last}}}}
 }
 
 func agentPR() forge.PR {
@@ -284,6 +287,99 @@ func TestAnApprovalBindsToTheHeadItReviewed(t *testing.T) {
 				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
 			}
 		})
+	}
+}
+
+// AM1's binding, review I1: a maintainer reads head A while the run, still going, pushes B; an
+// approval sent without a commit_id binds to B, and B arrived before it. Only the factory's record
+// of the run's end refuses it: the approval must follow the end of the task's last pushing run,
+// past the clock skew, and the head must be the one a run reported. Unknown is stale.
+func TestAnApprovalBindsOnlyAfterTheRunsEnded(t *testing.T) {
+	ended := metav1.NewTime(now)
+	for name, c := range map[string]struct {
+		submitted       time.Time
+		mutate          func(*ArmInputs)
+		verdict, reason string
+	}{
+		"an approval of the head after it arrived but before the run ended is stale": {now.Add(-time.Minute), nil, "human", "approval_stale"},
+		"an approval within the clock skew of the end is stale":                      {now.Add(retrySkew), nil, "human", "approval_stale"},
+		"an approval past the end and the skew arms":                                 {now.Add(retrySkew + time.Second), nil, "arm", "maintainer_approved"},
+		"an approval while a run has not ended is stale": {now.Add(time.Hour), func(in *ArmInputs) {
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "x2x2x2x2", Role: "implementer", Trigger: "ci"})
+		}, "human", "approval_stale"},
+		"a tester's later end counts": {now.Add(5 * time.Minute), func(in *ArmInputs) {
+			late := metav1.NewTime(now.Add(10 * time.Minute))
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "y3y3y3y3", Role: "tester", Trigger: "initial", Finished: &late})
+		}, "human", "approval_stale"},
+		"a reviewer's run never holds it": {now.Add(5 * time.Minute), func(in *ArmInputs) {
+			in.Task.Status.Runs = append(in.Task.Status.Runs, v1alpha1.RunRecord{ID: "z4z4z4z4", Role: "reviewer", Trigger: "review"})
+		}, "arm", "maintainer_approved"},
+		"an approval of a head no run reported is stale": {now.Add(time.Hour), func(in *ArmInputs) { in.ReportedHead = oldHead }, "human", "approval_stale"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			cfg.Classes["docs-links"] = config.Class{Shadow: true}
+			pr := agentPR()
+			pr.HeadArrivedAt = now.Add(-10 * time.Minute) // even the true time of the run's push predates the approval
+			pr.Reviews = []forge.Review{{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: c.submitted}}
+			tk := armTask("docs-links", "solo", "")
+			tk.Status.Runs[1].Finished = &ended
+			in := ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true}
+			if c.mutate != nil {
+				c.mutate(&in)
+			}
+			if d := DecideArm(in); d.Verdict != c.verdict || d.Reason != c.reason {
+				t.Fatalf("%s %s, want %s %s", d.Verdict, d.Reason, c.verdict, c.reason)
+			}
+		})
+	}
+}
+
+// Review M2: GitHub's times are whole seconds. A maintainer's approval and request for changes in
+// one second are ordered by id, so the later request is the newest and vetoes, whatever the order
+// GitHub lists them in.
+func TestASameSecondRequestForChangesVetoes(t *testing.T) {
+	at := now.Add(time.Minute)
+	approve := forge.Review{ID: 10, Author: "Smana", State: "APPROVED", Commit: head, At: at}
+	request := forge.Review{ID: 11, Author: "Smana", State: "CHANGES_REQUESTED", Commit: head, At: at}
+	for name, reviews := range map[string][]forge.Review{
+		"listed in order": {approve, request},
+		"listed reversed": {request, approve},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := armCfg()
+			cfg.Merge.ApproveToMerge = true
+			pr := agentPR()
+			pr.Reviews = reviews
+			d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+				Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+			if d.Verdict != "human" || d.Reason != "changes_requested" {
+				t.Fatalf("%s %s, want human changes_requested", d.Verdict, d.Reason)
+			}
+		})
+	}
+}
+
+// Review gap: one maintainer's approval was moved onto the head by a force push (submitted before
+// it); another's was submitted after. The valid one arms, and is the one named, in either order.
+func TestAValidApprovalArmsBesideAMovedOne(t *testing.T) {
+	cfg := armCfg()
+	cfg.Maintainers = append(cfg.Maintainers, "octocat")
+	cfg.Merge.ApproveToMerge = true
+	cfg.Classes["docs-links"] = config.Class{Shadow: true}
+	pr := agentPR()
+	pr.HeadArrivedAt = now.Add(2 * time.Minute)
+	moved := forge.Review{ID: 1, Author: "Smana", State: "APPROVED", Commit: head, At: now.Add(time.Minute)}
+	valid := forge.Review{ID: 2, Author: "octocat", State: "APPROVED", Commit: head, At: now.Add(3 * time.Minute)}
+	for _, order := range [][]forge.Review{{moved, valid}, {valid, moved}} {
+		pr.Reviews = order
+		d := DecideArm(ArmInputs{PR: pr, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""), Cfg: cfg, ReportedHead: head,
+			Files: changed("[a](https://x/old)", "[a](https://x/new)"), DiffRead: true})
+		if d.Verdict != "arm" || d.Approver != "octocat" {
+			t.Fatalf("%+v, want arm by octocat", d)
+		}
 	}
 }
 

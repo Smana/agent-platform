@@ -25,6 +25,8 @@ func mergeRig(t *testing.T, phase string, objs ...client.Object) *rig {
 	tk := awaiting()
 	tk.Spec.PredictedClass, tk.Status.Phase = "docs-links", phase
 	tk.Status.PullRequest.NodeID, tk.Status.PullRequest.HeadSHA = "PR_12", "abc"
+	ended := metav1.NewTime(now.Add(-30 * time.Minute)) // AM1: an approval binds after the run ended
+	tk.Status.Runs[0].Finished = &ended
 	g := newRig(t, append([]client.Object{tk, roomOf("3buqdlot")}, objs...)...)
 	g.r.Merger = g.f // one fake records both Apps' calls
 	g.r.Cfg.AgentsLogin, g.r.Cfg.FactoryLogin = "ogenki-agents[bot]", "ogenki-agent-factory[bot]"

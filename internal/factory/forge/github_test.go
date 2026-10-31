@@ -291,6 +291,14 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				_, _ = io.WriteString(w, strings.Replace(prJSON, `"timelineItems":{"nodes":[]}`, `"timelineItems":{"nodes":[{"createdAt":"2026-09-27T10:01:00Z"}]}`, 1))
 				return
 			}
+			if strings.Contains(string(b), `"number":17`) {
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"timelineItems":{"nodes":[]}`, `"timelineItems":{"nodes":[{"createdAt":"2026-09-27T09:50:00Z"}]}`, 1))
+				return
+			}
+			if strings.Contains(string(b), `"number":18`) {
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"committedDate":"2026-09-27T09:58:00Z"`, `"committedDate":null`, 1))
+				return
+			}
 			if strings.Contains(string(b), `"number":16`) {
 				_, _ = io.WriteString(w, strings.Replace(prJSON, `"timelineItems":{"nodes":[]}`, `"timelineItems":{"nodes":[{}]}`, 1))
 				return
@@ -834,6 +842,8 @@ func TestPullRequestReadsWhenTheHeadArrived(t *testing.T) {
 		12: time.Date(2026, 9, 27, 9, 58, 0, 0, time.UTC), // never force-pushed: the commit's date
 		15: time.Date(2026, 9, 27, 10, 1, 0, 0, time.UTC), // force-pushed after it was committed
 		16: {},                                            // a force push without a date: unknown
+		17: time.Date(2026, 9, 27, 9, 58, 0, 0, time.UTC), // committed after the last force push: the commit's date
+		18: {},                                            // a head commit without a date: unknown
 	} {
 		pr, err := r.g.PullRequest(t.Context(), n)
 		if err != nil || !pr.HeadArrivedAt.Equal(want) {

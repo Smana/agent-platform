@@ -158,11 +158,13 @@ type PR struct {
 	Reviews         []Review
 	Comments        []Comment
 
-	// HeadArrivedAt bounds from below when the head reached the branch: the later of its committer
-	// date and the branch's last force push (GitHub's HeadRefForcePushedEvent). Zero when either
-	// could not be read. A force push moves a review's Commit to the new head, in GraphQL and in
-	// REST's commit_id alike (ai-native-ref#250), so only a review submitted after this time can
-	// have approved the head, and none can when it is zero (AM1, fail closed).
+	// HeadArrivedAt is the later of the head's committer date and the branch's last force push
+	// (GitHub's HeadRefForcePushedEvent, on GitHub's clock); zero when either could not be read.
+	// A force push moves a review's Commit to an equivalent new head, in GraphQL and in REST's
+	// commit_id alike (ai-native-ref#250), so only a review submitted after the push can have
+	// approved the head, and none can when this is zero (AM1, fail closed). The committer date is
+	// a claim and proves nothing: a normal push never moves a review, and a future date only makes
+	// approvals stale. It stays as padding.
 	HeadArrivedAt time.Time
 }
 

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 	"github.com/Smana/maku/internal/factory/config"
@@ -209,8 +210,8 @@ func reviewerModel(t *v1alpha1.Task) string {
 // approval is row 3's read of an agents pull request with merge.approveToMerge on (human path
 // AM1, ruling R-B1): the newest review of each maintainer. veto when one of them is a request for
 // changes, or when GitHub cut the list, so a veto may be unseen; stale when the newest approval is
-// of another head, or of no head GitHub named, or not submitted after the head arrived (fail
-// closed, approvesHead); approved when it is of the current head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
+// of another head, or of no head GitHub named, or not submitted after the head arrived and the
+// task's runs ended (fail closed, approvesHead); approved when it is of the current head. DecideArm calls it for no other pull request: off, or adopted, today's loop reads.
 func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	if in.PR.ReviewsTruncated {
 		return forge.Review{}, "veto"
@@ -221,7 +222,9 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 			continue
 		}
 		login := strings.ToLower(rv.Author)
-		if cur, ok := newest[login]; !ok || rv.At.After(cur.At) {
+		// GitHub's times are whole seconds: two reviews in one second are ordered by id, so a
+		// request for changes right after an approval is the newest.
+		if cur, ok := newest[login]; !ok || rv.At.After(cur.At) || (rv.At.Equal(cur.At) && rv.ID > cur.ID) {
 			newest[login] = rv
 		}
 	}
@@ -231,7 +234,7 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 		case "CHANGES_REQUESTED":
 			return rv, "veto"
 		case "APPROVED":
-			if !approvesHead(approved, in.PR) { // an approval of the head wins, whatever the map's order
+			if !approvesHead(approved, in) { // an approval of the head wins, whatever the map's order
 				approved = rv
 			}
 		}
@@ -239,19 +242,53 @@ func approval(in ArmInputs, rc *config.Repository) (forge.Review, string) {
 	switch {
 	case approved.Author == "":
 		return forge.Review{}, ""
-	case approvesHead(approved, in.PR):
+	case approvesHead(approved, in):
 		return approved, "approved"
 	default:
 		return approved, "stale"
 	}
 }
 
-// approvesHead: rv names the current head and was submitted after that head arrived. The commit
-// alone does not bind it: a force push moves a review's commit to the new head, in GraphQL and in
-// REST alike (live on ai-native-ref#250, where only policy-bot's dismissal stopped the merge). A
-// review in the arrival's own second, or with the arrival unknown, approves nothing (fail closed).
-func approvesHead(rv forge.Review, pr forge.PR) bool {
-	return rv.Commit != "" && rv.Commit == pr.HeadSHA && !pr.HeadArrivedAt.IsZero() && rv.At.After(pr.HeadArrivedAt)
+// approvesHead: rv names the current head, which a run of the task reported, and was submitted
+// after that head arrived and after the task's last pushing run ended (fail closed on either
+// unknown, or in the same second).
+//
+// The commit alone does not bind it. A force push moves a review's commit to the new head, in
+// GraphQL and in REST alike (live on ai-native-ref#250, where only policy-bot's dismissal stopped
+// the merge): HeadArrivedAt answers that. And an approval sent without a commit_id (`gh pr review
+// --approve`) binds to whatever the head is when GitHub receives it: a maintainer who read head A
+// while the run, still going, pushed B approves B. Only the factory's own record can refuse that:
+// no run can push once it has ended, so an approval submitted after the end is of a head that no
+// longer moves. retrySkew pads it, since rv.At is GitHub's clock and Finished the factory's.
+func approvesHead(rv forge.Review, in ArmInputs) bool {
+	pr := in.PR
+	if rv.Commit == "" || rv.Commit != pr.HeadSHA || in.ReportedHead != pr.HeadSHA {
+		return false
+	}
+	ended := runsEnded(in.Task)
+	return !pr.HeadArrivedAt.IsZero() && rv.At.After(pr.HeadArrivedAt) &&
+		!ended.IsZero() && rv.At.After(ended.Add(retrySkew))
+}
+
+// runsEnded is when the last of the task's runs that push (implementers, and testers for their
+// contract commit) ended, as the factory recorded it; zero when none has or one has not ended.
+func runsEnded(t *v1alpha1.Task) time.Time {
+	var last time.Time
+	if t == nil {
+		return last
+	}
+	for _, rec := range t.Status.Runs {
+		if rec.Role != "implementer" && rec.Role != "tester" {
+			continue
+		}
+		if rec.Finished == nil {
+			return time.Time{}
+		}
+		if rec.Finished.After(last) {
+			last = rec.Finished.Time
+		}
+	}
+	return last
 }
 
 // gateOf is the class as the gate reads it: its config, with the diff shape built into
