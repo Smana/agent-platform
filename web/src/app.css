@@ -684,6 +684,12 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .list-tools .notice:empty { display: none; }
 .list-tools label, .list-tools select, .list-tools button { min-height: var(--hit); }
 .list-tools [data-act="new-room"] { margin-left: auto; padding: 0 14px; font-weight: 700; }
+/* The auto-refresh: when it last read the list, the interval and the pause, before New room. */
+.list-tools .refresh { display: inline-flex; gap: 8px; align-items: center; margin-left: auto; }
+.list-tools .refresh + [data-act="new-room"] { margin-left: 0; }
+.refresh-status { color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
+.refresh-status[data-failed] { color: var(--destructive-text); }
+.refresh-pause { padding: 0 10px; }
 table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collapse; background: var(--card); box-shadow: var(--shadow-border); border-radius: 8px; overflow: hidden; }
 .rooms th, .rooms td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: baseline; font-variant-numeric: tabular-nums; }
 .rooms tbody tr:last-child td { border-bottom: 0; }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { mountBrand } from "./brand";
 import { api, nav, SignInRequired } from "./api";
+import { type AutoRefreshOptions, mountAutoRefresh } from "./autorefresh";
+import { mountBrand } from "./brand";
 import { maxRows } from "./limits";
 import { ago } from "./summary";
 import { mountThemeButton, type ThemeController } from "./theme";
@@ -154,8 +155,10 @@ function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
 
 // listRooms renders the room list as a table, the filters and the new-room form, or why it
 // cannot: a 401 signs in again; an expired session may also reach fetch as a redirect to
-// the IdP, so a failed fetch or a body that is not JSON.
-export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, filters: RoomFilters = {}, theme?: ThemeController) {
+// the IdP, so a failed fetch or a body that is not JSON. The list refreshes on its own
+// (autorefresh.ts); refresh carries that control's clock and storage, for tests.
+export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, filters: RoomFilters = {}, theme?: ThemeController,
+  refresh: AutoRefreshOptions = {}) {
   const fetchRooms = async (f: RoomFilters, say: (msg: string) => void = (m) => { app.textContent = m; }): Promise<RoomRow[] | undefined> => {
     try {
       const r = await api(roomsURL(f), {}, get);
@@ -177,7 +180,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "Retry";
-    retry.onclick = () => void listRooms(app, get, filters, theme);
+    retry.onclick = () => void listRooms(app, get, filters, theme, refresh);
     app.append(retry);
   });
   if (!first) return;
@@ -185,7 +188,6 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   const header = document.createElement("header");
   header.className = "page-header";
   mountBrand(header);
-  document.title = "Maku rooms";
   const h1 = document.createElement("h1");
   h1.className = "page-title";
   h1.textContent = "Rooms";
@@ -229,8 +231,9 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   const notice = document.createElement("span");
   notice.className = "notice";
   notice.setAttribute("role", "status");
-  // The filters on the left, New room, the page's one primary act, at the row's end.
-  tools.append(mine.label, needsMe.label, repo, notice, add);
+  // The filters on the left, then the refresh control, and New room, the page's one primary
+  // act, at the row's end.
+  tools.append(mine.label, needsMe.label, repo, notice);
 
   const table = document.createElement("table");
   table.className = "rooms";
@@ -241,11 +244,27 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   thead.append(head);
   const tbody = document.createElement("tbody");
   table.append(thead, tbody);
+  // fill renders rows, unless they would read as the table already does: a refresh that
+  // changes nothing leaves the DOM, and so the focus, alone. A rebuild puts the focus back on
+  // the same room's link. The tab's title counts the rooms that need you, for a background tab.
+  let shown = "";
   const fill = (rows: RoomRow[]) => {
+    const needing = rows.filter((r) => (r.needsYou ?? 0) > 0).length;
+    document.title = needing > 0 ? `(${needing}) Maku rooms` : "Maku rooms";
     const now = new Date();
-    if (rows.length > 0) return tbody.replaceChildren(...sortRooms(rows).map((r) => roomRow(r, now)));
-    // An empty table says why: a filter that leaves nothing, or no room at all.
+    const sorted = sortRooms(rows);
     const filtered = mine.input.checked || needsMe.input.checked || !!repo.value;
+    const key = JSON.stringify([filtered, sorted.map((r) => [rowCells(r, now), r.status])]);
+    if (key === shown) return;
+    shown = key;
+    const focused = document.activeElement instanceof HTMLAnchorElement && tbody.contains(document.activeElement)
+      ? document.activeElement.getAttribute("href") : null;
+    if (rows.length > 0) {
+      tbody.replaceChildren(...sorted.map((r) => roomRow(r, now)));
+      if (focused) [...tbody.querySelectorAll("a")].find((l) => l.getAttribute("href") === focused)?.focus();
+      return;
+    }
+    // An empty table says why: a filter that leaves nothing, or no room at all.
     const td = cell("td", filtered ? "No rooms match" : "No rooms you can read yet");
     td.setAttribute("colspan", String(head.childElementCount));
     const tr = document.createElement("tr");
@@ -255,13 +274,17 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   fill(first);
 
   let seq = 0; // a slow answer to an older filter never overwrites a newer one
-  const refetch = async () => {
+  // refetch reads the list under the filters the page shows; it resolves whether it read one.
+  const refetch = async (): Promise<boolean> => {
     const mark = ++seq;
     notice.textContent = "";
     const rows = await fetchRooms({ mine: mine.input.checked, needsMe: needsMe.input.checked, repo: repo.value || undefined },
       (m) => { if (mark === seq) notice.textContent = m; });
     if (rows && mark === seq) fill(rows);
+    return !!rows;
   };
+  mountAutoRefresh(tools, refetch, refresh);
+  tools.append(add);
   // click, not change: a checkbox's change event needs a connected element; click fires either way.
   for (const e of [mine.input, needsMe.input]) e.addEventListener("click", () => void refetch());
   repo.addEventListener("change", () => void refetch());

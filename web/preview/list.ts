@@ -28,10 +28,16 @@ const maku: Record<string, object> = {
   none: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "" },
 };
 
+let reads = 0;
 const get = (async (url: string) => {
   if (url.startsWith("/api/roomctl")) {
     return cli && maku[cli] ? new Response(JSON.stringify(maku[cli])) : new Response(JSON.stringify({}), { status: 404 });
   }
+  // The running room moves on every read, so the auto-refresh shows on the page.
+  const run = rows[2];
+  reads++;
+  run.lastEventAt = ago(0);
+  run.status = { kind: "running", icon: "●", text: `Running — implementer, ${12 + reads} min` };
   const q = new URL(url, location.origin).searchParams;
   return new Response(JSON.stringify(rows.filter((r) => (!q.has("needs_me") || (r.needsYou ?? 0) > 0) && (!q.get("repo") || r.repository === q.get("repo")))));
 }) as unknown as typeof fetch;
