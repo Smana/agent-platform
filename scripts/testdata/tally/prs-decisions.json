@@ -27,7 +27,7 @@
           "login": "ogenki-agent-factory"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: holdout_red. <!-- agent-factory scope=task event=human-holdout_red-2 -->\n\n<!-- agent-factory-decision head=a20 class=docs-links decision=human:holdout_red files=2/3 lines=4/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: holdout_red. <!-- agent-factory scope=task event=human-holdout_red-2 -->\n\n<!-- agent-factory-decision head=a20 class=docs-links decision=human:holdout_red files=2/3 lines=4/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       },
       {
         "author": {
@@ -66,7 +66,7 @@
           "login": "ogenki-agent-factory"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a24 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a24 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       }
     ]
   },
@@ -82,7 +82,7 @@
           "login": "ogenki-agent-factory"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a25 class=docs-links decision=human:patch_too_large files=-/3 lines=-/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a25 class=docs-links decision=human:patch_too_large files=-/3 lines=-/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       }
     ]
   },
@@ -98,7 +98,7 @@
           "login": "ogenki-agent-factory"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: file_not_allowed. <!-- agent-factory scope=task event=human-file_not_allowed-2 -->\n\n<!-- agent-factory-decision head=a26 class=docs-links decision=human:file_not_allowed files=1/3 lines=2/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: file_not_allowed. <!-- agent-factory scope=task event=human-file_not_allowed-2 -->\n\n<!-- agent-factory-decision head=a26 class=docs-links decision=human:file_not_allowed files=1/3 lines=2/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       }
     ]
   },
@@ -130,7 +130,7 @@
           "login": "ogenki-agent-factory"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a28 class=review decision=human:patch_too_large files=1/3 lines=50/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a28 class=review decision=human:patch_too_large files=1/3 lines=50/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       }
     ]
   },
@@ -178,7 +178,7 @@
           "login": "someone"
         },
         "createdAt": "2026-10-01T00:00:00Z",
-        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a32 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=false capped=false reviewer=glm-5.3 -->"
+        "body": "Agent factory task `t`: waiting for a human: patch_too_large. <!-- agent-factory scope=task event=human-patch_too_large-2 -->\n\n<!-- agent-factory-decision head=a32 class=docs-links decision=human:patch_too_large files=1/3 lines=30/20 shape=ok holdout=n/a oracle=n/a age=n/a evidence=ok paused=- capped=- reviewer=glm-5.3 -->"
       }
     ]
   }
